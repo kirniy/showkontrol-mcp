@@ -385,9 +385,10 @@ export async function composeProgramEditsCopy(args){
    }
   }
   else if(op.action==='copy_patch_setting_to_item_graph'){
-   keys(op,['action','index','donor','donorFormat','donorSha256','donorNodeId','key'],['nodeId','graphFromOperation','nodeIndex']);
-   if(Object.hasOwn(op,'nodeId')===Object.hasOwn(op,'graphFromOperation')||Object.hasOwn(op,'nodeIndex')!==Object.hasOwn(op,'graphFromOperation'))throw Error('Provide nodeId or graphFromOperation with nodeIndex');
+   keys(op,['action','index','donor','donorFormat','donorSha256','donorNodeId','key'],['nodeId','nodeFromOperation','graphFromOperation','nodeIndex']);
+   if(['nodeId','nodeFromOperation','graphFromOperation'].filter(k=>Object.hasOwn(op,k)).length!==1||Object.hasOwn(op,'nodeIndex')!==Object.hasOwn(op,'graphFromOperation'))throw Error('Provide exactly one of nodeId, nodeFromOperation, or graphFromOperation with nodeIndex');
    if(Object.hasOwn(op,'nodeId')&&(typeof op.nodeId!=='string'||!op.nodeId))throw Error('nodeId must be a nonempty string');
+   if(Object.hasOwn(op,'nodeFromOperation')&&(!Number.isInteger(op.nodeFromOperation)||op.nodeFromOperation<0))throw Error('Invalid nodeFromOperation');
    if(Object.hasOwn(op,'graphFromOperation')&&(!Number.isInteger(op.graphFromOperation)||op.graphFromOperation<0||!Number.isInteger(op.nodeIndex)||op.nodeIndex<0))throw Error('Invalid graphFromOperation or nodeIndex');
    if(typeof op.donor!=='string'||!path.isAbsolute(op.donor)||!['skf','skshow'].includes(op.donorFormat)||!/^[a-f0-9]{64}$/.test(op.donorSha256||'')||!/^n\d+$/.test(op.donorNodeId||''))throw Error('Absolute donor path, donor format, donor SHA-256 and node ID are required');
   }
@@ -514,7 +515,11 @@ export async function composeProgramEditsCopy(args){
     current=await editItemGraphWire({program,destination,currentSha:current.sha256,index:operation.index,operation:operation.operation,fromNode:resolveEndpoint(operation.from),toNode:resolveEndpoint(operation.to),dir,step});
    }else if(operation.action==='copy_patch_setting_to_item_graph'){
     let nodeId=operation.nodeId;
-    if(Object.hasOwn(operation,'graphFromOperation')){
+    if(Object.hasOwn(operation,'nodeFromOperation')){
+     const ref=operation.nodeFromOperation,entry=ref<operationIndex?copiedItemNodes.find(n=>n.operationIndex===ref):undefined;
+     if(!entry||invalidatedGraphs.has(ref)||!itemGraphContains(await readFile(program,'utf8'),operation.index,[entry.nodeId]))throw Error('nodeFromOperation must identify an active prior copy_item_graph_node in the selected item');
+     nodeId=entry.nodeId;
+    }else if(Object.hasOwn(operation,'graphFromOperation')){
      const ref=operation.graphFromOperation,graph=ref<operationIndex?assembledItemGraphs.find(g=>g.operationIndex===ref):undefined;
      if(!graph||invalidatedGraphs.has(ref)||!itemGraphContains(await readFile(program,'utf8'),operation.index,graph.nodeIds))throw Error('graphFromOperation must identify an active prior assemble_item_graph in the selected item');
      if(operation.nodeIndex>=graph.nodeIds.length)throw Error('nodeIndex must identify a node in the assembled graph');
