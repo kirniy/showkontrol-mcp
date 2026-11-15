@@ -45,3 +45,29 @@ test('applies the clip limit across standalone and Program timelines',async t=>{
  await writeFile(file,`<skshow>${part('content/Track.sktl',timeline('/a'))}${part('content/Program.skpr',program(item(many)))}</skshow>`);
  await assert.rejects(inspectShowMedia({file}),/Clip count exceeds inventory item limit/);
 });
+
+test('reports bounded root fields and exact attribute matches in each timeline and lane',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'media-fields-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'show.skshow');
+ const track=`<sktimeline version="1" media="/a&amp;b" mediaWave="${'x'.repeat(4097)}" mediaGrid="" other="MEDIA/a"><audio><clip src="/a&amp;b" file="MEDIA/a"/><clip path="/A&amp;b"/></audio><audio><clip src="MEDIA/a"/></audio></sktimeline>`;
+ const embedded='<sktimeline version="1" mediaStructS="/a&amp;b"><audio><clip path="/a&amp;b"/></audio></sktimeline>';
+ await writeFile(file,`<skshow>${part('media.map','/a&b\tMEDIA/a\n')}${part('content/A.sktl',track)}${part('content/Program.skpr',program(item(embedded)))}</skshow>`);
+ const result=await inspectShowMedia({file});
+ assert.deepEqual(result.timelines[0].mediaFields,{media:{length:4,value:'/a&b'},mediaWave:{length:4097,valueOmitted:true},mediaGrid:{length:0,value:''}});
+ assert.deepEqual(result.timelines[0].attributeMappings,[{attribute:'media',lines:[1]},{attribute:'other',lines:[1]}]);
+ assert.deepEqual(result.timelines[1].attributeMappings,[{attribute:'mediaStructS',lines:[1]}]);
+ assert.equal(result.timelines[1].itemIndex,0);
+ assert.deepEqual(result.clips.map(c=>[c.audioIndex,c.clipIndex,c.mappingLines,c.attributeMappings]),[
+  [0,0,[1],[{attribute:'src',lines:[1]},{attribute:'file',lines:[1]}]],
+  [0,1,[],[]], [1,0,[],[{attribute:'src',lines:[1]}]], [0,0,[],[{attribute:'path',lines:[1]}]]
+ ]);
+ assert.deepEqual(result.diagnostics,[]);
+});
+
+test('bounds total exact attribute matches across root and clips',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'media-matches-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'show.skshow');
+ const map=Array(5001).fill('/a\tMEDIA/a').join('\n');
+ await writeFile(file,`<skshow>${part('media.map',map)}${part('a.sktl','<sktimeline version="1" media="/a"><audio><clip src="/a"/></audio></sktimeline>')}</skshow>`);
+ await assert.rejects(inspectShowMedia({file}),/Media inventory exceeds reference limit/);
+});

@@ -79,3 +79,9 @@ See [Contributing](CONTRIBUTING.md) for development and test guidance.
 - [ShowKontrol Remote Control & API](https://manual.showkontrol.com/manual/remote)
 - [ShowKontrol Cue Editor & Timelines](https://manual.showkontrol.com/manual/timeline)
 - [REAPER state chunk definitions](https://github.com/ReaTeam/Doc/blob/master/State%20Chunk%20Definitions)
+
+### Media inventory
+
+`showkontrol_inspect_show_media` reads `media.map`, archive part metadata, and audio clips from standalone and Program item timelines. It does not open referenced paths. `timelines` reports the root media fields found in the app-saved empty track fixture. Each value has a character length; values longer than 4,096 characters are omitted. The meaning of nonempty values has not been verified in the app.
+
+Each timeline and clip has `attributeMappings`: the names of attributes whose decoded values exactly match a source or archive path in `media.map`, with the matching line numbers. Matches are case-sensitive. A match does not prove that the app uses that attribute as a media link. For compatibility, a clip's `mappingLines` still reports matches for its `file` attribute only. `audioIndex` identifies the lane, and `clipIndex` is zero-based within that lane. Missing matches or archive parts do not establish that media is broken. The tool does not check playback or external files.
