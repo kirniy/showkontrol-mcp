@@ -50,6 +50,7 @@ async function credentials() {
   }
   return {token, pair, port};
 }
+const responseCredentials = new WeakMap();
 async function request(method, apiPath, body, accept = 'application/json', signal = AbortSignal.timeout(timeout)) {
   if (!apiPath.startsWith('/') || apiPath.startsWith('//') || apiPath.includes('#') || /[\r\n\\]/.test(apiPath)) throw Error('Path must be a relative API path beginning with one slash');
   const url = new URL('/api/v1' + apiPath, base);
@@ -63,6 +64,7 @@ async function request(method, apiPath, body, accept = 'application/json', signa
   let res;
   try { res = await fetch(url, {method, headers, ...(body !== undefined ? {body:JSON.stringify(body)} : {}), signal, redirect:'error'}); }
   catch(e) { throw Error(`${method} ${url.pathname}: ${e.name === 'TimeoutError' ? 'timed out; the outcome of a write may be unknown' : 'connection failed'}; no automatic retry`); }
+  responseCredentials.set(res, {token, pair});
   return res;
 }
 async function call(method, apiPath, body) {
@@ -79,7 +81,18 @@ async function call(method, apiPath, body) {
   const text = Buffer.concat(chunks).toString('utf8');
   let result = text;
   if (text) {try { result = JSON.parse(text); } catch { /* retain text */ }} else result = {};
-  if (!res.ok) throw Error(`HTTP ${res.status}: ${typeof result === 'object' && result?.error ? String(result.error) : res.statusText}`);
+  if (!res.ok) {
+    const {token, pair} = responseCredentials.get(res);
+    const clean = value => {
+      let s = value.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ');
+      for (const secret of [token, pair]) if (typeof secret === 'string' && secret) s = s.split(secret).join('[redacted]');
+      return s.length > 500 ? s.slice(0, 500) + '…' : s;
+    };
+    const message = typeof result?.error === 'string' && result.error ? clean(result.error) : clean(res.statusText);
+    const problems = method === 'PUT' && apiPath.split('?')[0] === '/patch' && Array.isArray(result?.problems)
+      ? result.problems.slice(0, 10).filter(p => typeof p === 'string').map(clean) : [];
+    throw Error(`HTTP ${res.status}: ${message}${problems.length ? `; problems: ${JSON.stringify(problems)}` : ''} (${method} ${new URL(res.url).pathname})`);
+  }
   return result;
 }
 // Limit returned media to keep MCP messages bounded. No file is written.
@@ -207,7 +220,7 @@ const endpointSchema=z.object({node:z.string().min(1),pin:z.union([z.string(),z.
 add('showkontrol_create_connection','Create or preview a connection using node IDs and optional pin names or indices. Set dryRun true to preview. This can change live show routing.',{from:endpointSchema,to:endpointSchema,dryRun:z.boolean()},({from,to,dryRun})=>call('POST','/connections',{from,to,dryRun}),write);
 add('showkontrol_delete_connection','Delete a connection identified by its two endpoints. This changes live show routing.',{from:endpointSchema,to:endpointSchema},({from,to})=>call('DELETE','/connections',{from,to}),write);
 const patchPlanEndpointSchema=z.object({node:z.string().min(1),pin:z.union([z.string().min(1),z.number().int().nonnegative()]).optional()}).strict();
-add('showkontrol_compose_live_patch','Submit a typed patch plan in one request. New nodes are referenced by title in connections; metadata aliases are not supported. Defaults to dryRun true. Set dryRun false explicitly to submit a live change. A two-group plan with pin 0 was applied and read back in ShowKontrol. Other node types remain unverified. Writes are never retried.',{nodes:z.array(z.object({request:z.string().min(1),title:z.string().min(1)}).strict()),connections:z.array(z.object({from:patchPlanEndpointSchema,to:patchPlanEndpointSchema}).strict()),dryRun:z.boolean().default(true)},({nodes,connections,dryRun})=>call('PUT','/patch',{dryRun,nodes,connections}),write);
+add('showkontrol_compose_live_patch','Submit a typed patch plan in one request. Connections use final node titles; parameters can change the node title. Metadata aliases are not supported. Defaults to dryRun true. Set dryRun false explicitly to submit a live change. Group and configured trigger-to-notification plans with pin 0 were applied and read back in ShowKontrol. Graph execution and other node types remain unverified. Writes are never retried.',{nodes:z.array(z.object({request:z.string().min(1),title:z.string().min(1),params:z.record(z.string(),z.json()).optional()}).strict()),connections:z.array(z.object({from:patchPlanEndpointSchema,to:patchPlanEndpointSchema}).strict()),dryRun:z.boolean().default(true)},({nodes,connections,dryRun})=>call('PUT','/patch',{dryRun,nodes,connections}),write);
 add('showkontrol_validate_patch','Dry-run a proposed patch specification without applying it. ShowKontrol validates nodes and connections before a later write. The server always sets dryRun to true.',{spec:z.record(z.string(),z.unknown())},({spec})=>call('PUT','/patch',{...spec,dryRun:true}),readOnly);
 add('showkontrol_get_patch','Read the complete running patch using the ShowKontrol REST API.',{},()=>call('GET','/patch'),readOnly);
 add('showkontrol_put_patch','Submit a patch body to ShowKontrol. Get the current patch and discover its schema first. This changes the running show unless the app accepts a dry-run request.',{body:z.unknown()},({body})=>call('PUT','/patch',body),write);
