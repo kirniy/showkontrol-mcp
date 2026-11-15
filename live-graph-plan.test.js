@@ -77,3 +77,26 @@ test('rejects ambiguous or empty existing endpoints before requests', async () =
   }
   assert.equal(calls, 0);
 });
+
+test('validates existing-node connections with one patch dry run and no previews', async () => {
+  const calls = [];
+  const connections = [{from:{existingNode:'n2',pin:0},to:{existingNode:'n3',pin:'input'}}];
+  const result = await buildLiveGraphPlan({nodes:[],connections}, async (method,path,body) => {
+    calls.push({method,path,body});
+    return {ok:true,dryRun:true};
+  });
+  const translated = [{from:{node:'n2',pin:0},to:{node:'n3',pin:'input'}}];
+  assert.deepEqual(calls,[{method:'PUT',path:'/patch',body:{dryRun:true,nodes:[],connections:translated}}]);
+  assert.deepEqual(result.nodes,[]);
+  assert.deepEqual(result.connections,translated);
+  assert.deepEqual({...result.mapping},{});
+  assert.deepEqual(result.previews,[]);
+});
+
+test('rejects an empty plan and unknown references without calls', async () => {
+  let calls = 0;
+  const call = async () => {calls++;};
+  await assert.rejects(buildLiveGraphPlan({nodes:[],connections:[]},call),/cannot both be empty/);
+  await assert.rejects(buildLiveGraphPlan({nodes:[],connections:[{from:{existingNode:'n2'},to:{node:'missing'}}]},call),/unknown node ref/);
+  assert.equal(calls,0);
+});

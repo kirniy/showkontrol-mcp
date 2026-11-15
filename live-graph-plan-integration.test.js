@@ -51,6 +51,19 @@ test('MCP graph planner previews and validates a reusable plan without applying 
   }
   assert.equal(seen.length, 3);
 
+  const beforeExisting = seen.length;
+  const existing = await client.callTool({name:'showkontrol_plan_live_graph', arguments:{nodes:[], connections:[{from:{existingNode:'n2', pin:0}, to:{existingNode:'n3', pin:'input'}}]}});
+  assert.equal(existing.isError, undefined);
+  const existingPlan = JSON.parse(existing.content[0].text);
+  assert.deepEqual(existingPlan.nodes, []);
+  assert.deepEqual(existingPlan.mapping, {});
+  assert.deepEqual(existingPlan.previews, []);
+  assert.deepEqual(existingPlan.connections, [{from:{node:'n2', pin:0}, to:{node:'n3', pin:'input'}}]);
+  assert.deepEqual(seen.slice(beforeExisting), [{method:'PUT', url:'/api/v1/patch', body:{dryRun:true, nodes:[], connections:existingPlan.connections}}]);
+  const empty = await client.callTool({name:'showkontrol_plan_live_graph', arguments:{nodes:[], connections:[]}});
+  assert.equal(empty.isError, true);
+  assert.equal(seen.length, beforeExisting + 1);
+
   const mixedConnections = [
     {from:{existingNode:'n2', pin:0}, to:{node:'trigger'}},
     {from:{node:'notify'}, to:{existingNode:'n3', pin:'input'}},

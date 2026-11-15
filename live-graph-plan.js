@@ -2,6 +2,7 @@
 // The injected call function must reject HTTP failures.
 export async function buildLiveGraphPlan({nodes, connections}, call) {
   if (!Array.isArray(nodes) || !Array.isArray(connections) || typeof call !== 'function') throw Error('nodes and connections must be arrays and call must be a function');
+  if (nodes.length === 0 && connections.length === 0) throw Error('nodes and connections cannot both be empty');
   const refs = new Set();
   for (const node of nodes) {
     if (!node || typeof node.ref !== 'string' || !node.ref.trim() || typeof node.request !== 'string' || !node.request.trim() || typeof node.title !== 'string' || !node.title.trim()) throw Error('each node needs a nonempty ref, request and title');
