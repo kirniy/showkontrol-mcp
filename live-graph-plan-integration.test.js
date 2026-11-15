@@ -12,7 +12,7 @@ test('MCP graph planner previews and validates a reusable plan without applying 
     const body = JSON.parse(raw);
     seen.push({method:req.method, url:req.url, body});
     const response = req.url === '/api/v1/nodes'
-      ? {dryRun:true, id:`temporary-${seen.length}`, title:body.request === 'trigger' ? 'cue_active' : 'FeedbackNotify'}
+      ? {dryRun:true, id:`temporary-${seen.length}`, title:body.request === 'trigger' ? 'cue_active' : 'FeedbackNotify', params:[{key:'trigger.mode',value:false}]}
       : {ok:true, dryRun:true};
     res.writeHead(200, {'Content-Type':'application/json'});
     res.end(JSON.stringify(response));
@@ -33,6 +33,7 @@ test('MCP graph planner previews and validates a reusable plan without applying 
   assert.deepEqual(plan.nodes, expectedNodes);
   assert.deepEqual(plan.connections, expectedConnections);
   assert.deepEqual(plan.mapping, {trigger:'cue_active', notify:'FeedbackNotify'});
+  assert.deepEqual(plan.previews[0].paramComparison, {requestedCount:1,issueCount:1,issues:[{key:'trigger.mode',kind:'mismatch'}],truncated:false});
   assert.doesNotMatch(JSON.stringify(plan), /temporary-/);
   assert.deepEqual(seen, [
     {method:'POST', url:'/api/v1/nodes', body:{...expectedNodes[0], dryRun:true}},

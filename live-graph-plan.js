@@ -1,3 +1,5 @@
+import {isDeepStrictEqual} from 'node:util';
+
 // Resolve client-local references through node previews, then validate the patch.
 // The injected call function must reject HTTP failures.
 export async function buildLiveGraphPlan({nodes, connections}, call) {
@@ -29,7 +31,20 @@ export async function buildLiveGraphPlan({nodes, connections}, call) {
     if (titles.has(finalTitle)) throw Error(`duplicate final node title: ${finalTitle}`);
     titles.add(finalTitle);
     mapping[ref] = finalTitle;
-    previews.push({ref, title:finalTitle});
+    const issues = [];
+    let issueCount = 0;
+    for (const [key, requested] of Object.entries(params ?? {})) {
+      const matches = Array.isArray(preview.params) ? preview.params.filter(param => param?.key === key) : null;
+      let kind;
+      if (!matches || matches.length > 1 || (matches.length === 1 && !Object.hasOwn(matches[0], 'value'))) kind = 'ambiguous';
+      else if (matches.length === 0) kind = 'missing';
+      else if (!isDeepStrictEqual(requested, matches[0].value)) kind = 'mismatch';
+      if (kind) {
+        issueCount++;
+        if (issues.length < 100) issues.push({key, kind});
+      }
+    }
+    previews.push({ref, title:finalTitle, paramComparison:{requestedCount:Object.keys(params ?? {}).length, issueCount, issues, truncated:issueCount > issues.length}});
     planNodes.push(node);
   }
   const translateEndpoint = endpoint => ({node: Object.hasOwn(endpoint, 'existingNode') ? endpoint.existingNode : mapping[endpoint.node], ...(endpoint.pin !== undefined ? {pin:endpoint.pin} : {})});

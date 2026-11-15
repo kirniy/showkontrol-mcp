@@ -9,7 +9,7 @@ test('previews nodes and validates translated titles without using preview IDs',
   const calls = [];
   const call = async (method,path,body) => {
     calls.push({method,path,body});
-    if (path === '/nodes') return {dryRun:true,id:'temporary-id',title:calls.length === 1 ? 'Timer' : 'Notify'};
+    if (path === '/nodes') return {dryRun:true,id:'temporary-id',title:calls.length === 1 ? 'Timer' : 'Notify',params:[{key:'mode',value:'Timer'}]};
     return {dryRun:true,ok:true};
   };
   const result = await buildLiveGraphPlan({nodes,connections},call);
@@ -23,9 +23,30 @@ test('previews nodes and validates translated titles without using preview IDs',
   assert.deepEqual({...result.mapping},{a:'Timer',b:'Notify'});
   assert.deepEqual(result.nodes,planNodes);
   assert.deepEqual(result.connections,translated);
-  assert.deepEqual(result.previews,[{ref:'a',title:'Timer'},{ref:'b',title:'Notify'}]);
+  assert.deepEqual(result.previews,[{ref:'a',title:'Timer',paramComparison:{requestedCount:1,issueCount:0,issues:[],truncated:false}},{ref:'b',title:'Notify',paramComparison:{requestedCount:0,issueCount:0,issues:[],truncated:false}}]);
   assert.deepEqual(result.validation,{dryRun:true,ok:true});
   assert.doesNotMatch(JSON.stringify(result),/temporary-id/);
+});
+
+test('reports preview parameter mismatches, missing values, and ambiguous duplicates without changing the plan', async () => {
+  const params = {coerced:'not_boolean', missing:1, duplicate:true, exact:{a:[1, false]}, absentValue:2};
+  const node = {ref:'a', request:'trigger', title:'Input', params};
+  const result = await buildLiveGraphPlan({nodes:[node], connections:[]}, async (method, path) => path === '/nodes'
+    ? {dryRun:true, title:'Input', params:[{key:'coerced',value:false},{key:'duplicate',value:true},{key:'duplicate',value:true},{key:'exact',value:{a:[1,false]}},{key:'absentValue'}]}
+    : {ok:true,dryRun:true});
+  assert.deepEqual(result.nodes[0].params, params);
+  assert.deepEqual(result.previews[0].paramComparison, {requestedCount:5,issueCount:4,issues:[{key:'coerced',kind:'mismatch'},{key:'missing',kind:'missing'},{key:'duplicate',kind:'ambiguous'},{key:'absentValue',kind:'ambiguous'}],truncated:false});
+  const unknown = await buildLiveGraphPlan({nodes:[node],connections:[]}, async (method,path) => path === '/nodes' ? {dryRun:true,title:'Input'} : {ok:true,dryRun:true});
+  assert.equal(unknown.previews[0].paramComparison.issueCount,5);
+  assert.ok(unknown.previews[0].paramComparison.issues.every(issue => issue.kind === 'ambiguous'));
+});
+
+test('caps preview parameter diagnostics while retaining the issue count', async () => {
+  const params = Object.fromEntries(Array.from({length:105}, (_, i) => [`key${i}`, i]));
+  const result = await buildLiveGraphPlan({nodes:[{ref:'a',request:'trigger',title:'Input',params}],connections:[]}, async (method,path) => path === '/nodes' ? {dryRun:true,title:'Input',params:[]} : {ok:true,dryRun:true});
+  assert.equal(result.previews[0].paramComparison.issueCount,105);
+  assert.equal(result.previews[0].paramComparison.issues.length,100);
+  assert.equal(result.previews[0].paramComparison.truncated,true);
 });
 
 test('rejects duplicate or unknown local references before any call', async () => {

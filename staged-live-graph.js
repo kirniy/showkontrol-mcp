@@ -1,3 +1,8 @@
+import {isDeepStrictEqual} from 'node:util';
+
+// Only errors constructed by the transport may expose their sanitized detail.
+export class SafeCallError extends Error {}
+
 // Create nodes before connections. A failed write may still have taken effect.
 export async function createStagedLiveGraph({nodes, connections}, call) {
   if (!nodes.length && !connections.length) throw Error('nodes and connections cannot both be empty');
@@ -17,19 +22,23 @@ export async function createStagedLiveGraph({nodes, connections}, call) {
   for (const [index, {ref, request, title, params}] of nodes.entries()) {
     let result;
     try { result = await call('POST', '/nodes', {request, title, ...(params !== undefined ? {params} : {}), dryRun:false}); }
-    catch { return partial('node', index, 'Node write failed or its response could not be read.'); }
+    catch (error) { return partial('node', index, error instanceof SafeCallError ? error.message : 'Node write failed or its response could not be read.'); }
     if (!result || typeof result !== 'object' || Array.isArray(result) || result.error || result.success === false || result.ok === false || result.dryRun === true || typeof result.id !== 'string' || !result.id.trim()) return partial('node', index, 'Node write returned an invalid or unsuccessful response.');
     if (seenIds.has(result.id)) return partial('node', index, 'Node write returned an ID already returned for another node.');
     seenIds.add(result.id);
     mapping[ref] = result.id;
     completedNodes.push({ref, id:result.id});
+    for (const [key, value] of Object.entries(params || {})) {
+      const matches = Array.isArray(result.params) ? result.params.filter(param => param && typeof param === 'object' && param.key === key) : [];
+      if (matches.length !== 1 || !Object.hasOwn(matches[0], 'value') || !isDeepStrictEqual(matches[0].value, value)) return partial('node', index, 'The created node did not return the requested parameter value. The app may have changed the value or omitted it from the response.');
+    }
   }
   const translate = endpoint => ({node:'existingNode' in endpoint ? endpoint.existingNode : mapping[endpoint.node], ...(endpoint.pin !== undefined ? {pin:endpoint.pin} : {})});
   for (const [index, {from, to}] of connections.entries()) {
     const connection = {from:translate(from), to:translate(to)};
     let result;
     try { result = await call('POST', '/connections', {...connection, dryRun:false}); }
-    catch { return partial('connection', index, 'Connection write failed or its response could not be read.'); }
+    catch (error) { return partial('connection', index, error instanceof SafeCallError ? error.message : 'Connection write failed or its response could not be read.'); }
     if (!result || typeof result !== 'object' || Array.isArray(result) || result.error || result.success === false || result.ok !== true || result.dryRun === true) return partial('connection', index, 'Connection write returned an invalid or unsuccessful response.');
     if (result.wire?.from?.node !== connection.from.node || result.wire?.to?.node !== connection.to.node) return partial('connection', index, 'Connection response did not match or identify the requested node IDs.');
     for (const side of ['from', 'to']) {

@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import {writeRpp} from './rpp.js';
 import {buildLiveGraphPlan} from './live-graph-plan.js';
-import {createStagedLiveGraph} from './staged-live-graph.js';
+import {createStagedLiveGraph, SafeCallError} from './staged-live-graph.js';
 import {inspectTimeline,setCueGraphNodeStoppedCopy,addTimelineCueCopy,inspectShowTimeline,addShowTimelineCueCopy,inspectCueGraph,copyCueGraphInShow,copyCueGraphBetweenTimelines,removeCueGraphCopy,addCueGraphSettingCopy,editCueGraphSettingCopy,editTimelineCueCopy,deleteTimelineCueCopy,createShowTrackCopy,editTimelineAudioClipCopy} from './timeline.js';
 import {writeMarkerCsv} from './marker-csv.js';
 import {inspectPatch,editPatchSettingCopy,editPatchGraphCopy,copyPatchNode} from './patch.js';
@@ -65,7 +65,7 @@ async function request(method, apiPath, body, accept = 'application/json', signa
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   let res;
   try { res = await fetch(url, {method, headers, ...(body !== undefined ? {body:JSON.stringify(body)} : {}), signal, redirect:'error'}); }
-  catch(e) { throw Error(`${method} ${url.pathname}: ${e.name === 'TimeoutError' ? 'timed out; the outcome of a write may be unknown' : 'connection failed'}; no automatic retry`); }
+  catch(e) { throw new SafeCallError(`${method} ${url.pathname}: ${e.name === 'TimeoutError' ? 'timed out; the outcome of a write may be unknown' : 'connection failed'}; no automatic retry`); }
   responseCredentials.set(res, {token, pair});
   return res;
 }
@@ -79,7 +79,7 @@ async function call(method, apiPath, body) {
   if (Number(res.headers.get('content-length')) > limit) { await res.body?.cancel(); throw Error('Response exceeds 5 MiB limit'); }
   const reader = res.body?.getReader(); const chunks = []; let size = 0;
   try { if (reader) while (true) { const {done,value} = await reader.read(); if(done) break; size += value.length; if(size > limit) throw Error('Response exceeds 5 MiB limit'); chunks.push(value); } }
-  catch(e) { await reader?.cancel().catch(()=>{}); if(signal.aborted&&signal.reason?.name==='TimeoutError')throw Error(`${method} ${apiPath}: response timed out${method==='GET'?'':'; the outcome of the write may be unknown'}; no automatic retry`); throw e; }
+  catch(e) { await reader?.cancel().catch(()=>{}); if(signal.aborted&&signal.reason?.name==='TimeoutError')throw new SafeCallError(`${method} ${apiPath}: response timed out${method==='GET'?'':'; the outcome of the write may be unknown'}; no automatic retry`); throw e; }
   const text = Buffer.concat(chunks).toString('utf8');
   let result = text;
   if (text) {try { result = JSON.parse(text); } catch { /* retain text */ }} else result = {};
@@ -93,7 +93,8 @@ async function call(method, apiPath, body) {
     const message = typeof result?.error === 'string' && result.error ? clean(result.error) : clean(res.statusText);
     const problems = method === 'PUT' && apiPath.split('?')[0] === '/patch' && Array.isArray(result?.problems)
       ? result.problems.slice(0, 10).filter(p => typeof p === 'string').map(clean) : [];
-    throw Error(`HTTP ${res.status}: ${message}${problems.length ? `; problems: ${JSON.stringify(problems)}` : ''} (${method} ${new URL(res.url).pathname})`);
+    const detail = `HTTP ${res.status}: ${message}${problems.length ? `; problems: ${JSON.stringify(problems)}` : ''} (${method} ${new URL(res.url).pathname})`;
+    throw res.status === 422 ? new SafeCallError(detail) : Error(detail);
   }
   return result;
 }
@@ -223,8 +224,8 @@ add('showkontrol_create_connection','Create or preview a connection using node I
 add('showkontrol_delete_connection','Delete a connection identified by its two endpoints. This changes live show routing.',{from:endpointSchema,to:endpointSchema},({from,to})=>call('DELETE','/connections',{from,to}),write);
 const patchPlanEndpointSchema=z.object({node:z.string().min(1),pin:z.union([z.string().min(1),z.number().int().nonnegative()]).optional()}).strict();
 const graphPlanEndpointSchema=z.union([patchPlanEndpointSchema,z.object({existingNode:z.string().refine(value=>value.trim().length>0, 'existingNode must be a nonempty ID'),pin:z.union([z.string().min(1),z.number().int().nonnegative()]).optional()}).strict()]);
-add('showkontrol_plan_live_graph','Preview configured nodes and resolve local references to final titles, then dry-run the patch. For an existing live node, use an existingNode endpoint with its ID. Nodes may be empty when connecting existing nodes; nodes and connections cannot both be empty. Preview IDs are temporary. The result is a plan, not an applied patch; inspect and submit it separately. App state can change between preview and apply.',{nodes:z.array(z.object({ref:z.string().min(1),request:z.string().min(1),title:z.string().min(1),params:z.record(z.string(),z.json()).optional()}).strict()).max(50),connections:z.array(z.object({from:graphPlanEndpointSchema,to:graphPlanEndpointSchema}).strict()).max(100)},args=>buildLiveGraphPlan(args,call),readOnly);
-add('showkontrol_create_staged_live_graph','Create live nodes sequentially, then connect their returned IDs. This mutates the live show and is not atomic. Stops on the first failed or uncertain write, without retry or rollback; inspect the partial report and live state. Existing endpoints use existingNode IDs. Maximum 50 nodes and 100 connections.',{nodes:z.array(z.object({ref:z.string().min(1),request:z.string().min(1),title:z.string().min(1),params:z.record(z.string(),z.json()).optional()}).strict()).max(50),connections:z.array(z.object({from:graphPlanEndpointSchema,to:graphPlanEndpointSchema}).strict()).max(100)},args=>createStagedLiveGraph(args,call),write);
+add('showkontrol_plan_live_graph','Preview configured nodes and resolve local references to final titles, then dry-run the patch. Inspect each preview paramComparison for changed, missing or ambiguous values even when validation succeeds. For an existing live node, use an existingNode endpoint with its ID. Nodes may be empty when connecting existing nodes; nodes and connections cannot both be empty. Preview IDs are temporary. The result is a plan, not an applied patch; inspect and submit it separately. App state can change between preview and apply.',{nodes:z.array(z.object({ref:z.string().min(1),request:z.string().min(1),title:z.string().min(1),params:z.record(z.string(),z.json()).optional()}).strict()).max(50),connections:z.array(z.object({from:graphPlanEndpointSchema,to:graphPlanEndpointSchema}).strict()).max(100)},args=>buildLiveGraphPlan(args,call),readOnly);
+add('showkontrol_create_staged_live_graph','Create live nodes sequentially, check requested parameters against each creation response, then connect their returned IDs. This mutates the live show and is not atomic. Stops on the first failed or uncertain write, without retry or rollback; inspect the partial report and live state. Existing endpoints use existingNode IDs. Maximum 50 nodes and 100 connections.',{nodes:z.array(z.object({ref:z.string().min(1),request:z.string().min(1),title:z.string().min(1),params:z.record(z.string(),z.json()).optional()}).strict()).max(50),connections:z.array(z.object({from:graphPlanEndpointSchema,to:graphPlanEndpointSchema}).strict()).max(100)},args=>createStagedLiveGraph(args,call),write);
 add('showkontrol_compose_live_patch','Submit a typed patch plan in one request. Connections use final node titles; parameters can change the node title. Metadata aliases are not supported. Defaults to dryRun true. Set dryRun false explicitly to submit a live change. Group and configured trigger-to-notification plans with pin 0 were applied and read back in ShowKontrol. Graph execution and other node types remain unverified. Writes are never retried.',{nodes:z.array(z.object({request:z.string().min(1),title:z.string().min(1),params:z.record(z.string(),z.json()).optional()}).strict()),connections:z.array(z.object({from:patchPlanEndpointSchema,to:patchPlanEndpointSchema}).strict()),dryRun:z.boolean().default(true)},({nodes,connections,dryRun})=>call('PUT','/patch',{dryRun,nodes,connections}),write);
 add('showkontrol_validate_patch','Dry-run a proposed patch specification without applying it. ShowKontrol validates nodes and connections before a later write. The server always sets dryRun to true.',{spec:z.record(z.string(),z.unknown())},({spec})=>call('PUT','/patch',{...spec,dryRun:true}),readOnly);
 add('showkontrol_get_patch','Read the complete running patch using the ShowKontrol REST API.',{},()=>call('GET','/patch'),readOnly);

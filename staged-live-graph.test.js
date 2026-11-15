@@ -11,7 +11,7 @@ test('staged live graph uses actual IDs and stops on every failed write', async 
     seen.push({method:req.method, url:req.url, body:JSON.parse(raw)});
     if (seen.length === failAt && !malformed) { res.writeHead(500, {'Content-Type':'application/json'}); res.end(JSON.stringify({error:'private value'})); return; }
     res.writeHead(200, {'Content-Type':'application/json'});
-    res.end(JSON.stringify(seen.length === failAt && malformed ? {} : req.url.endsWith('/nodes') ? {id:`actual-${duplicateId ? 1 : seen.length}`, title:'Same'} : {ok:true, wire:badWire ? {from:{node:'wrong'},to:{node:'wrong'}} : {from:{node:seen.at(-1).body.from.node,index:seen.at(-1).body.from.pin,pin:seen.at(-1).body.from.pin},to:{node:seen.at(-1).body.to.node,index:seen.at(-1).body.to.pin,pin:seen.at(-1).body.to.pin}}}));
+    res.end(JSON.stringify(seen.length === failAt && malformed ? {} : req.url.endsWith('/nodes') ? {id:`actual-${duplicateId ? 1 : seen.length}`, title:'Same', params:Object.entries(seen.at(-1).body.params || {}).map(([key,value]) => ({key,value}))} : {ok:true, wire:badWire ? {from:{node:'wrong'},to:{node:'wrong'}} : {from:{node:seen.at(-1).body.from.node,index:seen.at(-1).body.from.pin,pin:seen.at(-1).body.from.pin},to:{node:seen.at(-1).body.to.node,index:seen.at(-1).body.to.pin,pin:seen.at(-1).body.to.pin}}}));
   });
   await new Promise(resolve => mock.listen(0,'127.0.0.1',resolve)); t.after(() => mock.close());
   const client = new Client({name:'staged-test',version:'1'});
@@ -79,4 +79,60 @@ test('staged live graph verifies requested pin values and stops on unknown outco
   seen.length=0; responseWire={from:{node:'a',index:1,pin:'Out'},to:{node:'b',index:2,pin:'In'}};
   const result=await invoke({pin:1},{pin:'In'});
   assert.equal(result.status,'complete'); assert.equal(result.completedConnections.length,2); assert.equal(seen.length,2);
+});
+
+test('staged graph reports sanitized validation and transport errors without further writes', async t => {
+  const seen = []; let mode = 'validation';
+  const mock = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    seen.push({url:req.url, body:JSON.parse(raw)});
+    if (seen.length === 1) { res.writeHead(200, {'Content-Type':'application/json'}); res.end(JSON.stringify({id:'known-id'})); return; }
+    if (mode === 'validation') { res.writeHead(422, {'Content-Type':'application/json'}); res.end(JSON.stringify({error:'Invalid pin: token-secret and pair-secret\ninvalid', extra:'do not expose'})); }
+    else if (mode === 'connection') req.socket.destroy();
+    // Leave the timeout request open until the client aborts it.
+  });
+  await new Promise(resolve => mock.listen(0,'127.0.0.1',resolve)); t.after(() => { mock.closeAllConnections(); mock.close(); });
+  const client = new Client({name:'staged-errors-test',version:'1'});
+  await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:{...process.env,SHOWKONTROL_URL:`http://127.0.0.1:${mock.address().port}`,SHOWKONTROL_TIMEOUT_MS:'100',SHOWKONTROL_TOKEN:'token-secret',SHOWKONTROL_PAIR_KEY:'pair-secret'}})); t.after(() => client.close());
+  const args = {nodes:[{ref:'a',request:'action',title:'A'}],connections:[{from:{node:'a'},to:{existingNode:'b'}},{from:{node:'a'},to:{existingNode:'c'}}]};
+  for (mode of ['validation','connection','timeout']) {
+    seen.length = 0;
+    const report = JSON.parse((await client.callTool({name:'showkontrol_create_staged_live_graph',arguments:args})).content[0].text);
+    assert.equal(report.status,'partial');
+    assert.deepEqual(report.completedNodes,[{ref:'a',id:'known-id'}]);
+    assert.deepEqual(report.completedConnections,[]);
+    assert.deepEqual(report.failedStage,{stage:'connection',index:0});
+    assert.equal(seen.length,2);
+    assert.match(report.outcomeUnknown,/may have taken effect/);
+    if (mode === 'validation') assert.equal(report.error,'HTTP 422: Invalid pin: [redacted] and [redacted] invalid (POST /api/v1/connections)');
+    if (mode === 'connection') assert.match(report.error,/connection failed; no automatic retry/);
+    if (mode === 'timeout') assert.match(report.error,/timed out.*no automatic retry/);
+    assert.doesNotMatch(JSON.stringify(report),/token-secret|pair-secret|do not expose/);
+  }
+});
+
+test('staged graph checks requested node parameters before later writes', async t => {
+  const seen = []; let params;
+  const mock = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    seen.push(JSON.parse(raw));
+    res.writeHead(200, {'Content-Type':'application/json'});
+    res.end(JSON.stringify({id:'created-id', ...(params === undefined ? {} : {params})}));
+  });
+  await new Promise(resolve => mock.listen(0,'127.0.0.1',resolve)); t.after(() => mock.close());
+  const client = new Client({name:'staged-params-test',version:'1'});
+  await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:{...process.env,SHOWKONTROL_URL:`http://127.0.0.1:${mock.address().port}`}})); t.after(() => client.close());
+  const args = {nodes:[{ref:'a',request:'group',title:'A',params:{'node.stopped':'not_boolean',nested:{a:1,b:[true,null]}}},{ref:'b',request:'group',title:'B'}],connections:[{from:{node:'a'},to:{node:'b'}}]};
+  for (params of [undefined, [], [{key:'node.stopped',value:false}], [{key:'node.stopped',value:'not_boolean'},{key:'node.stopped',value:'not_boolean'},{key:'nested',value:{a:1,b:[true,null]}}], [{key:'node.stopped',value:'not_boolean'},{key:'nested',value:{a:1,b:[true,'null']}}]]) {
+    seen.length = 0;
+    const report = JSON.parse((await client.callTool({name:'showkontrol_create_staged_live_graph',arguments:args})).content[0].text);
+    assert.equal(report.status,'partial'); assert.deepEqual(report.failedStage,{stage:'node',index:0});
+    assert.deepEqual(report.completedNodes,[{ref:'a',id:'created-id'}]); assert.deepEqual(report.completedConnections,[]);
+    assert.match(report.error,/may have changed the value or omitted it/); assert.match(report.outcomeUnknown,/may have taken effect/);
+    assert.equal(seen.length,1);
+  }
+  params = [{key:'node.stopped',value:'not_boolean'},{key:'nested',value:{b:[true,null],a:1}}];
+  seen.length = 0;
+  const result = JSON.parse((await client.callTool({name:'showkontrol_create_staged_live_graph',arguments:{nodes:[args.nodes[0]],connections:[]}})).content[0].text);
+  assert.equal(result.status,'complete'); assert.equal(seen.length,1);
 });
