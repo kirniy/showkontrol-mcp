@@ -110,7 +110,7 @@ SHOWKONTROL_USE_LOCAL_PAIRING = "1"
 SHOWKONTROL_TOOLSETS = "live_read"
 ```
 
-With Claude Code, add `-e SHOWKONTROL_TOOLSETS=live_read` to `claude mcp add`. Codex can also filter one server's tools by name with `enabled_tools` and `disabled_tools` in its `[mcp_servers.showkontrol]` table. `live_read` registers tools by their annotations; the server enforces nothing beyond not registering the other tools, and ShowKontrol's own token and remote-control settings still decide what the API accepts.
+On 15 November 2026, Codex CLI 0.133.0 (`codex app-server`, `mcpServerStatus/list`) listed 120 tools from this server without the variable and 20 read-only tools with the `live_read` entry above, using a temporary `CODEX_HOME`; no model call was made, so the tool definitions Codex sends to a model were not seen. With Claude Code, add `-e SHOWKONTROL_TOOLSETS=live_read` to `claude mcp add`. Codex can also filter one server's tools by name with `enabled_tools` and `disabled_tools` in its `[mcp_servers.showkontrol]` table. `live_read` registers tools by their annotations; the server enforces nothing beyond not registering the other tools, and ShowKontrol's own token and remote-control settings still decide what the API accepts.
 
 ## Atomic session publication
 
