@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,readdir,symlink,link,rm,chmod} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,readdir,symlink,link,rm,chmod,realpath,rename} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import os from 'node:os';
@@ -102,8 +102,10 @@ test('candidates: unmapped, ambiguous, symlinked, special, unreadable, relative 
  assert.equal(lnk.sidecar.status,'symlink');
  assert.equal(hard.sidecar.status,'readable');assert.equal(hard.sourcePath.fileIndex,hard.sidecar.fileIndex);
  const merged=r.files[hard.sidecar.fileIndex];
+ // Sidecars are found below the resolved session directory (macOS temporary directories under /var resolve to /private/var); source paths are reported as written.
+ assert.equal(r.directory,await realpath(dir));
  assert.deepEqual(merged.paths,[
-  {kind:'sidecar',line:4,archivePath:'MEDIA/hard.wav',path:path.join(dir,'MEDIA','hard.wav')},
+  {kind:'sidecar',line:4,archivePath:'MEDIA/hard.wav',path:path.join(r.directory,'MEDIA','hard.wav')},
   {kind:'source_path',path:path.join(dir,'outside','hard-src.wav')},
   {kind:'source_path',path:path.join(dir,'outside','link-to-src.wav')}]);
  // The mock reports the byte count it read from the passed descriptor.
@@ -198,4 +200,25 @@ printf '{"format":{"duration":"%s"}}' "$n"
  const r=await preflightSessionAudio({directory:dir});
  assert.deepEqual(r.files.map(f=>[f.status,f.duration.status]),[['readable','known'],['readable','known'],['readable','known'],['readable','known'],['changed_during_check','not_checked'],['changed_during_check','not_checked']]);
  assert.deepEqual(r.clips.slice(4).map(c=>c.sidecar.status),['changed_during_check','changed_during_check']);
+});
+
+test('a session reached through a symlinked directory is resolved once; symlinks inside it are still refused',async t=>{
+ // Reproduces the macOS /var -> /private/var case on any platform.
+ const dir=await session(t,{map:['/a\tMEDIA/a.wav','/b\tMEDIA/b.wav'],track:[clip('/a'),clip('/b'),clip('@/outside/src.wav')],files:{'MEDIA/a.wav':'a','outside/src.wav':'src','outside/b.wav':'b'}});
+ await symlink(path.join(dir,'outside','b.wav'),path.join(dir,'MEDIA','b.wav'));
+ const alias=await mkdtemp(path.join(os.tmpdir(),'sk-audio-alias-'));t.after(()=>rm(alias,{recursive:true,force:true}));
+ const via=path.join(alias,'session');await symlink(dir,via);
+ const real=await realpath(dir);
+ const r=await preflightSessionAudio({directory:via,probeDurations:false});
+ assert.equal(r.directory,real);
+ const [a,b,src]=r.clips;
+ assert.equal(a.sidecar.status,'readable');
+ assert.deepEqual(r.files[a.sidecar.fileIndex].paths,[{kind:'sidecar',line:1,archivePath:'MEDIA/a.wav',path:path.join(real,'MEDIA','a.wav')}]);
+ assert.equal(b.sidecar.status,'symlink');assert.equal(b.sidecar.fileIndex,undefined);
+ assert.deepEqual(r.files[src.sourcePath.fileIndex].paths,[{kind:'source_path',path:path.join(dir,'outside','src.wav')}]);
+ // A symlinked MEDIA directory is refused for every sidecar, even though the session itself was reached through a symlink.
+ await rename(path.join(dir,'MEDIA'),path.join(dir,'real-media'));await symlink(path.join(dir,'real-media'),path.join(dir,'MEDIA'));
+ const swapped=await preflightSessionAudio({directory:via,probeDurations:false});
+ assert.deepEqual(swapped.clips.slice(0,2).map(c=>c.sidecar.status),['symlink','symlink']);
+ assert.equal(swapped.files.length,1);
 });

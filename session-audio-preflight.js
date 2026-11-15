@@ -10,7 +10,7 @@ const MAX_STDOUT=64*1024, MAX_STDERR=16*1024, MAX_WARNINGS=5, MAX_STREAMS=64, MA
 const DECIMAL=/^(?:\d+(?:\.\d*)?|\.\d+)$/;
 // ffprobe reads only the descriptor opened and checked here; no other protocol, so nested references cannot be opened.
 const PROBE_ARGS=['-v','warning','-protocol_whitelist','fd','-show_entries','format=duration,format_name:stream=index,codec_type,duration','-of','json','-fd','3','-i','fd:'];
-const TRIM_COMPARISON={status:'not_established',reason:'trim_semantics_unverified',detail:'No app-saved clip pairs trimStartMs or trimEndMs with media of known length, so their unit and whether they are source positions are unverified. No clip is compared with a duration.'};
+const TRIM_COMPARISON={status:'not_established',reason:'trim_semantics_unverified',detail:'One R27 app save holds two clips imported from WAV files of known four-second length, but the repository does not record their stored trim values, and one import cannot fix the unit of trimStartMs and trimEndMs or whether they are source positions in general. No clip is compared with a duration.'};
 
 const shown=value=>typeof value!=='string'?null:value.length>MAX_SHOWN_CHARS?{length:value.length,valueOmitted:true}:value;
 const seconds=value=>typeof value==='string'&&DECIMAL.test(value)&&Number.isFinite(Number(value))?Number(value):null;
@@ -160,7 +160,7 @@ export async function preflightSessionAudio({directory,sha256,probeDurations=tru
    'Two candidates are checked per clip: the media.map sidecar whose source path equals the clip file, and the clip file as a path on this computer. Which one ShowKontrol uses, and whether it searches elsewhere, is unverified.',
    'Readable means the file opened for reading at the time of the call. Sidecar symlinks are not followed; source path symlinks are.',
    'Duration is the ffprobe container duration of the opened file. Stream durations are reported separately and can differ. Unknown, unavailable or unchecked duration says nothing about whether a clip fits.',
-   'Clip trims are reported as observed strings and are not compared with any duration, because their unit and meaning are unverified.',
+   'Clip trims are reported as observed strings and are not compared with any duration, because their unit and meaning are not established.',
    'Media format, codec support, waveform caches, import, relinking and playback in ShowKontrol are not verified. A readable file with a known duration is not evidence of playback safety.'
   ]};
  if(Buffer.byteLength(JSON.stringify(result,null,2))>MAX_OUTPUT)throw Error('Preflight result exceeds output limit');

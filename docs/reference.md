@@ -222,14 +222,16 @@ The generated files have passed structural tests and an independent RPP parser. 
 
 ### Clip trims and media duration
 
-`showkontrol_preflight_session_audio` reports trims and durations side by side but does not compare them, because the repository has no evidence of what the clip trim attributes mean. The evidence is limited to the following:
+`showkontrol_preflight_session_audio` reports trims and durations side by side but does not compare them, because the available evidence does not establish what the clip trim attributes mean. The evidence is limited to the following:
 
 - The attribute names `trimStartMs` and `trimEndMs`. A name suggests milliseconds but does not establish the unit, or whether `trimEndMs` is a source position, a length, or an amount removed from the end.
 - One app save that reserialized a synthetic clip with these attributes. Its source path was empty, so no media length was involved.
-- The REAPER import test above. The app saved "the requested positions, source trims, and fades", but the saved values and their relation to REAPER `SOFFS` and `LENGTH` were not recorded in this repository.
+- The R27 27.0.11 session that the app saved after the REAPER import test above. It holds two clips imported from WAV files of known length, four seconds each, with byte-identical copies in its `MEDIA` folder. It is the only app-saved observation that pairs clip trims with media of known length. The app saved "the requested positions, source trims, and fades", but this repository does not record the stored `trimStartMs` and `trimEndMs` values or the `SOFFS` and `LENGTH` that requested them, and the session is not in the repository.
+
+  Even with those values, this one observation would not establish the general semantics. It covers one format, one import path and two clips. It does not show what the app stores when a trim is edited in the app, or what it allows at or beyond the end of the media. Where a clip starts at the beginning of its source, a `trimEndMs` source position and a length are the same number, so that clip cannot tell them apart.
 - The add and edit tools here require `trimEndMs` to exceed `trimStartMs` and treat the difference as the clip length for fade checks. That is a convention of these tools, not app evidence.
 
-To close the gap, run this capture in R27 and keep the files:
+To close the gap, first record the stored `offsetMs`, `trimStartMs` and `trimEndMs` of both clips in the existing session next to the RPP items that produced them. Then run this capture in R27 and keep the files:
 
 1. Use a PCM WAV with an exact sample count, such as 10.000 s at 48 kHz, so its length does not depend on a decoder.
 2. With `showkontrol_create_rpp`, create two items on one track: `sourceOffset: 2.5, duration: 4`, and `sourceOffset: 0, duration: 10`. Import, save, and record `offsetMs`, `trimStartMs` and `trimEndMs` for both clips.
