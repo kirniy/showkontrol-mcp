@@ -1,11 +1,9 @@
 // REAPER text project generator. ShowKontrol documents marker, cue, and media import.
 // This format does not represent ShowKontrol cue action graphs.
-import {writeFile, stat, access} from 'node:fs/promises';
+import {writeFile, stat, open} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import path from 'node:path';
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
-const execFileAsync = promisify(execFile);
+import {spawn} from 'node:child_process';
 function label(s) {
  if (/[\r\n\0"`]/.test(s)) throw Error('Names cannot contain quotes, backticks, line breaks, or NUL');
  return `"${s}"`;
@@ -67,17 +65,37 @@ export async function writeRpp({file, markers = [], tracks = [], mediaTracks = [
  return {file,markers:markers.length,tracks:tracks.length,mediaTracks:mediaTracks.length,bytes:Buffer.byteLength(text),...(warnings.length?{warnings}:{}),note:'Import this file in the Cue Editor; it does not contain cue action graphs. One R27 test imported generated WAV and cue items; playback, take volume, other media formats, and action graphs remain unverified.'};
 }
 
-// Probe only readable regular files. Never invoke a shell or permit network protocols.
-async function probeDuration(file, timeout) {
- try {
-  const {stdout} = await execFileAsync('ffprobe', ['-v','error','-protocol_whitelist','file','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1','-i',file], {timeout,maxBuffer:16384,encoding:'utf8',windowsHide:true});
-  const value = stdout.trim();
-  const duration = Number(value);
-  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) || !Number.isFinite(duration) || duration < 0) return {status:'unknown'};
-  return {status:'known',seconds:duration};
- } catch (error) {
-  return {status:error.code === 'ENOENT' ? 'unavailable' : 'unknown'};
- }
+// Probe only the descriptor opened and checked here. Allowing only the `fd` protocol stops a playlist or
+// manifest from making ffprobe open another file; nested `fd:` URLs other than the bare one are refused.
+const PROBE_ARGS = ['-v','error','-protocol_whitelist','fd','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1','-fd','3','-i','fd:'];
+const MAX_PROBE_OUTPUT = 16384;
+const FD_UNSUPPORTED = /^(?:Failed to set value '3' for option 'fd'|Unrecognized option 'fd'|fd:: Protocol not found)/m;
+function probeDuration(fd, timeout) {
+ return new Promise(resolve => {
+  let child, settled = false;
+  const out = [], err = [];
+  let outBytes = 0, errBytes = 0;
+  const done = result => { if (!settled) { settled = true; clearTimeout(timer); resolve(result); } };
+  // Stop the whole process group, so a wrapper script cannot keep running or hold the pipes open.
+  const stop = reason => {
+   try { if (process.platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL'); else child.kill('SIGKILL'); } catch { child.kill('SIGKILL'); }
+   child.stdout.destroy(); child.stderr.destroy();
+   done({status:'unknown',reason});
+  };
+  const timer = setTimeout(() => stop('timeout'), timeout);
+  try { child = spawn('ffprobe', PROBE_ARGS, {stdio:['ignore','pipe','pipe',fd], detached:process.platform !== 'win32', windowsHide:true}); }
+  catch { return done({status:'unknown',reason:'ffprobe_failed'}); }
+  child.on('error', error => done(error.code === 'ENOENT' ? {status:'unavailable'} : {status:'unknown',reason:'ffprobe_failed'}));
+  child.stdout.on('data', chunk => { outBytes += chunk.length; if (outBytes > MAX_PROBE_OUTPUT) stop('output_too_large'); else out.push(chunk); });
+  child.stderr.on('data', chunk => { if (errBytes < MAX_PROBE_OUTPUT) err.push(chunk.subarray(0, MAX_PROBE_OUTPUT - errBytes)); errBytes += chunk.length; });
+  child.on('close', code => {
+   if (code !== 0) return done({status:'unknown',reason:FD_UNSUPPORTED.test(Buffer.concat(err).toString('utf8')) ? 'fd_input_unsupported' : 'ffprobe_failed'});
+   const value = Buffer.concat(out).toString('utf8').trim();
+   const duration = Number(value);
+   if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) || !Number.isFinite(duration) || duration < 0) return done({status:'unknown',reason:'no_duration'});
+   done({status:'known',seconds:duration});
+  });
+ });
 }
 
 export async function preflightRppMedia({file, mediaTracks, probeDurations = false}) {
@@ -101,29 +119,38 @@ export async function preflightRppMedia({file, mediaTracks, probeDurations = fal
  for (const [trackIndex, track] of mediaTracks.entries()) for (const [itemIndex, item] of track.items.entries()) {
   // Do not normalize `..`: the filesystem must traverse any preceding symlink first.
   const checkedPath = path.isAbsolute(item.file) ? item.file : path.dirname(file) + path.sep + item.file;
-  let status, errorCode;
+  let status, errorCode, handle, identity;
   try {
-   const info = await stat(checkedPath); // Follows symlinks, including their errors.
+   const info = await stat(checkedPath, {bigint:true}); // Follows symlinks, including their errors.
    if (!info.isFile()) status = 'not_regular_file';
-   else { await access(checkedPath, constants.R_OK); status = 'readable'; }
+   else {
+    // O_NONBLOCK: a FIFO swapped in after stat must not block the open; fstat below rejects it.
+    handle = await open(checkedPath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    const opened = await handle.stat({bigint:true});
+    if (opened.isFile() && opened.dev === info.dev && opened.ino === info.ino) { status = 'readable'; identity = `${opened.dev}:${opened.ino}`; }
+    else status = 'changed_during_check';
+   }
   } catch (error) {
    errorCode = typeof error.code === 'string' ? error.code : 'UNKNOWN';
    status = errorCode === 'ENOENT' || errorCode === 'ENOTDIR' ? 'not_found_at_checked_path' : 'check_failed';
   }
   let duration = {status:probeDurations ? 'not_checked' : 'disabled'};
-  if (probeDurations && status === 'readable') {
-   if (durationCache.has(checkedPath)) duration = {...durationCache.get(checkedPath)};
-   else {
-    const remaining = Math.floor(deadline - performance.now());
-    if (remaining > 0) {
-     duration = await probeDuration(checkedPath, remaining);
-     durationCache.set(checkedPath, duration);
-     duration = {...duration};
+  try {
+   if (probeDurations && status === 'readable') {
+    // The same file reached by several paths is probed once.
+    if (durationCache.has(identity)) duration = {...durationCache.get(identity)};
+    else {
+     const remaining = Math.floor(deadline - performance.now());
+     if (remaining > 0) {
+      duration = await probeDuration(handle.fd, remaining);
+      durationCache.set(identity, duration);
+      duration = {...duration};
+     }
     }
    }
-  }
+  } finally { await handle?.close(); }
   if (duration.status === 'known') duration.exceedsSource = (item.sourceOffset ?? 0) + item.duration > duration.seconds;
   findings.push({trackIndex,itemIndex,file:item.file,checkedPath,status,...(errorCode ? {errorCode} : {}),duration});
  }
- return {file,findings,limitations:['Only the exact absolute path or path relative to the intended RPP directory was checked on this computer. ShowKontrol may search additional locations.','Readability is checked at this moment and can change. Symlinks are followed.','Duration is optional and depends on ffprobe; unknown or unavailable duration does not indicate whether the item fits. Media format, codec, and import into ShowKontrol are not verified.']};
+ return {file,findings,limitations:['Only the exact absolute path or path relative to the intended RPP directory was checked on this computer. ShowKontrol may search additional locations.','Readable means the file opened for reading at the time of the call; this can change. Symlinks are followed.','Duration is optional and depends on ffprobe reading the opened file through a descriptor (ffprobe with the fd protocol). ffprobe may open no other file, so a playlist or manifest that names other media reports an unknown duration. Unknown or unavailable duration does not indicate whether the item fits. Media format, codec, and import into ShowKontrol are not verified.']};
 }
