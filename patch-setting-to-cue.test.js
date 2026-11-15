@@ -7,3 +7,18 @@ test('copy app-saved notification settings to a matching cue action',async t=>{
  await assert.rejects(copyPatchSettingToCueShowCopy({...args,destination:path.join(dir,'stale'),templateSha256:'0'.repeat(64)}),/Template changed/);await assert.rejects(copyPatchSettingToCueShowCopy(args),/EEXIST/);
  const bad=donor.replace('Stored action fixture','n<![CDATA[12]]>');await writeFile(template,bad);const badInfo=await inspectXml({file:template});await assert.rejects(copyPatchSettingToCueShowCopy({...args,destination:path.join(dir,'ref'),templateSha256:badInfo.sha256}),/unsupported node references/);await assert.rejects(readFile(path.join(dir,'ref')),/ENOENT/);
 });
+test('copy router target only when it identifies a destination patch router',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-router-setting-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'in.skshow'),template=path.join(dir,'donor.skf'),name='content/Track.sktl',part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const timeline='<sktimeline version="1"><cue id="c1"><graph><node id="n1" type="action"><settings/></node></graph></cue></sktimeline>';
+ const show=patch=>`<skshow>${part(name,timeline)}${part('patch.skf',patch)}</skshow>`,donor=setting=>`<showkontrol version="2"><graph><node id="n228" type="action"><settings>${setting}</settings></node></graph></showkontrol>`,setting=value=>`<setting key="route.router_target">${value}</setting>`;
+ const run=async (patch,xml,label,success=false)=>{await writeFile(source,show(patch));await writeFile(template,donor(xml));const a=await inspectShowTimeline({file:source,name}),b=await inspectXml({file:template}),destination=path.join(dir,label),args={source,destination,sha256:a.sha256,name,cueId:'c1',nodeId:'n1',template,templateFormat:'skf',templateSha256:b.sha256,templateNodeId:'n228',key:'route.router_target'};if(success){const result=await copyPatchSettingToCueShowCopy(args);assert.equal(result.value,'n8');assert.equal((await inspectCueGraph({file:destination,format:'skshow',name,cueId:'c1'})).graph.nodes[0].settings[0].value,'n8');}else{await assert.rejects(copyPatchSettingToCueShowCopy(args),/router target/i);await assert.rejects(readFile(destination),/ENOENT/);}};
+ const patch=node=>`<showkontrol version="2"><graph>${node}</graph></showkontrol>`,router='<node id="n8" type="router"/>';
+ await run(patch(router),setting('n8'),'valid',true);
+ await run(patch(''),setting('n8'),'missing');
+ await run(patch('<node id="n8" type="action"/>'),setting('n8'),'wrong-type');
+ await run(patch(router+router),setting('n8'),'duplicate');
+ await run(patch(router),setting('n8 n9'),'extra-value');
+ await run(patch(router),setting(' n8 '),'whitespace');
+ await run(patch(router),'<setting key="route.router_target" ref="n9">n8</setting>','extra-attribute');
+});
