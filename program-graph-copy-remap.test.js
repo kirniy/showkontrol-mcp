@@ -21,3 +21,18 @@ test('remaps before insertion, preserves other content, and guards failures',asy
  const linked=one.replace('<item start="1" name="B" notes=""/>','<item start="1" name="n10" notes=""/>');await writeFile(f('linked.skpr'),linked);await assert.rejects(copy({...replace,source:f('linked.skpr'),sha256:hash('sha256',linked),destination:f('linked-out.skpr'),replaceExisting:true}),/referenced outside/);
  await assert.rejects(copy(args),{code:'EEXIST'});assert.equal(await readFile(args.destination,'utf8'),one);assert.ok(!(await readdir(dir)).some(n=>n.endsWith('.tmp')));await assert.rejects(readFile(f('bad.skpr')),{code:'ENOENT'});
 });
+
+test('replacement rejects references in target parts but ignores the replaced Program part',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'graph-replace-'));t.after(()=>rm(dir,{recursive:true,force:true}));const f=n=>path.join(dir,n);
+ const program='<skprogram version="1"><item start="0" name="A" notes=""><graph><node id="n7" type="x"/></graph></item></skprogram>';
+ const donor='<sktimeline version="1"><layers/><cue id="c"><graph><node id="n1" type="x"/></graph></cue></sktimeline>';
+ const part=(name,xml)=>`<part name="${name}" md5="${hash('md5',xml)}">${Buffer.from(xml).toString('base64')}</part>`;
+ const canonical=part('content/Program.skpr',program),safe=`<skshow>${canonical}</skshow>`;
+ await Promise.all([writeFile(f('source.skpr'),program),writeFile(f('donor.sktl'),donor),writeFile(f('target.skshow'),safe)]);
+ const args={source:f('source.skpr'),destination:f('out.skpr'),sha256:hash('sha256',program),index:0,donor:f('donor.sktl'),donorSha256:hash('sha256',donor),donorCueId:'c',target:f('target.skshow'),targetSha256:hash('sha256',safe),replaceExisting:true};
+ await copy(args);assert.match(await readFile(args.destination,'utf8'),/id="n8"/);
+ const patch='<showkontrol><graph><node id="n20" type="x"><settings><setting key="ref">n<![CDATA[7]]></setting></settings></node></graph></showkontrol>';
+ const unsafe=`<skshow>${canonical}${part('patch.skf',patch)}</skshow>`;await writeFile(args.target,unsafe);
+ await assert.rejects(copy({...args,destination:f('rejected.skpr'),targetSha256:hash('sha256',unsafe)}),/referenced outside/);
+ await assert.rejects(readFile(f('rejected.skpr')),{code:'ENOENT'});assert.ok(!(await readdir(dir)).some(n=>n.endsWith('.tmp')));
+});
