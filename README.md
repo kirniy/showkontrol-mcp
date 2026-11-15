@@ -29,21 +29,21 @@ For example, a client that supports the common `mcpServers` configuration can us
 }
 ```
 
-Replace both paths with paths on the target computer. Install the project there with `npm ci`. The exact configuration file and restart procedure depend on the MCP client. This example uses local pairing; enable it in ShowKontrol first. For a network connection, set `SHOWKONTROL_URL` and supply `SHOWKONTROL_TOKEN` through the client's private environment. Never commit a token.
+Replace both paths with paths on the target computer. Run `command -v node` to find the Node.js executable. Install the project there with `npm ci`. The exact configuration file and restart procedure depend on the MCP client. This example uses local pairing; enable it in ShowKontrol first. For a network connection, set `SHOWKONTROL_URL` and supply `SHOWKONTROL_TOKEN` through the client's private environment. Never commit a token.
 
 For Codex CLI, replace the two example paths and run:
 
 ```sh
-codex mcp add --env SHOWKONTROL_USE_LOCAL_PAIRING=1 showkontrol -- /absolute/path/to/node /absolute/path/to/showkontrol-mcp/server.js
+codex mcp add --env SHOWKONTROL_USE_LOCAL_PAIRING=1 showkontrol -- "/absolute/path/to/node" "/absolute/path/to/showkontrol-mcp/server.js"
 ```
 
 For Claude Code, replace the two example paths and run:
 
 ```sh
-claude mcp add --scope user --transport stdio showkontrol -e SHOWKONTROL_USE_LOCAL_PAIRING=1 -- /absolute/path/to/node /absolute/path/to/showkontrol-mcp/server.js
+claude mcp add --scope user --transport stdio showkontrol -e SHOWKONTROL_USE_LOCAL_PAIRING=1 -- "/absolute/path/to/node" "/absolute/path/to/showkontrol-mcp/server.js"
 ```
 
-These commands register a local stdio server. Restart the client if it does not show the tools. Use `showkontrol_discover` to check the connection. The CLI options were checked against the installed clients; these exact registration commands have not been run on a clean computer.
+These commands register a local stdio server. Use `codex mcp get showkontrol` or `claude mcp get showkontrol` to inspect the registration. The output can include environment values; do not share it if it contains credentials. Restart the client if it does not show the tools. Use `showkontrol_discover` to check the connection. The CLI options were checked against the installed clients; these exact registration commands have not been run on a clean computer.
 
 Environment variables:
 
@@ -83,6 +83,7 @@ No credentials are needed for offline file tools.
 - `showkontrol_copy_cue_graph_show_copy`: copy a graph from a cue in the same or another show to an empty cue in a new show archive. Set `sourceName` to select the source timeline and `name` for the target timeline. For a separate show, also set `template` and its inspected `templateSha256`. It supports only the group input, trigger and action node types seen in the test fixture. It scans target `.skf`, `.sktl`, and `.sksc` XML parts for node IDs and remaps graph nodes and connections. It rejects unsupported references. Reopening its output in the app remains unverified.
 - `showkontrol_copy_cue_graph_timeline_copy`: copy a supported graph between standalone timeline files. The ID scan covers the target timeline only. Check the rest of the show for collisions before using the copy in a show. App acceptance remains unverified.
 - `showkontrol_copy_cue_graph_node_show_copy`: copy a supported node into an existing cue graph in a new show copy. It copies no wires and rejects ID-like internal references. App acceptance remains unverified.
+- `showkontrol_remove_cue_graph_node_copy`: remove an unreferenced node from an offline cue graph copy. The reference check is conservative and covers supported XML parts only. External references and app acceptance are not verified.
 - `showkontrol_copy_cue_graphs_show_copy`: copy up to 100 supported cue graphs into one show copy. The destination filesystem must support hard links. App acceptance remains unverified.
 - `showkontrol_inspect_show_timeline`, `showkontrol_add_show_timeline_cue_copy`: inspect a named `.sktl` part and add a simple cue in a new `.skshow` copy. The archive checksum must match. The tool validates part checksums and updates the changed part checksum. Other parts are preserved. ShowKontrol displayed a generated cue in a separate test session.
 - `showkontrol_edit_timeline_cue_copy`, `showkontrol_delete_timeline_cue_copy`: edit or delete a cue in a new copy. Moving or editing a cue preserves its action graph. Deleting a cue with a graph requires `deleteGraph: true`. External references are not checked. App acceptance remains unverified.

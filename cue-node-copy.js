@@ -1,6 +1,6 @@
 import {readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';
 import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';
-import {SaxesParser} from 'saxes';
+import {hasXmlReference} from './xml-references.js';
 function walk(node,fn){fn(node);for(const child of node.children)walk(child,fn);}
 function graphParts(xml,cueId){
  const root=parseXmlSpans(xml),path=['sktimeline',{name:'cue',attributes:{id:cueId}}];if(root.name!=='sktimeline'||root.attributes.version!=='1')throw Error('Expected a version 1 timeline');
@@ -23,9 +23,7 @@ export async function copyCueGraphNodeShowCopy({source,destination,sha256,name,c
  let max=0;for(const part of target.parts.filter(p=>/\.(?:skf|sktl|sksc)$/i.test(p.name))){const root=parseXmlSpans(readSnapshotPart({snapshot:target,name:part.name}).text);walk(root,n=>{if(n.name==='node'&&/^n\d+$/.test(n.attributes.id||'')){const num=Number(n.attributes.id.slice(1));if(!Number.isSafeInteger(num)||num>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,num);}});}
  const donorId=Number(nodeId.slice(1));if(!Number.isSafeInteger(donorId)||donorId>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,donorId);if(max>=1000000000)throw Error('No node IDs remain in the supported range');const newNodeId=`n${max+1}`;
  const {copy}=replaceId(donorXml,node,newNodeId);
- const ref=/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/,p=new SaxesParser();let depth=0;
- p.on('opentag',tag=>{depth++;for(const [key,value] of Object.entries(tag.attributes))if(!(depth===1&&key==='id')&&ref.test(value))throw Error('Node contains unsupported internal references');});
- p.on('text',value=>{if(ref.test(value))throw Error('Node contains unsupported internal references');});p.on('cdata',value=>{if(ref.test(value))throw Error('Node contains unsupported internal references');});p.on('closetag',()=>depth--);p.write(copy).close();
+ if(hasXmlReference(copy,/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/,{ignoreRootId:true}))throw Error('Node contains unsupported internal references');
  const modified=xml.slice(0,targetGraph.graph.closeStart)+copy+xml.slice(targetGraph.graph.closeStart),after=graphParts(modified,cueId),copied=after.nodes.filter(n=>n.attributes.id===newNodeId);
  if(copied.length!==1||after.nodes.length!==targetGraph.nodes.length+1||modified.slice(copied[0].start,copied[0].end)!==copy||JSON.stringify({...copied[0].attributes,id:nodeId})!==JSON.stringify(node.attributes))throw Error('Copied node did not match template');
  const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});return {...result,nodeId,newNodeId,note:'Copied an unconnected fixture-supported node. Internal references, hardware dependencies and ShowKontrol acceptance require validation.'};
