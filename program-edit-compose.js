@@ -2,7 +2,7 @@ import {mkdtemp,rm,link,readFile,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {extractShowProgramCopy,createProgramCopy,attachShowProgramCopy,inspectShowProgram,editProgramItemGraphSettingCopy,extractProgramTimelineCopy,embedProgramTimelineCopy} from './program.js';
-import {addTimelineCueCopy,deleteTimelineCueCopy,editTimelineCueCopy,editCueGraphSettingCopy,copyCueGraphBetweenTimelinesWithShow,removeCueGraphCopy,addTimelineAudioLaneCopy,addTimelineAudioClipCopy,editTimelineAudioClipCopy,removeTimelineAudioClipCopy,removeTimelineAudioLaneCopy,laneNameReference} from './timeline.js';
+import {addTimelineCueCopy,deleteTimelineCueCopy,editTimelineCueCopy,editCueGraphSettingCopy,copyCueGraphBetweenTimelinesWithShow,removeCueGraphCopy,addTimelineAudioLaneCopy,addTimelineAudioClipCopy,editTimelineAudioClipCopy,removeTimelineAudioClipCopy,removeTimelineAudioLaneCopy,renameTimelineAudioLaneCopy,moveTimelineAudioLaneCopy,laneNameReference,checkLaneNamesUnreferenced,checkLaneOrderUnreferenced} from './timeline.js';
 import {inspectXml,readShowSnapshot,readSnapshotPart,addShowPart} from './xml-copy.js';
 import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
 import {copyProgramItemGraphRemappedCopy} from './program-graph-copy-remap.js';
@@ -169,7 +169,20 @@ async function checkLaneNameReferences(program,laneName,source,sha256){
   if(found)throw Error(`Audio lane name ${JSON.stringify(laneName)} appears literally in ${part.name}; it may be a reference`);
  }
 }
-const audioActions=['add_timeline_audio_lane','add_timeline_audio_clip','edit_timeline_audio_clip','remove_timeline_audio_clip','remove_timeline_audio_lane'];
+// A renamed or moved lane is checked in the whole staged Program and the show's other parts, including Transitions plans.
+async function checkProgramLaneReferences(program,source,sha256,check){
+ const show=await readShowSnapshot({file:source});if(show.sha256!==sha256)throw Error('Source changed since inspection');if(show.parts.some(p=>!p.valid))throw Error('A part MD5 does not match');
+ const items=[{name:'content/Program.skpr',xml:await readFile(program,'utf8')}],names=new Set();
+ for(const part of show.parts){
+  if(!/\.(?:skf|sktl|sksc|skpr|skcp|sktr)$/i.test(part.name))continue;
+  const key=part.name.toLowerCase();if(names.has(key))throw Error('Duplicate supported XML part name');names.add(key);
+  if(key==='content/program.skpr')continue;
+  let xml;try{xml=readSnapshotPart({snapshot:show,name:part.name}).text;}catch{throw Error(`A part that may reference lanes cannot be read: ${part.name}`);}
+  items.push({name:part.name,xml});
+ }
+ check(items);
+}
+const audioActions=['add_timeline_audio_lane','add_timeline_audio_clip','edit_timeline_audio_clip','remove_timeline_audio_clip','remove_timeline_audio_lane','rename_timeline_audio_lane','move_timeline_audio_lane'];
 
 // Allocate beyond every numeric node ID in both the show and staged Program.
 async function graphAllocationMaximum(program,source,sha256){
@@ -468,6 +481,8 @@ export async function composeProgramEditsCopy(args){
   else if(op.action==='add_timeline_audio_clip')keys(op,['action','index','audioIndex','clip']);
   else if(op.action==='edit_timeline_audio_clip')keys(op,['action','index','audioIndex','clipIndex','attributes']);
   else if(op.action==='remove_timeline_audio_clip')keys(op,['action','index','audioIndex','clipIndex']);
+  else if(op.action==='rename_timeline_audio_lane')keys(op,['action','index','audioIndex','laneName','newName']);
+  else if(op.action==='move_timeline_audio_lane')keys(op,['action','index','audioIndex','laneName','toIndex']);
   else if(op.action==='remove_timeline_audio_lane'){keys(op,['action','index','audioIndex'],['removeClips']);if(op.removeClips!==undefined&&typeof op.removeClips!=='boolean')throw Error('removeClips must be a boolean');}
   else if(op.action==='delete_timeline_cue'){keys(op,['action','index','cueId'],['deleteGraph']);if(op.deleteGraph!==undefined&&typeof op.deleteGraph!=='boolean')throw Error('deleteGraph must be a boolean');}
   else if(op.action==='edit_timeline_cue'){
@@ -564,15 +579,23 @@ export async function composeProgramEditsCopy(args){
      ?await editTimelineAudioClipCopy({...common,audioIndex,clipIndex,attributes:operation.attributes})
      :operation.action==='remove_timeline_audio_clip'
      ?await removeTimelineAudioClipCopy({...common,audioIndex,clipIndex})
+     :operation.action==='rename_timeline_audio_lane'
+     ?await renameTimelineAudioLaneCopy({...common,audioIndex,laneName:operation.laneName,newName:operation.newName})
+     :operation.action==='move_timeline_audio_lane'
+     ?await moveTimelineAudioLaneCopy({...common,audioIndex,laneName:operation.laneName,toIndex:operation.toIndex})
      :await removeTimelineAudioLaneCopy({...common,audioIndex,removeClips:operation.removeClips??false});
     current=await embedProgramTimelineCopy({source:program,destination,sha256:current.sha256,index,donor:edited,donorSha256:changed.sha256,replaceExisting:true});
     if(operation.action==='remove_timeline_audio_lane'&&changed.removed.name)await checkLaneNameReferences(destination,changed.removed.name,source,sha256);
+    if(operation.action==='rename_timeline_audio_lane')await checkProgramLaneReferences(destination,source,sha256,items=>checkLaneNamesUnreferenced(items,[operation.laneName,operation.newName]));
+    if(operation.action==='move_timeline_audio_lane')await checkProgramLaneReferences(destination,source,sha256,checkLaneOrderUnreferenced);
     collect({note:changed.note});
     const receipt={operationIndex,action:operation.action,itemIndex:index,audioIndex:changed.audioIndex};
     if(operation.action==='add_timeline_audio_lane')Object.assign(receipt,{laneName:changed.laneName,follow:changed.follow,position:changed.position});
     else if(operation.action==='add_timeline_audio_clip')Object.assign(receipt,{clipIndex:changed.clipIndex,attributes:operation.clip});
     else if(operation.action==='edit_timeline_audio_clip')Object.assign(receipt,{clipIndex,attributes:changed.attributes,previous:changed.previous});
     else if(operation.action==='remove_timeline_audio_clip')Object.assign(receipt,{clipIndex,removed:changed.removed});
+    else if(operation.action==='rename_timeline_audio_lane')Object.assign(receipt,{previousName:changed.previousName,laneName:changed.laneName});
+    else if(operation.action==='move_timeline_audio_lane')Object.assign(receipt,{fromIndex:changed.fromIndex,laneName:changed.laneName,indexMap:changed.indexMap});
     else Object.assign(receipt,{removed:changed.removed,removedClips:changed.removedClips});
     audioOperations.push(receipt);
    }else if(operation.action==='edit_graph_setting'){

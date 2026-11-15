@@ -2,7 +2,7 @@ import {cloneMediaTrackCopy} from './clone-media-track.js';
 import {mkdtemp, link, rm} from 'node:fs/promises';
 import path from 'node:path';
 import {inspectShow} from './xml-copy.js';
-import {createShowTrackCopy, addShowTimelineCueCopy, copyCueGraphInShow, editCueGraphSettingCopy, inspectShowTimeline, editTimelineAudioClipCopy, addTimelineAudioLaneCopy, addTimelineAudioClipCopy, removeTimelineAudioClipCopy, removeTimelineAudioLaneCopy, editTimelineCueCopy, deleteTimelineCueCopy, readTrackTemplateDonor} from './timeline.js';
+import {createShowTrackCopy, addShowTimelineCueCopy, copyCueGraphInShow, editCueGraphSettingCopy, inspectShowTimeline, editTimelineAudioClipCopy, addTimelineAudioLaneCopy, addTimelineAudioClipCopy, removeTimelineAudioClipCopy, removeTimelineAudioLaneCopy, renameTimelineAudioLaneCopy, moveTimelineAudioLaneCopy, editTimelineCueCopy, deleteTimelineCueCopy, readTrackTemplateDonor} from './timeline.js';
 import {addShowSetlistTrackCopy, editShowSetlistCopy, inspectShowSetlist} from './setlist.js';
 import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
 import {editTimelineLayerCopy} from './layers.js';
@@ -34,7 +34,7 @@ async function planAudioRemovals({file, name, audioClips, audioClipEdits, audioC
 }
 
 // Compose only structures supported by the existing offline writers.
-export async function composeShowCopy({source, destination, sha256, templateName, templateDonor, mediaClone, trackName, partName, existingPartName, cues, donor, set, layerOperations, audioClipEdits, audioLanes, audioClips, audioClipRemovals, audioLaneRemovals, cueRemovals, cueEdits, graphSettingEdits}) {
+export async function composeShowCopy({source, destination, sha256, templateName, templateDonor, mediaClone, trackName, partName, existingPartName, cues, donor, set, layerOperations, audioClipEdits, audioLanes, audioClips, audioClipRemovals, audioLaneRemovals, audioLaneOperations, cueRemovals, cueEdits, graphSettingEdits}) {
  if (!path.isAbsolute(source) || !path.isAbsolute(destination) || path.resolve(source) === path.resolve(destination)) throw Error('Source and destination must be different absolute paths');
  const existing = existingPartName !== undefined;
  const cloning = mediaClone !== undefined;
@@ -47,6 +47,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
  if (audioClipEdits !== undefined && (!Array.isArray(audioClipEdits) || audioClipEdits.length > 100)) throw Error('Audio clip edits must be an array of at most 100 entries');
  if (audioClipRemovals !== undefined && (!Array.isArray(audioClipRemovals) || audioClipRemovals.length > 100 || audioClipRemovals.some(item => !item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).some(k => !['audioIndex', 'clipIndex'].includes(k)) || !Number.isSafeInteger(item.audioIndex) || item.audioIndex < 0 || !Number.isSafeInteger(item.clipIndex) || item.clipIndex < 0))) throw Error('Audio clip removals must be an array of at most 100 {audioIndex, clipIndex} entries');
  if (audioLaneRemovals !== undefined && (!Array.isArray(audioLaneRemovals) || audioLaneRemovals.length > 100 || audioLaneRemovals.some(item => !item || typeof item !== 'object' || Array.isArray(item) || Object.keys(item).some(k => !['audioIndex', 'removeClips'].includes(k)) || !Number.isSafeInteger(item.audioIndex) || item.audioIndex < 0 || (item.removeClips !== undefined && typeof item.removeClips !== 'boolean')))) throw Error('Audio lane removals must be an array of at most 100 {audioIndex, removeClips?} entries');
+ if (audioLaneOperations !== undefined && (!Array.isArray(audioLaneOperations) || audioLaneOperations.length > 100 || audioLaneOperations.some(item => !item || typeof item !== 'object' || Array.isArray(item) || !['rename', 'move'].includes(item.operation) || Object.keys(item).some(k => !['operation', 'audioIndex', 'laneName', item.operation === 'rename' ? 'newName' : 'toIndex'].includes(k)) || !Number.isSafeInteger(item.audioIndex) || item.audioIndex < 0 || typeof item.laneName !== 'string' || !item.laneName || (item.operation === 'rename' ? typeof item.newName !== 'string' : !Number.isSafeInteger(item.toIndex) || item.toIndex < 0)))) throw Error('Audio lane operations must be an array of at most 100 {operation: rename, audioIndex, laneName, newName} or {operation: move, audioIndex, laneName, toIndex} entries');
  if (cueRemovals !== undefined && (!Array.isArray(cueRemovals) || cueRemovals.length > 100 || cueRemovals.some(item => !item || typeof item !== 'object' || Array.isArray(item) || ((typeof item.cueId !== 'string' || !item.cueId) && (typeof item.sourceCueId !== 'string' || !item.sourceCueId)) || (item.cueId !== undefined && item.sourceCueId !== undefined) || (item.deleteGraph !== undefined && typeof item.deleteGraph !== 'boolean') || Object.keys(item).some(key => !['cueId', 'sourceCueId', 'deleteGraph'].includes(key))))) throw Error('Cue removals must be an array of at most 100 entries with a cue ID and optional deleteGraph boolean');
  if (!existing && !(cloning && mediaClone.cueMode === 'copy') && cueRemovals?.length) throw Error('New tracks contain no existing cues to remove');
  if (cueEdits !== undefined && (!Array.isArray(cueEdits) || cueEdits.length > 100)) throw Error('Cue edits must be an array of at most 100 entries');
@@ -55,7 +56,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
  if (!existing && !(cloning && mediaClone.cueMode === 'copy') && cueEdits?.length) throw Error('New tracks contain no existing cues to edit');
  if (cues === undefined) cues = [];
  if (!Array.isArray(cues) || cues.length > 100) throw Error('Provide at most 100 cues');
- if (existing && !cues.length && !layerOperations?.length && !audioClipEdits?.length && !audioLanes?.length && !audioClips?.length && !audioClipRemovals?.length && !audioLaneRemovals?.length && !cueRemovals?.length && !cueEdits?.length && !graphSettingEdits?.length) throw Error('Existing track requires at least one edit or new cue');
+ if (existing && !cues.length && !layerOperations?.length && !audioClipEdits?.length && !audioLanes?.length && !audioClips?.length && !audioClipRemovals?.length && !audioLaneRemovals?.length && !audioLaneOperations?.length && !cueRemovals?.length && !cueEdits?.length && !graphSettingEdits?.length) throw Error('Existing track requires at least one edit or new cue');
  const validDonor = value => value === undefined || value === null || (typeof value === 'object' && path.isAbsolute(value.file || '') && value.sha256 && value.name && value.cueId && (value.allowOpaqueNodeText === undefined || typeof value.allowOpaqueNodeText === 'boolean'));
  if (!validDonor(donor) || cues.some(cue => !validDonor(cue?.donor))) throw Error('Donor requires an absolute file path, SHA-256, timeline name and cue ID');
  for (const cue of cues) {
@@ -113,6 +114,21 @@ export async function composeShowCopy({source, destination, sha256, templateName
    removedAudioLanes[order] = {audioIndex, attributes: removed.removed, clips: removed.removedClips};
   }
   for (const lane of addedAudioLanes) lane.audioIndex -= audioPlan.lanes.filter(r => r.audioIndex < lane.audioIndex).length;
+  // Lane renames and moves run after every other audio operation, in order; each index addresses the lanes left by the previous step.
+  const laneOperations = [];
+  for (const [operationIndex, op] of (audioLaneOperations || []).entries()) {
+   const common = {source: current, sha256: currentHash, format: 'skshow', name: partName, audioIndex: op.audioIndex, laneName: op.laneName};
+   if (op.operation === 'rename') {
+    const renamed = await step(next => renameTimelineAudioLaneCopy({...common, destination: next, newName: op.newName}));
+    for (const lane of addedAudioLanes) if (lane.audioIndex === op.audioIndex) lane.finalLaneName = renamed.laneName;
+    laneOperations.push({operationIndex, operation: 'rename', audioIndex: op.audioIndex, previousName: renamed.previousName, laneName: renamed.laneName});
+   } else {
+    const moved = await step(next => moveTimelineAudioLaneCopy({...common, destination: next, toIndex: op.toIndex}));
+    const map = new Map(moved.indexMap.map(m => [m.from, m.to]));
+    for (const lane of addedAudioLanes) if (map.has(lane.audioIndex)) lane.audioIndex = map.get(lane.audioIndex);
+    laneOperations.push({operationIndex, operation: 'move', fromIndex: moved.fromIndex, audioIndex: moved.audioIndex, laneName: moved.laneName, indexMap: moved.indexMap});
+   }
+  }
   const resolveId = (item, field, sourceField, mapping) => {
    if (cloning) {
     if (item?.[field] !== undefined || typeof item?.[sourceField] !== 'string' || !Object.hasOwn(mapping || {}, item[sourceField])) throw Error(`Clone requires a valid ${sourceField} selector`);
@@ -188,7 +204,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
   if (templateDonor !== undefined) await readTrackTemplateDonor(templateDonor);
   await link(current, destination); published = true;
   if (cloneReceipt) { const {warnings: ignored, ...receipt} = cloneReceipt; cloneReceipt = receipt; }
-  result = {destination, sha256: currentHash, ...(existing ? {existingPartName} : {trackName, partName}), cues: added, audioLanes: addedAudioLanes, ...(editedAudioClips.length ? {audioClipEdits: editedAudioClips} : {}), ...(removedAudioClips.length || removedAudioLanes.length ? {audioRemovals: {clips: removedAudioClips, lanes: removedAudioLanes}} : {}), ...(cloneReceipt ? {mediaClone: {...cloneReceipt, destination}} : {}), warnings, ...(set ? {set} : {}), note: 'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};
+  result = {destination, sha256: currentHash, ...(existing ? {existingPartName} : {trackName, partName}), cues: added, audioLanes: addedAudioLanes, ...(editedAudioClips.length ? {audioClipEdits: editedAudioClips} : {}), ...(removedAudioClips.length || removedAudioLanes.length ? {audioRemovals: {clips: removedAudioClips, lanes: removedAudioLanes}} : {}), ...(laneOperations.length ? {audioLaneOperations: laneOperations} : {}), ...(cloneReceipt ? {mediaClone: {...cloneReceipt, destination}} : {}), warnings, ...(set ? {set} : {}), note: 'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};
  } finally {
   try { await rm(dir, {recursive: true, force: true}); }
   catch (error) { if (!published) throw error; result.cleanupWarning = `Published copy is valid, but temporary directory cleanup failed: ${dir}: ${error.message}`; }

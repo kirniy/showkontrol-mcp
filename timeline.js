@@ -649,3 +649,150 @@ export async function removeTimelineAudioLaneCopy({source,destination,format,sha
  const result=await writeTimelineEdit({format,source,destination,sha256,name,xml,modified});
  return {...result,audioIndex,removed:lane.attributes,removedClips:lane.children.map(c=>c.attributes),note:'Removed one audio lane in an offline copy. Later lanes move down one index; whether anything refers to lanes by position is unknown. Literal name references in supported XML were checked. Media files and media.map rows are unchanged. ShowKontrol acceptance is unverified.'};
 }
+
+// Lane names and order have app meaning that offline copies cannot observe. The R27 manual
+// (Cue Editor & Timelines) says decks play "Audio 1 (the song)", the player's waveform sits on
+// the first audio lane as the track's preview, transition rehearsal plays a track's first audio
+// clip, REAPER import finds lanes again by name and reuses an empty "Audio 1", and every lane has
+// its own output. The app-saved R27 lane carries only name and follow; anything else is unknown.
+const LANE_ATTRIBUTES=['name','follow'];
+const LANE_CLIP_ATTRIBUTES=['name','file','wave','grid','pps','offsetMs','vol','trimStartMs','trimEndMs','fadeInMs','fadeOutMs'];
+const DEFAULT_LANE_NAME='Audio 1';
+// Parts that may hold lane references. Transitions plans (.sktr) are carried by show files.
+const LANE_REFERENCE_PARTS=/\.(?:skf|sktl|sksc|skpr|skcp|sktr)$/i;
+const validLaneName=value=>typeof value==='string'&&!!value.trim()&&value.length<=4096&&!/[\x00-\x1f\ufffe\uffff]/u.test(value);
+
+// Select one lane by position and its current name. Both must match.
+function selectLane(root,audioIndex,laneName){
+ if(!Number.isSafeInteger(audioIndex)||audioIndex<0)throw Error('Audio index must be a non-negative integer');
+ if(typeof laneName!=='string'||!laneName)throw Error('laneName must give the selected lane\'s current name');
+ const lanes=root.children.filter(n=>n.name==='audio'),lane=lanes[audioIndex];
+ if(!lane)throw Error('Audio lane does not exist');
+ if(lane.attributes.name!==laneName)throw Error(`Audio lane ${audioIndex} is named ${JSON.stringify(lane.attributes.name??null)}, not ${JSON.stringify(laneName)}`);
+ return {lanes,lane};
+}
+// Accept only the observed lane shape: name and follow attributes, direct clips and white space.
+function checkObservedLane(xml,lane,audioIndex,{strictClips}){
+ const extra=Object.keys(lane.attributes).filter(k=>!LANE_ATTRIBUTES.includes(k));
+ if(extra.length)throw Error(`Audio lane ${audioIndex} has attributes outside the observed name and follow (${extra.join(', ')}); its kind, output or references are unknown`);
+ if(!validLaneName(lane.attributes.name))throw Error(`Audio lane ${audioIndex} has no usable name`);
+ if(lane.children.some(n=>n.name!=='clip'))throw Error(`Audio lane ${audioIndex} contains unsupported content`);
+ if(!lane.selfClosing){let cursor=lane.openEnd;for(const child of [...lane.children,{start:lane.closeStart,end:lane.closeStart}]){if(xml.slice(cursor,child.start).trim())throw Error(`Audio lane ${audioIndex} contains unsupported text`);cursor=child.end;}}
+ if(!strictClips)return;
+ for(const [clipIndex,clip] of lane.children.entries()){
+  const unknown=Object.keys(clip.attributes).filter(k=>!LANE_CLIP_ATTRIBUTES.includes(k));
+  if(unknown.length)throw Error(`Audio clip ${audioIndex}/${clipIndex} has attributes outside the observed clip fields (${unknown.join(', ')})`);
+  if(clip.children.length||(!clip.selfClosing&&xml.slice(clip.openEnd,clip.closeStart).trim()))throw Error(`Audio clip ${audioIndex}/${clipIndex} has content`);
+ }
+}
+
+// Report the first field that may address lanes by position: an element or attribute name, or a
+// key or reference value, that mentions audio, lane or video. Lane and clip definitions of every
+// timeline are skipped; the edited timeline's own definitions are checked by checkObservedLane.
+export function laneOrderReference(xml){
+ const parser=new SaxesParser(),stack=[];let found=null,skip=0;
+ const word=/audio|lane|video/i;
+ parser.on('opentag',tag=>{
+  const parent=stack.at(-1);stack.push(tag.name);
+  if(skip){skip++;return;}
+  if(parent==='sktimeline'&&(tag.name==='audio'||tag.name==='video')){skip=1;return;}
+  const at=stack.join('/');
+  if(found)return;
+  if(word.test(tag.name)){found=`element ${at}`;return;}
+  for(const [key,value] of Object.entries(tag.attributes)){
+   if(word.test(key)){found=`attribute ${key} on ${at}`;return;}
+   if((key==='key'||/ref/i.test(key))&&word.test(value)){found=`${key}="${value}" on ${at}`;return;}
+  }
+ });
+ parser.on('closetag',()=>{stack.pop();if(skip)skip--;});
+ parser.write(xml).close();return found;
+}
+
+async function readLaneSource({source,format,sha256,name}){
+ if(!['sktl','skshow'].includes(format))throw Error('Format must be sktl or skshow');
+ let xml,actual,parts=[];
+ if(format==='skshow'){
+  if(!name||!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
+  const show=await readShowSnapshot({file:source});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
+  actual=show.sha256;xml=readSnapshotPart({snapshot:show,name}).text;
+  for(const p of show.parts.filter(p=>p.name!==name&&LANE_REFERENCE_PARTS.test(p.name))){
+   let text;try{text=readSnapshotPart({snapshot:show,name:p.name}).text;}catch{throw Error(`A part that may reference lanes cannot be read: ${p.name}`);}
+   parts.push({name:p.name,xml:text});
+  }
+ }else ({xml,sha256:actual}=await inspectXml({file:source}));
+ if(actual!==sha256)throw Error('Source changed since inspection');
+ parseTimeline(xml);return {xml,parts};
+}
+const scanned=(label,fn)=>{try{return fn();}catch{throw Error(`${label} could not be scanned for lane references`);}};
+
+// Check names that leave or enter the lane definitions against literal references elsewhere.
+export function checkLaneNamesUnreferenced(items,names){
+ for(const item of items)for(const laneName of names)if(scanned(item.name,()=>laneNameReference(item.xml,laneName)))throw Error(`Audio lane name ${JSON.stringify(laneName)} appears literally in ${item.name}; it may be a reference`);
+}
+export function checkLaneOrderUnreferenced(items){
+ for(const item of items){const found=scanned(item.name,()=>laneOrderReference(item.xml));if(found)throw Error(`${item.name} has ${found}, which may refer to audio lanes by position`);}
+}
+
+// Rename one lane by changing only its name attribute value.
+export function renameAudioLaneXml(xml,{audioIndex,laneName,newName}){
+ if(!validLaneName(newName))throw Error('New lane name must be a nonempty single-line string');
+ if(newName===laneName)throw Error('New lane name must differ from the current name');
+ const root=parseXmlSpans(xml),{lanes,lane}=selectLane(root,audioIndex,laneName);
+ if(laneName===DEFAULT_LANE_NAME||newName===DEFAULT_LANE_NAME)throw Error(`Renaming to or from ${JSON.stringify(DEFAULT_LANE_NAME)} is refused: the app treats that lane as the song and reuses it by name on REAPER import, and whether it identifies it by name or position is unknown`);
+ checkObservedLane(xml,lane,audioIndex,{strictClips:false});
+ if(lanes.some(n=>n!==lane&&n.attributes.name===laneName))throw Error(`Several audio lanes are named ${JSON.stringify(laneName)}; a name reference would be ambiguous`);
+ if(lanes.some(n=>n.attributes.name===newName))throw Error('Audio lane name already exists');
+ const opening=xml.slice(lane.start,lane.openEnd),attr=/\s+([^\s=/>]+)\s*=\s*(["'])([\s\S]*?)\2/y;let pos='<audio'.length,target;
+ while(pos<opening.length){
+  if(/^\s*\/?>$/.test(opening.slice(pos)))break;
+  attr.lastIndex=pos;const m=attr.exec(opening);if(!m)throw Error('Unsupported audio lane attribute serialization');
+  if(m[1]==='name'){if(target)throw Error('Unsupported audio lane name serialization');const start=pos+m[0].indexOf(m[2])+1;target={start,end:start+m[3].length,quote:m[2]};}
+  pos=attr.lastIndex;
+ }
+ if(!target)throw Error('Unsupported audio lane name serialization');
+ const value=target.quote==='"'?xmlAttr(newName):xmlAttr(newName).replaceAll('&quot;','"').replaceAll("'",'&apos;');
+ const modified=xml.slice(0,lane.start)+opening.slice(0,target.start)+value+opening.slice(target.end)+xml.slice(lane.openEnd);
+ const before=parseTimeline(xml),after=parseTimeline(modified),expected=structuredClone(before);expected.audio[audioIndex].name=newName;
+ if(JSON.stringify(after)!==JSON.stringify(expected))throw Error('Lane rename failed semantic readback');
+ return {modified,lane:after.audio[audioIndex]};
+}
+
+// Move one lane by permuting lane element spans. White space between lanes stays in its slot.
+export function moveAudioLaneXml(xml,{audioIndex,laneName,toIndex}){
+ const root=parseXmlSpans(xml),{lanes,lane}=selectLane(root,audioIndex,laneName);
+ if(!Number.isSafeInteger(toIndex)||toIndex<0||toIndex>=lanes.length)throw Error('toIndex must select an existing lane position');
+ if(toIndex===audioIndex)throw Error('toIndex must differ from audioIndex');
+ if(audioIndex===0||toIndex===0)throw Error('Moving a lane into or out of the first position is refused: the app plays the first lane\'s song from decks, shows its waveform as the track preview and rehearses transitions with the first clip');
+ for(const [i,n] of lanes.entries())checkObservedLane(xml,n,i,{strictClips:true});
+ if(new Set(lanes.map(n=>n.attributes.name)).size!==lanes.length)throw Error('Audio lane names are not unique; name references could resolve to a different lane after a move');
+ const first=root.children.indexOf(lanes[0]);
+ for(let i=1;i<lanes.length;i++)if(root.children[first+i]!==lanes[i]||xml.slice(lanes[i-1].end,lanes[i].start).trim())throw Error('Audio lanes are not one uninterrupted run; their order relative to the interleaved content is unknown');
+ for(const deck of root.children.filter(n=>n.name==='deck'))if(Object.keys(deck.attributes).length||deck.children.length||(!deck.selfClosing&&xml.slice(deck.openEnd,deck.closeStart).trim()))throw Error('A deck element with content may refer to lanes; moving lanes is refused');
+ checkLaneOrderUnreferenced([{name:'the timeline',xml}]);
+ const order=lanes.map((_,i)=>i);order.splice(audioIndex,1);order.splice(toIndex,0,audioIndex);
+ let modified=xml;for(let i=lanes.length-1;i>=0;i--)modified=modified.slice(0,lanes[i].start)+xml.slice(lanes[order[i]].start,lanes[order[i]].end)+modified.slice(lanes[i].end);
+ const before=parseTimeline(xml),after=parseTimeline(modified),newIndex=order.map((_,i)=>order.indexOf(i));
+ const expected={...before,audio:order.map(i=>before.audio[i]),audioClips:order.flatMap((from,to)=>before.audioClips.filter(c=>c.audioIndex===from).map(c=>({...c,audioIndex:to})))};
+ if(JSON.stringify(after)!==JSON.stringify(expected))throw Error('Lane move failed semantic readback');
+ return {modified,indexMap:newIndex.map((to,from)=>({from,to})).filter(m=>m.from!==m.to),lanes:after.audio};
+}
+
+const laneNote='Lanes have no IDs. Literal name references and fields that mention audio, lane or video in supported XML were checked; external files such as REAPER projects, set lists and computed references were not. ShowKontrol acceptance is unverified.';
+
+// Rename one direct audio lane in a new .sktl or .skshow copy.
+export async function renameTimelineAudioLaneCopy({source,destination,format,sha256,name,audioIndex,laneName,newName}){
+ const {xml,parts}=await readLaneSource({source,format,sha256,name});
+ const {modified,lane}=renameAudioLaneXml(xml,{audioIndex,laneName,newName});
+ checkLaneNamesUnreferenced([{name:format==='skshow'?name:source,xml:modified},...parts],[laneName,newName]);
+ const result=await writeTimelineEdit({format,source,destination,sha256,name,xml,modified});
+ return {...result,audioIndex,previousName:laneName,laneName:newName,lane,note:`Renamed one audio lane in an offline copy; only its name value changed. REAPER import finds lanes by name, so an existing project that targets the old name no longer matches it. ${laneNote}`};
+}
+
+// Move one direct audio lane in a new .sktl or .skshow copy. The first lane never moves.
+export async function moveTimelineAudioLaneCopy({source,destination,format,sha256,name,audioIndex,laneName,toIndex}){
+ const {xml,parts}=await readLaneSource({source,format,sha256,name});
+ const {modified,indexMap,lanes}=moveAudioLaneXml(xml,{audioIndex,laneName,toIndex});
+ checkLaneOrderUnreferenced(parts);
+ const result=await writeTimelineEdit({format,source,destination,sha256,name,xml,modified});
+ return {...result,audioIndex:toIndex,fromIndex:audioIndex,laneName,indexMap,lanes,note:`Moved one audio lane in an offline copy; lane elements were permuted and every other byte kept. Lanes in indexMap changed position, and so did their clips' audioIndex. Whether lane order beyond the first lane affects playback, outputs, REAPER export or Program items is unverified. ${laneNote}`};
+}

@@ -31,10 +31,10 @@ export async function composeMultiTrackShowCopy({source,destination,sha256,track
    current=next;currentHash=patch.sha256;
   }
   for(let i=0;i<tracks.length;i++){
-   const {templateName,templateDonor,mediaClone,trackName,partName,existingPartName,cues,donor,set,layerOperations,audioClipEdits,audioLanes,audioClips,audioClipRemovals,audioLaneRemovals,cueRemovals,cueEdits,graphSettingEdits}=tracks[i],next=path.join(dir,`${i}.skshow`);
-   const track=await composeShowCopy({source:current,destination:next,sha256:currentHash,templateName,templateDonor,mediaClone,trackName,partName,existingPartName,cues,donor,set,layerOperations,audioClipEdits,audioLanes,audioClips,audioClipRemovals,audioLaneRemovals,cueRemovals,cueEdits,graphSettingEdits});
+   const {templateName,templateDonor,mediaClone,trackName,partName,existingPartName,cues,donor,set,layerOperations,audioClipEdits,audioLanes,audioClips,audioClipRemovals,audioLaneRemovals,audioLaneOperations,cueRemovals,cueEdits,graphSettingEdits}=tracks[i],next=path.join(dir,`${i}.skshow`);
+   const track=await composeShowCopy({source:current,destination:next,sha256:currentHash,templateName,templateDonor,mediaClone,trackName,partName,existingPartName,cues,donor,set,layerOperations,audioClipEdits,audioLanes,audioClips,audioClipRemovals,audioLaneRemovals,audioLaneOperations,cueRemovals,cueEdits,graphSettingEdits});
    opaqueWarnings.push(...track.warnings.filter(w=>w.code==='opaque_node_references_unverified'));
-   composed.push({... (existingPartName !== undefined ? {existingPartName} : {trackName,partName}),cues:track.cues,audioLanes:track.audioLanes,...(track.audioClipEdits?{audioClipEdits:track.audioClipEdits}:{}),...(track.audioRemovals?{audioRemovals:track.audioRemovals}:{}),...(track.mediaClone?{mediaClone:{...track.mediaClone,destination}}:{}),...(set?{set}:{})});
+   composed.push({... (existingPartName !== undefined ? {existingPartName} : {trackName,partName}),cues:track.cues,audioLanes:track.audioLanes,...(track.audioClipEdits?{audioClipEdits:track.audioClipEdits}:{}),...(track.audioRemovals?{audioRemovals:track.audioRemovals}:{}),...(track.audioLaneOperations?{audioLaneOperations:track.audioLaneOperations}:{}),...(track.mediaClone?{mediaClone:{...track.mediaClone,destination}}:{}),...(set?{set}:{})});
    if(track.cleanupWarning)warnings.push(track.cleanupWarning);
    if(current!==source)await rm(current);
    current=next;currentHash=track.sha256;
