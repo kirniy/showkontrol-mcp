@@ -13,6 +13,15 @@ export async function validateShow({file}){
  const snapshot=await readShowSnapshot({file});
  const diagnostics=[],coverage=[],timelines=[],setlists=[],routerTargets=[],nodeIds=new Map();
  const add=(code,scope,message,severity='error')=>diagnostics.push({code,severity,scope,message});
+ // The wire tools refuse to edit a connection stored twice and to add a self wire; how the app treats them is unknown.
+ const checkWireShapes=(connections,graphScope)=>{
+  const seen=new Map();
+  for(const c of connections){
+   const key=JSON.stringify(['fromNode','fromPin','toNode','toPin'].map(k=>c[k]??null));seen.set(key,(seen.get(key)??0)+1);
+   if(c.fromNode&&c.fromNode===c.toNode)add('self_connection',{...graphScope,nodeId:c.fromNode,fromPin:c.fromPin??null,toPin:c.toPin??null},'Connection joins a node to itself','warning');
+  }
+  for(const [key,count] of seen)if(count>1){const [fromNode,fromPin,toNode,toPin]=JSON.parse(key);add('duplicate_connection',{...graphScope,fromNode,fromPin,toNode,toPin},`Connection occurs ${count} times`,'warning');}
+ };
  const validateTimelineCues=(root,baseScope,basePath,partCoverage)=>{
   const containers=root.children.filter(n=>n.name==='layers');
     const cues=root.children.filter(n=>n.name==='cue');
@@ -80,6 +89,7 @@ export async function validateShow({file}){
        if(nodeIds.has(id))add('duplicate_node_id',{...graphScope,nodeId:id},`Node ID also occurs in ${nodeIds.get(id)}`);else nodeIds.set(id,part.name);
        local.add(id);
       }
+      checkWireShapes(graph.children.filter(child=>child.name==='connection').map(child=>child.attributes),graphScope);
       for(const connection of graph.children.filter(child=>child.name==='connection')){
        for(const endpoint of ['fromNode','toNode'])if(!connection.attributes[endpoint]||!local.has(connection.attributes[endpoint]))add('unknown_wire_endpoint',{...graphScope,endpoint,nodeId:connection.attributes[endpoint]??null},'Connection endpoint is not a node in this graph');
        for(const pin of ['fromPin','toPin'])if(!/^\d+$/.test(connection.attributes[pin]??''))add('invalid_wire_pin',{...graphScope,pin,value:connection.attributes[pin]??null},'Connection pin must contain digits');
@@ -114,6 +124,7 @@ export async function validateShow({file}){
           if(nodeIds.has(id))add('duplicate_node_id',{...graphScope,nodeId:id},`Node ID also occurs in ${nodeIds.get(id)}`);else nodeIds.set(id,part.name);
           local.add(id);
          }
+         checkWireShapes(child.children.filter(n=>n.name==='connection').map(n=>n.attributes),graphScope);
          for(const connection of child.children.filter(n=>n.name==='connection')){
           for(const endpoint of ['fromNode','toNode'])if(!connection.attributes[endpoint]||!local.has(connection.attributes[endpoint]))add('unknown_wire_endpoint',{...graphScope,endpoint,nodeId:connection.attributes[endpoint]??null},'Connection endpoint is not a node in this graph');
           for(const pin of ['fromPin','toPin'])if(!/^\d+$/.test(connection.attributes[pin]??''))add('invalid_wire_pin',{...graphScope,pin,value:connection.attributes[pin]??null},'Connection pin must contain digits');
@@ -171,6 +182,7 @@ export async function validateShow({file}){
      if(nodeIds.has(id))add('duplicate_node_id',{...g.scope,nodeId:id},`Node ID also occurs in ${nodeIds.get(id)}`);else nodeIds.set(id,part.name);
      local.add(id);
     }
+    checkWireShapes(g.connections,g.scope);
     for(const connection of g.connections){for(const endpoint of ['fromNode','toNode'])if(!connection[endpoint]||!local.has(connection[endpoint]))add('unknown_wire_endpoint',{...g.scope,endpoint,nodeId:connection[endpoint]??null},'Connection endpoint is not a node in this graph');
      if(g.supported)for(const pin of ['fromPin','toPin'])if(!/^\d+$/.test(connection[pin]??''))add('invalid_wire_pin',{...g.scope,pin,value:connection[pin]??null},'Connection pin must contain digits');}
    }

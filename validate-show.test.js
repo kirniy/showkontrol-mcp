@@ -174,3 +174,24 @@ test('a set list active value that is not an existing zero-based set index is a 
   assert.deepEqual(result.diagnostics.filter(d=>d.severity==='error'),[],String(active));
  }
 });
+
+test('duplicate and self connections are warnings in patch, track cue and Program item graphs',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-wire-shape-validation-'));t.after(()=>rm(dir,{recursive:true,force:true}));const file=path.join(dir,'show.skshow');
+ const wire=(from,to,pins='0')=>`<connection fromNode="${from}" fromPin="${pins}" toNode="${to}" toPin="0"/>`;
+ const nodes=(a,b)=>`<node id="${a}" type="trigger"/><node id="${b}" type="action"/>`;
+ const track=`<sktimeline version="1" name="A"><layers><layer/></layers><cue id="c1" layer="0" startMs="0" lenMs="10"><graph>${nodes('n1','n2')}${wire('n1','n2')}${wire('n1','n2')}${wire('n1','n2','1')}</graph></cue></sktimeline>`;
+ const program=`<skprogram version="1"><item start="0" name="I" notes=""><graph>${nodes('n3','n4')}${wire('n4','n4')}</graph></item></skprogram>`;
+ const patch=`<showkontrol version="2"><graph>${nodes('n5','n6')}${wire('n5','n6')}${wire('n5','n6')}${wire('n6','n6')}</graph><appSettings/></showkontrol>`;
+ await writeFile(file,`<skshow>${part('content/A.sktl',track)}${part('content/Program.skpr',program)}${part('patch.skf',patch)}</skshow>`);
+ const result=await validateShow({file});
+ const shapes=result.diagnostics.filter(d=>['duplicate_connection','self_connection'].includes(d.code)).map(d=>[d.code,d.severity,d.scope.part,d.scope.fromNode??d.scope.nodeId,d.message]);
+ assert.deepEqual(shapes.sort(),[
+  ['duplicate_connection','warning','content/A.sktl','n1','Connection occurs 2 times'],
+  ['duplicate_connection','warning','patch.skf','n5','Connection occurs 2 times'],
+  ['self_connection','warning','content/Program.skpr','n4','Connection joins a node to itself'],
+  ['self_connection','warning','patch.skf','n6','Connection joins a node to itself'],
+ ]);
+ // Distinct pins are distinct connections.
+ const clean=`<skshow>${part('content/A.sktl',track.replace(wire('n1','n2'),''))}</skshow>`;await writeFile(file,clean);
+ assert.deepEqual((await validateShow({file})).diagnostics.filter(d=>['duplicate_connection','self_connection'].includes(d.code)),[]);
+});
