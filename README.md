@@ -193,6 +193,8 @@ Use `remove_timeline_cue_graph` with the current item `index` and `cueId` to rem
 
 Use `edit_timeline_graph_wire` with the current item `index`, `cueId`, `operation` (`add` or `remove`), `fromNode`, and `toNode` to edit a supported pin-0 wire in an existing cue graph. The supported node and wire types come from the observed fixtures. Other pins, external dependencies, and ShowKontrol execution remain unverified.
 
+Use `edit_timeline_graph_wire_mapped` to wire a node copied earlier in the same Program edit. Each `from` or `to` endpoint is either `{nodeId}` for an existing node or `{nodeFromOperation}` for an earlier node-copy operation. The operation checks that the receipt is still active and belongs to the selected cue.
+
 Use `copy_timeline_cue_node` to add a supported node from an inspected cue or patch donor to an existing Program cue graph. Supply `donorType`, `donor`, `donorSha256`, and `donorNodeId`; cue donors also require `donorName` and `donorCueId`, while patch donors require `donorFormat`. The result returns the new node ID. Use `edit_copied_timeline_node_setting` with `nodeFromOperation` to edit that node in the same transaction. Use `remove_timeline_cue_node` to remove an unreferenced node. Copied nodes have no wires. External and computed references and app execution remain unverified.
 
 For an item timeline, `settings` can contain ordered `{cueId, nodeId, key, value}` entries. Use the IDs from the donor timeline. The tool edits a private donor copy before it remaps IDs and embeds the timeline. The total limit is 100 timeline and item-graph setting edits per composition.

@@ -250,6 +250,15 @@ export async function composeProgramEditsCopy(args){
   else if(op.action==='edit_graph_setting')keys(op,['action','index','nodeId','key','value']);
   else if(op.action==='edit_timeline_graph_setting')keys(op,['action','index','cueId','nodeId','key','value']);
   else if(op.action==='edit_timeline_graph_wire')keys(op,['action','index','cueId','operation','fromNode','toNode']);
+  else if(op.action==='edit_timeline_graph_wire_mapped'){
+   keys(op,['action','index','cueId','operation','from','to']);
+   for(const endpoint of [op.from,op.to]){
+    keys(endpoint,[],['nodeId','nodeFromOperation']);
+    if(Object.hasOwn(endpoint,'nodeId')===Object.hasOwn(endpoint,'nodeFromOperation'))throw Error('Endpoint must contain exactly one of nodeId or nodeFromOperation');
+    if(Object.hasOwn(endpoint,'nodeId')&&(typeof endpoint.nodeId!=='string'||!endpoint.nodeId))throw Error('nodeId must be a nonempty string');
+    if(Object.hasOwn(endpoint,'nodeFromOperation')&&(!Number.isInteger(endpoint.nodeFromOperation)||endpoint.nodeFromOperation<0))throw Error('nodeFromOperation must identify an active prior copy_timeline_cue_node');
+   }
+  }
   else if(op.action==='copy_timeline_cue_node'){
    keys(op,['action','index','cueId','donorType','donor','donorSha256','donorNodeId'],['donorName','donorCueId','donorFormat']);
    if(!path.isAbsolute(op.donor||'')||!/^[a-f0-9]{64}$/.test(op.donorSha256||'')||!/^n\d+$/.test(op.donorNodeId||''))throw Error('Absolute donor path, donor SHA-256 and node ID are required');
@@ -286,15 +295,30 @@ export async function composeProgramEditsCopy(args){
   const collect=result=>{for(const warning of [...(result.warnings??[]),result.note])if(typeof warning==='string'&&warning)warnings.add(warning);};
   let program=next(),current=await extractShowProgramCopy({source,destination:program,sha256});collect(current);
   for(const [operationIndex,operation] of operations.entries()){
-   if(operation.action==='remove')await checkRemovalReferences(program,operation.index);
+   if(operation.action==='remove'){
+    await checkRemovalReferences(program,operation.index);
+    const item=parseXmlSpans(await readFile(program,'utf8')).children[operation.index];
+    const ids=new Set();const visit=n=>{if(n.name==='cue')ids.add(n.attributes.id);for(const c of n.children)visit(c);};visit(item);
+    for(const receipt of copiedCueNodes)if(ids.has(receipt.cueId))invalidatedGraphs.add(receipt.operationIndex);
+   }
    const destination=next();
    if(operation.action==='edit_graph_setting'){
     const {index,nodeId,key,value}=operation;
     current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index,nodeId,key,value});
-   }else if(['edit_timeline_cue','edit_timeline_graph_setting','edit_timeline_graph_wire','edit_copied_timeline_graph_setting','edit_assembled_timeline_graph_setting','add_timeline_cue','delete_timeline_cue','copy_timeline_cue_graph','assemble_timeline_cue_graph','remove_timeline_cue_graph','copy_timeline_cue_node','remove_timeline_cue_node','edit_copied_timeline_node_setting'].includes(operation.action)){
+   }else if(['edit_timeline_cue','edit_timeline_graph_setting','edit_timeline_graph_wire','edit_timeline_graph_wire_mapped','edit_copied_timeline_graph_setting','edit_assembled_timeline_graph_setting','add_timeline_cue','delete_timeline_cue','copy_timeline_cue_graph','assemble_timeline_cue_graph','remove_timeline_cue_graph','copy_timeline_cue_node','remove_timeline_cue_node','edit_copied_timeline_node_setting'].includes(operation.action)){
     const {index,layer,startMs,lengthMs,label}=operation;
     let cueId=operation.cueId,nodeId=operation.nodeId;
-    if(operation.action==='edit_timeline_graph_wire')cueId=resolveTargetCue(await readFile(program,'utf8'),index,cueId);
+    let fromNode=operation.fromNode,toNode=operation.toNode;
+    if(['edit_timeline_graph_wire','edit_timeline_graph_wire_mapped'].includes(operation.action))cueId=resolveTargetCue(await readFile(program,'utf8'),index,cueId);
+    if(operation.action==='edit_timeline_graph_wire_mapped'){
+     const resolveEndpoint=endpoint=>{
+      if(Object.hasOwn(endpoint,'nodeId'))return endpoint.nodeId;
+      const ref=endpoint.nodeFromOperation,entry=ref<operationIndex?copiedCueNodes.find(n=>n.operationIndex===ref):undefined;
+      if(!entry||invalidatedGraphs.has(ref)||entry.cueId!==cueId)throw Error('nodeFromOperation must identify an active prior copy_timeline_cue_node in the selected cue');
+      return entry.nodeId;
+     };
+     fromNode=resolveEndpoint(operation.from);toNode=resolveEndpoint(operation.to);
+    }
     if(['copy_timeline_cue_graph','assemble_timeline_cue_graph'].includes(operation.action)){
      const xml=await readFile(program,'utf8');
      cueId=Object.hasOwn(operation,'cueId')?resolveTargetCue(xml,index,operation.cueId):resolveCreatedCue(xml,index,createdCues,operation.cueFromOperation);
@@ -343,15 +367,18 @@ export async function composeProgramEditsCopy(args){
      ?await removeCueGraphCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId})
      :operation.action==='edit_timeline_cue'
      ?await editTimelineCueCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,layer,startMs,lengthMs,label})
-     :operation.action==='edit_timeline_graph_wire'
-     ?await editCueGraphWireCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,operation:operation.operation,fromNode:operation.fromNode,toNode:operation.toNode})
+     :['edit_timeline_graph_wire','edit_timeline_graph_wire_mapped'].includes(operation.action)
+     ?await editCueGraphWireCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,operation:operation.operation,fromNode,toNode})
      :await editCueGraphSettingCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,nodeId,key:operation.key,value:operation.value});
     if(operation.action==='delete_timeline_cue')collect({...changed,note:'Deleted a cue from an offline Program copy. Literal XML references were checked; binary, encoded and external references may be missed. Validate in ShowKontrol.'});
     else collect(changed);
     if(operation.action==='copy_timeline_cue_node'){copiedCueNodes.push({operationIndex,cueId,nodeId:changed.newNodeId});donors.push({file:operation.donor,sha256:operation.donorSha256});}
     if(operation.action==='copy_timeline_cue_graph'){copiedCueGraphs.push({operationIndex,cueId,idMap:changed.idMap});donors.push({file:operation.donor,sha256:operation.donorSha256});}
     if(operation.action==='assemble_timeline_cue_graph'){assembledCueGraphs.push({operationIndex,cueId,nodeIds:changed.nodeIds});for(const node of operation.nodes)donors.push({file:node.template,sha256:node.templateSha256});}
-    if(['remove_timeline_cue_graph','remove_timeline_cue_node','delete_timeline_cue'].includes(operation.action))for(const graph of [...copiedCueGraphs,...assembledCueGraphs,...copiedCueNodes])if(graph.cueId===cueId)invalidatedGraphs.add(graph.operationIndex);
+    if(['remove_timeline_cue_graph','remove_timeline_cue_node','delete_timeline_cue'].includes(operation.action)){
+     for(const graph of [...copiedCueGraphs,...assembledCueGraphs])if(graph.cueId===cueId)invalidatedGraphs.add(graph.operationIndex);
+     for(const node of copiedCueNodes)if(node.cueId===cueId&&(operation.action!=='remove_timeline_cue_node'||node.nodeId===nodeId))invalidatedGraphs.add(node.operationIndex);
+    }
     if(operation.action==='add_timeline_cue')createdCues.push({operationIndex,index,id:changed.id});
     current=await embedProgramTimelineCopy({source:program,destination,sha256:current.sha256,index,donor:edited,donorSha256:changed.sha256,replaceExisting:true});
     if(operation.action==='add_timeline_cue')await checkCueRemovalReferences(destination,index,changed.id,source,sha256);
