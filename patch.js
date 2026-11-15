@@ -12,7 +12,7 @@ export function parsePatch(xml) {
   if(stack.join('/')==='showkontrol/graph')graphCount++;
   if(stack.join('/')==='showkontrol/appSettings')appCount++;
   if(parent==='graph'&&tag.name==='node'&&stack.join('/')==='showkontrol/graph/node'){
-   currentNode={id:tag.attributes.id,type:tag.attributes.type,title:tag.attributes.title,kind:tag.attributes.kind,settings:[]};result.nodes.push(currentNode);
+   currentNode={id:tag.attributes.id,type:tag.attributes.type,title:tag.attributes.title,kind:tag.attributes.kind,...(Object.hasOwn(tag.attributes,'stopped')?{stopped:tag.attributes.stopped}:{}),settings:[]};result.nodes.push(currentNode);
   }
   if(parent==='graph'&&tag.name==='connection'&&stack.join('/')==='showkontrol/graph/connection')result.connections.push({...tag.attributes});
   if(tag.name==='setting' && (stack.join('/')==='showkontrol/appSettings/setting'||stack.join('/')==='showkontrol/graph/node/settings/setting')){
@@ -69,13 +69,27 @@ export async function editPatchSettingCopy({source,destination,format,sha256,nod
  const matches=selectXmlSpans(root,path);if(matches.length!==1)throw Error('Unsupported or ambiguous setting serialization');
  const m=matches[0],opening=loaded.xml.slice(m.start,m.openEnd);
  const replacement=m.selfClosing?opening.replace(/\/\s*>$/, '>')+escapeText(value)+'</setting>':opening+escapeText(value)+loaded.xml.slice(m.closeStart,m.end);
- const changed=loaded.xml.slice(0,m.start)+replacement+loaded.xml.slice(m.end);
+ let changed=loaded.xml.slice(0,m.start)+replacement+loaded.xml.slice(m.end);
+ // Saved patch nodes can store the state twice; change an existing stopped attribute with node.stopped, as the cue-graph tools do.
+ let stoppedAttribute=false;
+ if(nodeId!==undefined&&key==='node.stopped'){
+  if(!['true','false'].includes(value))throw Error('node.stopped value must be exactly true or false');
+  const node=selectXmlSpans(root,['showkontrol','graph',{name:'node',attributes:{id:nodeId}}])[0];
+  if(Object.hasOwn(node.attributes,'stopped')){
+   if(!['0','1'].includes(node.attributes.stopped))throw Error('Unsupported stopped attribute value');
+   const opening=loaded.xml.slice(node.start,node.openEnd),found=[...opening.matchAll(/(?:^|\s)stopped\s*=\s*(["'])([01])\1/g)];
+   if(found.length!==1)throw Error('Unsupported stopped attribute serialization');
+   const at=node.start+found[0].index+found[0][0].lastIndexOf(found[0][2]);
+   changed=changed.slice(0,at)+(value==='true'?'1':'0')+changed.slice(at+1);stoppedAttribute=true;
+  }
+ }
  const checked=parsePatch(changed),checkedSettings=nodeId===undefined?checked.appSettings:checked.nodes.find(n=>n.id===nodeId)?.settings;
  if(checkedSettings?.filter(s=>s.key===key&&s.value===value).length!==1)throw Error('Setting value could not be preserved in XML');
+ if(stoppedAttribute&&checked.nodes.find(n=>n.id===nodeId).stopped!==(value==='true'?'1':'0'))throw Error('Stopped attribute could not be updated');
  if(!skipRouterTargetCheck&&key==='router.name')assertRouterTargetsUnambiguous(loaded.xml,changed,loaded.snapshot);
  const args={source,destination,sha256,edits:[{find:loaded.xml,replace:changed}]};
  const result=format==='skshow'?await editShowPart({...args,name:'patch.skf'}):await editXmlCopy(args);
- return {...result,nodeId:nodeId??null,key,value,note:'Existing setting changed in an offline copy. Value semantics and ShowKontrol compatibility are not validated.'};
+ return {...result,nodeId:nodeId??null,key,value,...(stoppedAttribute?{stoppedAttribute:value==='true'?'1':'0'}:{}),note:'Existing setting changed in an offline copy. Value semantics and ShowKontrol compatibility are not validated.'};
 }
 
 // Select only direct graph children from the parsed XML tree.
