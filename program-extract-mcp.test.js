@@ -1,0 +1,35 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,readFile,writeFile,readdir,rm} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
+const digest=(algorithm,b)=>createHash(algorithm).update(b).digest('hex');
+test('MCP extracts, edits, embeds and reattaches a Program timeline',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'program-extract-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const client=new Client({name:'extract-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js']}));t.after(()=>client.close());
+ const call=(name,args)=>client.callTool({name:`showkontrol_${name}`,arguments:args});
+ const ok=async(name,args)=>{const r=await call(name,args);assert.equal(r.isError,undefined,JSON.stringify(r));return JSON.parse(r.content[0].text);};
+ const file=n=>path.join(dir,n),source=file('source.skpr'),show=file('source.skshow'),out=file('extract.sktl'),edited=file('edit.sktl'),programOut=file('out.skpr'),showOut=file('out.skshow');
+ const graph='<graph><node id="n1" type="groupin"><settings/></node></graph>';
+ const timeline=`<sktimeline version="1"><layers><layer name="L"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Old">${graph}</cue><audio path="media/a.wav"/></sktimeline>`;
+ const program=`\ufeff<?xml version="1.0"?><skprogram version="1"><item start="86399999.5" name="A" notes="N">${graph}${timeline}</item><item start="0" name="B" notes=""/></skprogram>`;
+ const part=(name,data)=>`<part name="${name}" md5="${digest('md5',Buffer.from(data))}">${Buffer.from(data).toString('base64')}</part>`;
+ const archive=`<skshow>${part('content/Program.skpr',program)}${part('content/other.txt','untouched')}</skshow>`;
+ await writeFile(source,program);await writeFile(show,archive);
+ const sha=digest('sha256',Buffer.from(program)),showSha=digest('sha256',Buffer.from(archive));
+ assert.ok((await client.listTools()).tools.some(x=>x.name==='showkontrol_extract_program_timeline_copy'));
+ const extracted=await ok('extract_program_timeline_copy',{source,destination:out,sha256:sha,index:0});assert.equal(await readFile(out,'utf8'),timeline);
+ const fromShow=file('show.sktl');await ok('extract_program_timeline_copy',{source:show,destination:fromShow,sha256:showSha,index:0});assert.equal(await readFile(fromShow,'utf8'),timeline);
+ const cue=await ok('edit_timeline_cue_copy',{source:out,destination:edited,format:'sktl',sha256:extracted.sha256,cueId:'c1',label:'New'});
+ await ok('embed_program_timeline_copy',{source,destination:programOut,sha256:sha,index:0,donor:edited,donorSha256:cue.sha256,replaceExisting:true});
+ const updated=await readFile(programOut,'utf8');assert.equal(updated,program.replace(timeline,await readFile(edited,'utf8')));assert.ok(updated.includes(graph));
+ await ok('attach_show_program_copy',{source:show,destination:showOut,sha256:showSha,program:programOut,programSha256:digest('sha256',Buffer.from(updated)),replaceExisting:true});
+ const extractedAgain=file('again.sktl');await ok('extract_program_timeline_copy',{source:showOut,destination:extractedAgain,sha256:digest('sha256',await readFile(showOut)),index:0});assert.equal(await readFile(extractedAgain,'utf8'),await readFile(edited,'utf8'));assert.ok((await readFile(showOut,'utf8')).includes(part('content/other.txt','untouched')));
+ for(const args of [{sha256:'0'.repeat(64),index:0},{sha256:sha,index:1},{sha256:sha,index:9}]){const bad=file('bad.sktl');assert.equal((await call('extract_program_timeline_copy',{source,destination:bad,...args})).isError,true);await assert.rejects(readFile(bad),{code:'ENOENT'});}
+ assert.equal((await call('extract_program_timeline_copy',{source,destination:out,sha256:sha,index:0})).isError,true);assert.equal(await readFile(out,'utf8'),timeline);
+ const invalid=file('invalid.skpr');await writeFile(invalid,program.replace('version="1"><layers','version="2"><layers'));assert.equal((await call('extract_program_timeline_copy',{source:invalid,destination:file('invalid.sktl'),sha256:digest('sha256',await readFile(invalid)),index:0})).isError,true);
+ assert.equal(await readFile(source,'utf8'),program);assert.equal(await readFile(show,'utf8'),archive);assert.ok(!(await readdir(dir)).some(n=>n.endsWith('.tmp')));
+});

@@ -16,7 +16,7 @@ function parse(xml){
  whitespace(xml,root);
  const items=root.children.map((node,index)=>{
   if(node.name!=='item'||Object.keys(node.attributes).sort().join(',')!=='name,notes,start')throw Error('Unsupported Program item');
-  const {start,name,notes}=node.attributes;if(!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(start)||!Number.isFinite(Number(start))||Number(start)>86399999)throw Error('Invalid item start');text(name,'name');text(notes,'notes');
+  const {start,name,notes}=node.attributes;if(!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(start)||!Number.isFinite(Number(start))||Number(start)>=86400000)throw Error('Invalid item start');text(name,'name');text(notes,'notes');
   if(node.children.some(c=>!['graph','sktimeline'].includes(c.name))||new Set(node.children.map(c=>c.name)).size!==node.children.length)throw Error('Unsupported item children');
   whitespace(xml,node);
   return {index,start:Number(start),name,notes,hasGraph:node.children.some(c=>c.name==='graph'),hasTimeline:node.children.some(c=>c.name==='sktimeline'),node};
@@ -77,7 +77,7 @@ export async function inspectShowProgram({file}){
  const show=await prepareShowProgram({file});if(!show.bytes)return {file,sha256:show.sha256,present:false,note};
  return {file,sha256:show.sha256,present:true,...inspectProgramBytes(show.bytes)};
 }
-export async function inspectProgramTimeline({file,sha256,index}){
+async function programTimeline({file,sha256,index}){
  if(!/^[a-f0-9]{64}$/.test(sha256||''))throw Error('A source SHA-256 is required');
  if(!Number.isInteger(index)||index<0)throw Error('Item index out of range');
  let input;
@@ -92,12 +92,29 @@ export async function inspectProgramTimeline({file,sha256,index}){
  if(index>=input.items.length)throw Error('Item index out of range');
  const item=input.items[index],node=item.node.children.find(c=>c.name==='sktimeline');
  if(!node)throw Error('Item has no embedded timeline');
- const timeline=parseTimeline(input.xml.slice(node.start,node.end));
+ const element=input.xml.slice(node.start,node.end);
+ const timeline=parseTimeline(element);
+ return {input,item,element,timeline};
+}
+export async function inspectProgramTimeline({file,sha256,index}){
+ const {item,timeline}=await programTimeline({file,sha256,index});
  // Preview data can be large and is not useful for identifying timeline content.
  const clean=attributes=>Object.fromEntries(Object.entries(attributes).filter(([key])=>!/preview/i.test(key)));
  const result={file,sha256,index,item:publicItems([item])[0],attributes:clean(timeline.attributes),layers:timeline.layers.map(clean),audio:timeline.audio.map(clean),audioClips:timeline.audioClips.map(c=>({...c,attributes:clean(c.attributes)})),cueElements:timeline.cueElements.map(c=>({...c,attributes:clean(c.attributes)})),note:'Static format evidence only; application acceptance, cues and media playback are unverified. Preview attributes are omitted.'};
  if(Buffer.byteLength(JSON.stringify(result,null,2),'utf8')>1024*1024)throw Error('Timeline inspection output exceeds 1 MiB');
  return result;
+}
+export async function extractProgramTimelineCopy({source,destination,sha256,index}){
+ if(typeof source!=='string'||!path.isAbsolute(destination)||path.extname(destination).toLowerCase()!=='.sktl'||path.resolve(source)===path.resolve(destination))throw Error('Destination must be a different absolute .sktl path');
+ const {element}=await programTimeline({file:source,sha256,index});
+ const bytes=Buffer.from(element,'utf8');
+ const temp=path.join(path.dirname(destination),`.showkontrol-timeline-${randomUUID()}.tmp`);let created=false;
+ try{
+  await writeFile(temp,bytes,{flag:'wx'});created=true;
+  await programTimeline({file:source,sha256,index});
+  await link(temp,destination);
+ }finally{if(created)await unlink(temp);}
+ return {destination,sha256:hash(bytes),warnings:['Static format evidence only; application acceptance is unverified.','External references and media are unverified; media was not copied.','Runtime node IDs may change; IDs were not remapped.']};
 }
 export async function extractShowProgramCopy({source,destination,sha256}){
  if(!path.isAbsolute(destination)||path.extname(destination).toLowerCase()!=='.skpr'||path.resolve(source)===path.resolve(destination))throw Error('Destination must be a different absolute .skpr path');
@@ -145,7 +162,7 @@ async function timelineDonor({donor,donorName}){
   sha256=show.sha256;xml=readSnapshotPart({snapshot:show,name:donorName}).text;
  }else throw Error('Donor must be a .sktl or .skshow file');
  parseTimeline(xml);const root=parseXmlSpans(xml);
- return {sha256,element:xml.slice(root.start,root.end)};
+ return {sha256,xml,root,element:xml.slice(root.start,root.end)};
 }
 export async function embedProgramTimelineCopy({source,destination,sha256,index,donor,donorSha256,donorName,replaceExisting=false}){
  if(!path.isAbsolute(destination)||path.extname(destination).toLowerCase()!=='.skpr'||path.resolve(source)===path.resolve(destination)||path.resolve(donor)===path.resolve(destination))throw Error('Destination must be a different absolute .skpr path');
@@ -169,4 +186,33 @@ export async function embedProgramTimelineCopy({source,destination,sha256,index,
   await link(temp,destination);
  }finally{if(created)await unlink(temp);}
  return {destination,sha256:hash(Buffer.from(xml)),items:publicItems(parse(xml).items),warnings:['Static format evidence only; application acceptance is unverified.','External references and media are unverified; media was not copied.','Runtime node IDs may change; IDs were not remapped.']};
+}
+
+// Preserve the donor graph as XML. Program and cue signal names can differ.
+export async function copyProgramItemGraphCopy({source,destination,sha256,index,donor,donorSha256,donorName,donorCueId,replaceExisting=false}){
+ if(!path.isAbsolute(destination)||path.extname(destination).toLowerCase()!=='.skpr'||path.resolve(source)===path.resolve(destination)||path.resolve(donor)===path.resolve(destination))throw Error('Destination must be a different absolute .skpr path');
+ if(!/^[a-f0-9]{64}$/.test(sha256||'')||!/^[a-f0-9]{64}$/.test(donorSha256||''))throw Error('Program and donor SHA-256 values are required');
+ if(typeof replaceExisting!=='boolean')throw Error('replaceExisting must be a boolean');
+ if(typeof donorCueId!=='string'||!donorCueId)throw Error('Donor cue ID is required');
+ const input=await snapshot(source);if(input.sha256!==sha256)throw Error('Program changed since inspection');
+ if(!Number.isInteger(index)||index<0||index>=input.items.length)throw Error('Item index out of range');
+ const timeline=await timelineDonor({donor,donorName});if(timeline.sha256!==donorSha256)throw Error('Donor changed since inspection');
+ const cues=timeline.root.children.filter(c=>c.name==='cue'&&c.attributes.id===donorCueId);
+ if(cues.length!==1)throw Error('Donor cue must match exactly one direct cue');
+ const graphs=cues[0].children.filter(c=>c.name==='graph');if(graphs.length!==1)throw Error('Donor cue must contain exactly one direct graph');
+ const graph=timeline.xml.slice(graphs[0].start,graphs[0].end),item=input.items[index].node,existing=item.children.find(c=>c.name==='graph');
+ if(existing&&!replaceExisting)throw Error('Item already has a graph; set replaceExisting to true');
+ let xml=input.xml;
+ if(existing)xml=xml.slice(0,existing.start)+graph+xml.slice(existing.end);
+ else if(item.selfClosing){const opening=xml.slice(item.start,item.openEnd).replace(/\/\s*>$/, '>');xml=xml.slice(0,item.start)+opening+graph+'</item>'+xml.slice(item.end);}
+ else xml=xml.slice(0,item.closeStart)+graph+xml.slice(item.closeStart);
+ parse(xml);if(Buffer.byteLength(xml,'utf8')>10*1024*1024)throw Error('Program exceeds 10 MiB');
+ const temp=path.join(path.dirname(destination),`.showkontrol-program-${randomUUID()}.tmp`);let created=false;
+ try{
+  await writeFile(temp,xml,{flag:'wx'});created=true;
+  if((await snapshot(source)).sha256!==sha256)throw Error('Program changed since inspection');
+  if((await timelineDonor({donor,donorName})).sha256!==donorSha256)throw Error('Donor changed since inspection');
+  await link(temp,destination);
+ }finally{if(created)await unlink(temp);}
+ return {destination,sha256:hash(Buffer.from(xml)),items:publicItems(parse(xml).items),warnings:['Inspect trigger settings and change cue.active to item.active as appropriate; settings were not changed.','Inspect dependencies and IDs for collisions and validity; IDs were not remapped.','Graph structure and ShowKontrol application acceptance are unverified.']};
 }

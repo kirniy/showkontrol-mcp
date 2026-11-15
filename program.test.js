@@ -50,3 +50,11 @@ test('rejects an edit that would exceed the Program size limit',async()=>{
   await assert.rejects(readFile(destination),{code:'ENOENT'});
  }finally{await rm(dir,{recursive:true,force:true});}
 });
+
+test('Program inspection accepts fractional final millisecond but rejects the next day',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'program-boundary-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'boundary.skpr');
+ const xml=start=>`<skprogram version="1"><item start="${start}" name="" notes=""/></skprogram>`;
+ await writeFile(file,xml('86399999.5'));assert.equal((await inspectProgram({file})).items[0].start,86399999.5);
+ await writeFile(file,xml('86400000'));await assert.rejects(inspectProgram({file}),/Invalid item start/);
+});
