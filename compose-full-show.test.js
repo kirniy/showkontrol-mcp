@@ -9,6 +9,7 @@ import {composeFullShowCopy as compose} from './compose-full-show.js';
 import {inspectShow} from './xml-copy.js';
 import {inspectShowSetlist} from './setlist.js';
 import {inspectProgramItemGraph,extractProgramTimelineCopy} from './program.js';
+import {inspectCueGraph} from './timeline.js';
 const hash=(type,text)=>createHash(type).update(text).digest('hex');
 const part=(name,text)=>`<part name="${name}" md5="${hash('md5',text)}">${Buffer.from(text).toString('base64')}</part>`;
 async function fixture(t){
@@ -36,6 +37,35 @@ test('rejects invalid or ambiguous staged graph node selectors',async t=>{
  for(const setting of [{nodeIndex:2,key:'trigger.path',value:'x'},{nodeIndex:-1,key:'trigger.path',value:'x'},{nodeIndex:0,nodeId:'n1',key:'trigger.path',value:'x'},{key:'trigger.path',value:'x'}]){
   args.program.items[0].graph.settings=[setting];await assert.rejects(compose(args),/node (index|selector)/);await assert.rejects(readFile(args.destination),{code:'ENOENT'});
  }
+});
+test('resolves staged timeline settings per item before remapping',async t=>{
+ const {args,f}=await fixture(t);
+ args.program.items=[0,1].map(index=>({start:index,name:`Item ${index}`,notes:'',timeline:{stagedShow:{trackIndex:0},remapCueIds:true,settings:[{cueIndex:0,nodeIndex:1,key:'trigger.path',value:`item.${index}`}]}}));
+ const r=await compose(args);const cue=r.tracks[0].cues[0];
+ for(const index of [0,1]){
+  const file=f(`timeline-${index}.sktl`);await extractProgramTimelineCopy({source:args.destination,destination:file,sha256:r.sha256,index});
+  const mapping=r.program.mappings[index].timeline;const graph=await inspectCueGraph({file,format:'sktl',cueId:mapping.cues[cue.id]});
+  assert.equal(graph.graph.nodes.find(n=>n.id===mapping.nodes[cue.idMap.n1]).settings.find(s=>s.key==='trigger.path').value,'old');
+  assert.equal(graph.graph.nodes.find(n=>n.id===mapping.nodes[cue.idMap.n2]).settings.find(s=>s.key==='trigger.path').value,`item.${index}`);
+ }
+});
+test('rejects invalid and mixed staged timeline setting selectors without publication',async t=>{
+ const {args,dir}=await fixture(t);
+ for(const selectors of [{cueIndex:-1,nodeIndex:0},{cueIndex:1,nodeIndex:0},{cueIndex:0,nodeIndex:-1},{cueIndex:0,nodeIndex:2},{cueIndex:0,nodeId:'n1'},{cueId:'d',nodeIndex:0},{cueIndex:0,nodeIndex:0,cueId:'d'},{cueId:'d',nodeId:'n1',nodeIndex:0},{cueIndex:0},{}]){
+  args.program.items[0].timeline.settings=[{...selectors,key:'trigger.path',value:'x'}];
+  await assert.rejects(compose(args),/Timeline setting|staged timeline/);await assert.rejects(readFile(args.destination),{code:'ENOENT'});
+  assert.deepEqual((await readdir(dir)).sort(),['donor.skshow','in.skshow']);
+ }
+});
+test('accepts explicit staged timeline cue and node IDs',async t=>{
+ const {args,f}=await fixture(t);
+ const source=`<skshow>${part('Empty.sktl','<sktimeline version="1" name="Empty"><layers><layer/></layers><cue id="known"><graph><node id="n42" type="trigger"><settings><setting key="trigger.path">old</setting></settings></node></graph></cue></sktimeline>')}${part('Set.skls','<sksetlist version="2"><set name="Main"/></sksetlist>')}${part('patch.skf','<showkontrol version="2"><graph/><appSettings/></showkontrol>')}</skshow>`;
+ await writeFile(args.source,source);args.sha256=hash('sha256',source);
+ args.tracks=[{existingPartName:'Empty.sktl',cues:[{layer:0,startMs:0,lengthMs:100,label:'New'}]}];delete args.program.items[0].graph;
+ args.program.items[0].timeline.settings=[{cueId:'known',nodeId:'n42',key:'trigger.path',value:'explicit'}];
+ const r=await compose(args);const file=f('explicit.sktl');await extractProgramTimelineCopy({source:args.destination,destination:file,sha256:r.sha256,index:0});
+ const mapping=r.program.mappings[0].timeline;const graph=await inspectCueGraph({file,format:'sktl',cueId:mapping.cues.known});
+ assert.equal(graph.graph.nodes.find(n=>n.id===mapping.nodes['n42']).settings.find(s=>s.key==='trigger.path').value,'explicit');
 });
 test('external Program donor, failures, stale input and existing destination',async t=>{
  const {args,f,source,donor,dir}=await fixture(t);const external={donor:f('donor.skshow'),donorName:'Donor.sktl',donorSha256:hash('sha256',donor),donorCueId:'d'};

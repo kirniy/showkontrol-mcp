@@ -57,6 +57,24 @@ export async function composeFullShowCopy(args){
       else {if(typeof selector.cueId!=='string'||!selector.cueId||selector.cueId.length>4096)throw Error('Invalid staged cue ID');cueId=selector.cueId;}
      }
      const {stagedShow,...options}=donor;
+     if(kind==='timeline'&&options.settings!==undefined){
+      if(!Array.isArray(options.settings))throw Error('Settings must be an array');
+      const graphs=new Map();
+      options.settings=await Promise.all(options.settings.map(async setting=>{
+       if(!object(setting))throw Error('Timeline setting requires either cueIndex and nodeIndex or cueId and nodeId');
+       const indexed=Object.hasOwn(setting,'cueIndex')&&Object.hasOwn(setting,'nodeIndex');
+       const identified=Object.hasOwn(setting,'cueId')&&Object.hasOwn(setting,'nodeId');
+       if(indexed===identified||indexed&&(Object.hasOwn(setting,'cueId')||Object.hasOwn(setting,'nodeId'))||identified&&(Object.hasOwn(setting,'cueIndex')||Object.hasOwn(setting,'nodeIndex')))throw Error('Timeline setting requires either cueIndex and nodeIndex or cueId and nodeId');
+       if(identified)return setting;
+       if(!Number.isSafeInteger(setting.cueIndex)||setting.cueIndex<0||!track?.cues?.[setting.cueIndex])throw Error('Invalid staged timeline cue index');
+       if(!Number.isSafeInteger(setting.nodeIndex)||setting.nodeIndex<0)throw Error('Invalid staged timeline node index');
+       const resolvedCueId=track.cues[setting.cueIndex].id;
+       if(!graphs.has(resolvedCueId))graphs.set(resolvedCueId,inspectCueGraph({file:current,format:'skshow',name,cueId:resolvedCueId}));
+       const inspected=await graphs.get(resolvedCueId);if(inspected.sha256!==hash)throw Error('Staged show changed since composition');
+       const nodeId=inspected.graph.nodes[setting.nodeIndex]?.id;if(typeof nodeId!=='string'||!nodeId)throw Error('Invalid staged timeline node index');
+       const {cueIndex,nodeIndex,...rest}=setting;return {...rest,cueId:resolvedCueId,nodeId};
+      }));
+     }
      if(kind==='graph'&&options.settings!==undefined){
       if(!Array.isArray(options.settings))throw Error('Settings must be an array');
       let nodes;

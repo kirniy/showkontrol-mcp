@@ -42,3 +42,26 @@ test('MCP resolves a staged cue graph node index for Program settings',async t=>
  const result=parse(await call('showkontrol_compose_full_show_copy',args));assert.equal(result.validation.file,args.destination);assert.match(result.validation.note,/before publication/);
  const graph=parse(await call('showkontrol_inspect_program_item_graph',{file:args.destination,sha256:result.sha256,index:0}));assert.equal(graph.graph.nodes[0].settings.find(s=>s.key==='trigger.path').value,'item.active');
 });
+
+test('MCP resolves staged timeline setting indices and rejects mixed selectors',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'full-show-timeline-mcp-'));t.after(()=>rm(dir,{recursive:true,force:true}));const f=name=>path.join(dir,name);
+ const input=`<skshow>${part('Empty.sktl','<sktimeline version="1" name="Empty"><layers><layer/></layers></sktimeline>')}${part('patch.skf','<showkontrol version="2"><graph/><appSettings/></showkontrol>')}</skshow>`;
+ const donor=`<skshow>${part('Donor.sktl','<sktimeline version="1"><cue id="d"><graph><node id="n1" type="trigger"><settings><setting key="trigger.path">old</setting></settings></node><node id="n2" type="trigger"><settings><setting key="trigger.path">second</setting></settings></node></graph></cue></sktimeline>')}</skshow>`;
+ await writeFile(f('in.skshow'),input);await writeFile(f('donor.skshow'),donor);
+ const client=new Client({name:'full-show-timeline-setting-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const call=(name,args)=>client.callTool({name:`showkontrol_${name}`,arguments:args});const parse=response=>{assert.equal(response.isError,undefined,JSON.stringify(response));return JSON.parse(response.content[0].text);};
+ const items=[0,1].map(index=>({start:index,name:`Item ${index}`,notes:'',timeline:{stagedShow:{trackIndex:0},remapCueIds:true,settings:[{cueIndex:0,nodeIndex:1,key:'trigger.path',value:`item.${index}`}]}}));
+ const args={source:f('in.skshow'),destination:f('out.skshow'),sha256:hash('sha256',input),tracks:[{templateName:'Empty.sktl',trackName:'First',partName:'content/First.sktl',donor:{file:f('donor.skshow'),sha256:hash('sha256',donor),name:'Donor.sktl',cueId:'d'},cues:[{layer:0,startMs:0,lengthMs:100,label:'Cue'}]}],program:{items}};
+ const result=parse(await call('compose_full_show_copy',args));const cue=result.tracks[0].cues[0];
+ for(const index of [0,1]){
+  const file=f(`timeline-${index}.sktl`);parse(await call('extract_program_timeline_copy',{source:args.destination,destination:file,sha256:result.sha256,index}));
+  const mapping=result.program.mappings[index].timeline;const graph=parse(await call('inspect_cue_graph',{file,format:'sktl',cueId:mapping.cues[cue.id]}));
+  assert.equal(graph.graph.nodes.find(n=>n.id===mapping.nodes[cue.idMap.n1]).settings.find(s=>s.key==='trigger.path').value,'old');
+  assert.equal(graph.graph.nodes.find(n=>n.id===mapping.nodes[cue.idMap.n2]).settings.find(s=>s.key==='trigger.path').value,`item.${index}`);
+ }
+ for(const selector of [{cueIndex:0,nodeId:'n1'},{cueId:'d',nodeIndex:0},{cueIndex:0,nodeIndex:0,cueId:'d'},{cueId:'d',nodeId:'n1',nodeIndex:0}]){
+  const bad=f('bad.skshow');const setting={...selector,key:'trigger.path',value:'x'};
+  const response=await call('compose_full_show_copy',{...args,destination:bad,program:{items:[{...items[0],timeline:{...items[0].timeline,settings:[setting]}}]}});
+  assert.equal(response.isError,true,JSON.stringify(response));await assert.rejects(readFile(bad),{code:'ENOENT'});assert.deepEqual((await readdir(dir)).filter(name=>name.startsWith('.showkontrol-')),[]);
+ }
+});
