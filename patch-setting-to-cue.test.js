@@ -50,3 +50,19 @@ test('copy captured Script and OSC settings only to the same type and kind',asyn
   await run(timeline(),donor('<setting key="node.stopped">true</setting>'),'stopped',/Cannot copy node.stopped/,{key:'node.stopped'});
  }
 });
+test('opaque setting opt-in is limited to eligible scalar text and reports destination scope',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-setting-opaque-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'in.skshow'),template=path.join(dir,'donor.skf'),name='content/Track.sktl',part=(n,text)=>`<part name="${n}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const setup=async (type,kind,setting,targetKind=kind)=>{const timeline=`<sktimeline version="1"><cue id="c1"><graph><node id="n1" type="${type}" kind="${targetKind}"><settings/></node></graph></cue></sktimeline>`,donor=`<showkontrol version="2"><graph><node id="n228" type="${type}" kind="${kind}"><settings>${setting}</settings></node></graph></showkontrol>`;await writeFile(source,`<skshow>${part(name,timeline)}${part('patch.skf','<showkontrol version="2"><graph/></showkontrol>')}</skshow>`);await writeFile(template,donor);return {source,sha256:(await inspectShowTimeline({file:source,name})).sha256,name,cueId:'c1',nodeId:'n1',template,templateFormat:'skf',templateSha256:(await inspectXml({file:template})).sha256,templateNodeId:'n228'};};
+ for(const [i,type,kind,key] of [[0,'processor','','proc.script'],[1,'generator','OSC','gen.address']]){
+  const args={...await setup(type,kind,`<setting key="${key}">prefix n<![CDATA[12]]> suffix</setting>`),key,destination:path.join(dir,`out-${i}`)};
+  await assert.rejects(copyPatchSettingToCueShowCopy(args),/unsupported node references/);
+  await assert.rejects(copyPatchSettingToCueShowCopy({...args,allowOpaqueNodeText:'true'}),/boolean/);
+  const result=await copyPatchSettingToCueShowCopy({...args,allowOpaqueNodeText:true});assert.equal(result.value,'prefix n12 suffix');assert.deepEqual(result.warnings[0].scope,{part:name,cueId:'c1',nodeId:'n1',key});assert.equal(result.warnings[0].code,'opaque_node_references_unverified');
+  assert.equal((await inspectCueGraph({file:args.destination,format:'skshow',name,cueId:'c1'})).graph.nodes[0].settings[0].value,result.value);
+ }
+ for(const [i,setting,key] of [[0,'<setting key="other">n12</setting>','other'],[1,'<setting key="proc.script" ref="n9">n12</setting>','proc.script'],[2,'<setting key="proc.script">n12<!--x--></setting>','proc.script'],[3,'<setting key="proc.script"><nested>n12</nested></setting>','proc.script']]){
+  const args={...await setup('processor','',setting),key,destination:path.join(dir,`bad-${i}`),allowOpaqueNodeText:true};await assert.rejects(copyPatchSettingToCueShowCopy(args));await assert.rejects(readFile(args.destination),/ENOENT/);
+ }
+ const mismatch={...await setup('processor','','<setting key="proc.script">n12</setting>','other'),key:'proc.script',destination:path.join(dir,'mismatch'),allowOpaqueNodeText:true};await assert.rejects(copyPatchSettingToCueShowCopy(mismatch),/kinds must match/);
+});

@@ -318,7 +318,7 @@ async function copyProgramPatchSetting({timeline,edited,program,source,sha256,cu
  const snapshot=await readShowSnapshot({file:staged});let name='content/CompositionTimeline.sktl',suffix=0;
  while(snapshot.parts.some(p=>p.name.toLowerCase()===name.toLowerCase()))name=`content/CompositionTimeline${++suffix}.sktl`;
  await addShowPart({source:staged,destination:withTimeline,sha256:attached.sha256,name,text:await readFile(timeline,'utf8')});
- const result=await copyPatchSettingToCueShowCopy({source:withTimeline,destination:copied,sha256:(await inspectXml({file:withTimeline})).sha256,name,cueId,nodeId,template:operation.donor,templateFormat:operation.donorFormat,templateSha256:operation.donorSha256,templateNodeId:operation.donorNodeId,key:operation.key});
+ const result=await copyPatchSettingToCueShowCopy({source:withTimeline,destination:copied,sha256:(await inspectXml({file:withTimeline})).sha256,name,cueId,nodeId,template:operation.donor,templateFormat:operation.donorFormat,templateSha256:operation.donorSha256,templateNodeId:operation.donorNodeId,key:operation.key,allowOpaqueNodeText:operation.allowOpaqueNodeText});
  const output=readSnapshotPart({snapshot:await readShowSnapshot({file:copied}),name}).text;
  parseXmlSpans(output);await writeFile(edited,output,{flag:'wx'});
  return {...result,sha256:digest(output)};
@@ -337,7 +337,7 @@ async function copyItemPatchSetting({program,destination,source,sha256,currentSh
  if(outGraphs.length!==1)throw Error('Copied item graph could not be verified');
  const modified=xml.slice(0,graph.start)+output.slice(outGraphs[0].start,outGraphs[0].end)+xml.slice(graph.end);
  parseXmlSpans(modified);await writeFile(destination,modified,{flag:'wx'});
- return {...result,sha256:digest(modified),note:'Copied a setting from a patch node into an offline Program item graph. Values, external dependencies and ShowKontrol acceptance are not validated.'};
+ return {...result,sha256:digest(modified),warnings:(result.warnings??[]).map(w=>{if(!w||typeof w!=='object'||!w.scope)return w;const {cueId,...scope}=w.scope;return {...w,scope:{...scope,part:'content/Program.skpr',itemIndex:index}};}),note:'Copied a setting from a patch node into an offline Program item graph. Values, external dependencies and ShowKontrol acceptance are not validated.'};
 }
 
 async function editItemGraphWire({program,destination,currentSha,index,operation,fromNode,toNode,dir,step}){
@@ -386,7 +386,7 @@ export async function composeProgramEditsCopy(args){
    }
   }
   else if(op.action==='copy_patch_setting_to_item_graph'){
-   keys(op,['action','index','donor','donorFormat','donorSha256','donorNodeId','key'],['nodeId','nodeFromOperation','graphFromOperation','nodeIndex']);
+   keys(op,['action','index','donor','donorFormat','donorSha256','donorNodeId','key'],['nodeId','nodeFromOperation','graphFromOperation','nodeIndex','allowOpaqueNodeText']);
    if(['nodeId','nodeFromOperation','graphFromOperation'].filter(k=>Object.hasOwn(op,k)).length!==1||Object.hasOwn(op,'nodeIndex')!==Object.hasOwn(op,'graphFromOperation'))throw Error('Provide exactly one of nodeId, nodeFromOperation, or graphFromOperation with nodeIndex');
    if(Object.hasOwn(op,'nodeId')&&(typeof op.nodeId!=='string'||!op.nodeId))throw Error('nodeId must be a nonempty string');
    if(Object.hasOwn(op,'nodeFromOperation')&&(!Number.isInteger(op.nodeFromOperation)||op.nodeFromOperation<0))throw Error('Invalid nodeFromOperation');
@@ -408,7 +408,7 @@ export async function composeProgramEditsCopy(args){
    }
   }
   else if(op.action==='copy_patch_setting_to_timeline_cue'){
-   keys(op,['action','index','donor','donorFormat','donorSha256','donorNodeId','key'],['cueId','cueFromOperation','nodeId','nodeFromOperation','graphFromOperation','nodeIndex','copiedGraphFromOperation','copiedGraphDonorNodeId']);
+   keys(op,['action','index','donor','donorFormat','donorSha256','donorNodeId','key'],['cueId','cueFromOperation','nodeId','nodeFromOperation','graphFromOperation','nodeIndex','copiedGraphFromOperation','copiedGraphDonorNodeId','allowOpaqueNodeText']);
    if(Object.hasOwn(op,'cueFromOperation')===Object.hasOwn(op,'cueId'))throw Error('Provide exactly one of cueId or cueFromOperation');
    const forms=['nodeId','nodeFromOperation','graphFromOperation','copiedGraphFromOperation'].filter(k=>Object.hasOwn(op,k));
    if(forms.length!==1||Object.hasOwn(op,'nodeIndex')!==Object.hasOwn(op,'graphFromOperation')||Object.hasOwn(op,'copiedGraphDonorNodeId')!==Object.hasOwn(op,'copiedGraphFromOperation'))throw Error('Provide exactly one node selector: nodeId, nodeFromOperation, graphFromOperation with nodeIndex, or copiedGraphFromOperation with copiedGraphDonorNodeId');
@@ -460,7 +460,7 @@ export async function composeProgramEditsCopy(args){
  const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-program-edit-'));
  try{
   let step=0;const next=()=>path.join(dir,`${step++}.skpr`);
-  const warnings=new Set(),structuredWarnings=[];
+  const warnings=new Set(),structuredWarnings=[],patchSettingWarnings=new WeakSet();
   const createdCues=[],copiedCueGraphs=[],assembledCueGraphs=[],assembledItemGraphs=[],copiedItemNodes=[],copiedCueNodes=[],donors=[],invalidatedGraphs=new Set();
   const collect=result=>{for(const warning of [...(result.warnings??[]),result.note])if(typeof warning==='string'&&warning)warnings.add(warning);else if(warning&&typeof warning==='object')structuredWarnings.push(warning);};
   let program=next(),current=await extractShowProgramCopy({source,destination:program,sha256});collect(current);
@@ -528,6 +528,7 @@ export async function composeProgramEditsCopy(args){
      nodeId=graph.nodeIds[operation.nodeIndex];
     }
     current=await copyItemPatchSetting({program,destination,source,sha256,currentSha:current.sha256,index:operation.index,nodeId,operation,dir,step});
+    for(const w of current.warnings??[])if(w&&typeof w==='object'&&w.code==='opaque_node_references_unverified')patchSettingWarnings.add(w);
     donors.push({file:operation.donor,sha256:operation.donorSha256});
    }else if(operation.action==='edit_graph_setting'){
     const {index,nodeId,key,value}=operation;
@@ -625,7 +626,7 @@ export async function composeProgramEditsCopy(args){
      ?await editCueGraphWireCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,operation:operation.operation,fromNode,toNode})
      :await editCueGraphSettingCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,nodeId,key:operation.key,value:operation.value});
     if(operation.action==='delete_timeline_cue')collect({...changed,note:'Deleted a cue from an offline Program copy. Literal XML references were checked; binary, encoded and external references may be missed. Validate in ShowKontrol.'});
-    else collect({...changed,warnings:(changed.warnings??[]).map(w=>typeof w==='object'&&w?.scope?{...w,scope:{...w.scope,part:'content/Program.skpr'}}:w)});
+    else {const mapped=(changed.warnings??[]).map(w=>typeof w==='object'&&w?.scope?{...w,scope:{...w.scope,part:'content/Program.skpr',itemIndex:index}}:w);if(operation.action==='copy_patch_setting_to_timeline_cue')for(const w of mapped)if(w&&typeof w==='object'&&w.code==='opaque_node_references_unverified')patchSettingWarnings.add(w);collect({...changed,warnings:mapped});}
     if(operation.action==='copy_patch_setting_to_timeline_cue')donors.push({file:operation.donor,sha256:operation.donorSha256});
     if(operation.action==='copy_timeline_cue_node'){copiedCueNodes.push({operationIndex,cueId,nodeId:changed.newNodeId});donors.push({file:operation.donor,sha256:operation.donorSha256});}
     if(operation.action==='copy_timeline_cue_graph'){copiedCueGraphs.push({operationIndex,cueId,idMap:changed.idMap});donors.push({file:operation.donor,sha256:operation.donorSha256});}
@@ -648,7 +649,21 @@ export async function composeProgramEditsCopy(args){
   if(final.sha256!==attached.sha256||final.programSha256!==current.sha256)throw Error('Final show checksum mismatch');
   if((await inspectShowProgram({file:source})).sha256!==sha256)throw Error('Source changed since inspection');
   for(const donor of donors)if((await inspectXml({file:donor.file})).sha256!==donor.sha256)throw Error('Donor changed since inspection');
+  // Patch-setting warnings describe the published Program, including index shifts.
+  const finalProgram=await readFile(program,'utf8'),root=parseXmlSpans(finalProgram);
+  const finalWarnings=structuredWarnings.flatMap(w=>{
+   if(!patchSettingWarnings.has(w))return [w];
+   const matches=[];
+   for(const [itemIndex,item] of root.children.entries()){
+    const scopes=[];
+    for(const graph of item.children.filter(n=>n.name==='graph'))scopes.push({graph});
+    for(const timeline of item.children.filter(n=>n.name==='sktimeline'))for(const cue of timeline.children.filter(n=>n.name==='cue'))for(const graph of cue.children.filter(n=>n.name==='graph'))scopes.push({graph,cueId:cue.attributes.id});
+    for(const {graph,cueId} of scopes)for(const node of graph.children.filter(n=>n.name==='node'&&n.attributes.id===w.scope.nodeId))for(const settings of node.children.filter(n=>n.name==='settings'))for(const setting of settings.children.filter(n=>n.name==='setting'&&n.attributes.key===w.scope.key))if(hasXmlReference(finalProgram.slice(setting.start,setting.end),/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/))matches.push({itemIndex,cueId});
+   }
+   const {cueId,...scope}=w.scope;
+   return matches.map(match=>{const updated={...scope,itemIndex:match.itemIndex};if(match.cueId!==undefined)updated.cueId=match.cueId;return {...w,scope:updated};});
+  });
   await link(candidate,destination);
-  return {destination,sha256:attached.sha256,programSha256:current.sha256,items:final.items,createdCues,copiedCueGraphs,assembledCueGraphs,assembledItemGraphs,copiedItemNodes,copiedCueNodes,warnings:[...warnings,...structuredWarnings],validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
+  return {destination,sha256:attached.sha256,programSha256:current.sha256,items:final.items,createdCues,copiedCueGraphs,assembledCueGraphs,assembledItemGraphs,copiedItemNodes,copiedCueNodes,warnings:[...warnings,...finalWarnings],validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
  }finally{await rm(dir,{recursive:true,force:true});}
 }

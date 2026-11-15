@@ -1,0 +1,34 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp, writeFile, readFile, rm} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
+import {composeShowCopy} from './compose-show.js';
+import {composeMultiTrackShowCopy} from './compose-multi-show.js';
+
+test('patch setting opt-in and surviving warnings pass through composition', async t => {
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-opaque-setting-compose-')); t.after(()=>rm(dir,{recursive:true,force:true}));
+ const f=n=>path.join(dir,n), hash=s=>createHash('sha256').update(s).digest('hex');
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const input=`<skshow>${part('content/Empty.sktl','<sktimeline version="1" name="Empty"><layers><layer name="L"/></layers></sktimeline>')}${part('patch.skf','<showkontrol version="2"><graph/></showkontrol>')}</skshow>`;
+ const donor=`<skshow>${part('Donor.sktl','<sktimeline version="1"><cue id="src"><graph><node id="n1" type="processor" kind=""><settings><setting key="proc.script">old</setting></settings></node></graph></cue></sktimeline>')}</skshow>`;
+ const patch='<showkontrol version="2"><graph><node id="n8" type="processor" kind=""><settings><setting key="proc.script">return n42;</setting></settings></node></graph></showkontrol>';
+ await Promise.all([writeFile(f('source'),input),writeFile(f('donor'),donor),writeFile(f('patch'),patch)]);
+ const setting={nodeId:'n1',key:'proc.script',template:f('patch'),templateFormat:'skf',templateSha256:hash(patch),templateNodeId:'n8'};
+ const track={templateName:'content/Empty.sktl',trackName:'Track',partName:'content/Track.sktl',donor:{file:f('donor'),sha256:hash(donor),name:'Donor.sktl',cueId:'src'},cues:[{layer:0,startMs:0,lengthMs:40,label:'Cue',patchSettings:[setting]}]};
+ const base={source:f('source'),sha256:hash(input)};
+ await assert.rejects(composeShowCopy({...base,destination:f('reject'),...track}),/references/);
+ await assert.rejects(readFile(f('reject')),{code:'ENOENT'});
+ const withSetting=s=>({...track,cues:[{...track.cues[0],patchSettings:[s]}]});
+ await assert.rejects(composeShowCopy({...base,destination:f('bad'),...withSetting({...setting,allowOpaqueNodeText:'true'})}));
+ const enabled=withSetting({...setting,allowOpaqueNodeText:true});
+ const single=await composeShowCopy({...base,destination:f('single'),...enabled});
+ const warning=single.warnings.find(w=>w.code==='opaque_node_references_unverified');
+ assert.equal(warning.scope.part,'content/Track.sktl'); assert.equal(warning.scope.cueId,single.cues[0].id); assert.equal(warning.scope.nodeId,single.cues[0].idMap.n1); assert.equal(warning.scope.key,'proc.script');
+ const multi=await composeMultiTrackShowCopy({...base,destination:f('multi'),tracks:[enabled]});
+ assert.ok(multi.warnings.some(w=>w.code==='opaque_node_references_unverified' && w.scope.cueId===multi.tracks[0].cues[0].id));
+ const overwritten={...enabled,cues:[{...enabled.cues[0],postPatchSettings:[{nodeId:'n1',key:'proc.script',value:'safe'}]}]};
+ const final=await composeShowCopy({...base,destination:f('final'),...overwritten});
+ assert.equal(final.warnings.some(w=>w.code==='opaque_node_references_unverified'),false);
+});

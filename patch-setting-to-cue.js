@@ -1,4 +1,4 @@
-import {SaxesParser} from 'saxes';import {inspectXml,readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';import {hasXmlReference} from './xml-references.js';
+import {SaxesParser} from 'saxes';import {inspectXml,readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';import {hasXmlReference} from './xml-references.js';import {maskOpaqueNodeText,opaqueNodeWarnings} from './opaque-node-text.js';
 function scalarValue(xml){let value='',depth=0;const p=new SaxesParser();p.on('opentag',()=>{if(++depth>1)throw Error('Nested setting content is unsupported');});p.on('text',s=>value+=s);p.on('cdata',s=>value+=s);p.on('closetag',()=>depth--);p.write(xml).close();return value;}
 export function validateRouterTarget(target,value){
   const patchXml=readSnapshotPart({snapshot:target,name:'patch.skf'}).text,patchRoot=parseXmlSpans(patchXml),graphs=selectXmlSpans(patchRoot,['showkontrol','graph']);
@@ -11,7 +11,8 @@ export function validateRouterTarget(target,value){
   }
   if(matches!==1)throw Error('Router target must match exactly one router name in the destination patch');
 }
-export async function copyPatchSettingToCueShowCopy({source,destination,sha256,name,cueId,nodeId,template,templateFormat,templateSha256,templateNodeId,key}){
+export async function copyPatchSettingToCueShowCopy({source,destination,sha256,name,cueId,nodeId,template,templateFormat,templateSha256,templateNodeId,key,allowOpaqueNodeText}){
+ if(allowOpaqueNodeText!==undefined&&typeof allowOpaqueNodeText!=='boolean')throw Error('allowOpaqueNodeText must be a boolean');
  if(key==='node.stopped')throw Error('Cannot copy node.stopped from a patch; use the cue node stopped-state tool');
  if(!name?.toLowerCase().endsWith('.sktl')||typeof cueId!=='string'||!cueId||!/^n\d+$/.test(nodeId||'')||!/^n\d+$/.test(templateNodeId||'')||!/^[A-Za-z0-9_.:-]+$/.test(key||''))throw Error('Valid timeline, cue, node IDs and key are required');
  if(!['skf','skshow'].includes(templateFormat))throw Error('Template format must be skf or skshow');const target=await readShowSnapshot({file:source});if(target.sha256!==sha256)throw Error('Source changed since inspection');if(!target.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
@@ -21,10 +22,14 @@ export async function copyPatchSettingToCueShowCopy({source,destination,sha256,n
  if(key==='route.router_target'){
   if(donorNode.attributes.type!=='action'||!value||value.trim()!==value||Object.keys(selected.attributes).length!==1||(!/^n\d+$/.test(value)&&hasXmlReference(settingXml,/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/)))throw Error('Invalid router target setting');
   validateRouterTarget(target,value);
- }else if(hasXmlReference(settingXml,/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/))throw Error('Setting contains unsupported node references');
+ }else {
+  const masked=maskOpaqueNodeText(donorXml,donorNode,allowOpaqueNodeText),scanned=masked.masked.slice(selected.start-donorNode.start,selected.end-donorNode.start);
+  if(hasXmlReference(scanned,/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/))throw Error('Setting contains unsupported node references');
+ }
  const xml=readSnapshotPart({snapshot:target,name}).text,root=parseXmlSpans(xml),cuePath=['sktimeline',{name:'cue',attributes:{id:cueId}}],nodePath=[...cuePath,'graph',{name:'node',attributes:{id:nodeId}}],nodes=selectXmlSpans(root,nodePath),scopes=selectXmlSpans(root,[...nodePath,'settings']),existing=selectXmlSpans(root,[...nodePath,'settings',{name:'setting',attributes:{key}}]);
  if(root.name!=='sktimeline'||root.attributes.version!=='1'||selectXmlSpans(root,cuePath).length!==1||nodes.length!==1||scopes.length!==1||existing.length>1)throw Error('Target cue, node and settings must be unique');if(nodes[0].attributes.type!==donorType)throw Error('Template and target node types must match');if(isTypedKind&&nodes[0].attributes.kind!==donorKind)throw Error('Template and target node kinds must match');
  let modified;if(existing.length){const old=existing[0];modified=xml.slice(0,old.start)+settingXml+xml.slice(old.end);}else{const scope=scopes[0];if(scope.selfClosing){const open=xml.slice(scope.start,scope.openEnd).replace(/\s*\/>$/,'>');modified=xml.slice(0,scope.start)+open+settingXml+'</settings>'+xml.slice(scope.end);}else modified=xml.slice(0,scope.closeStart)+settingXml+xml.slice(scope.closeStart);}
  const checked=selectXmlSpans(parseXmlSpans(modified),[...nodePath,'settings',{name:'setting',attributes:{key}}]);if(checked.length!==1||scalarValue(modified.slice(checked[0].start,checked[0].end))!==value)throw Error('Copied setting could not be verified');
- const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});return {...result,cueId,nodeId,templateNodeId,key,value,replaced:existing.length===1,note:'Copied a setting from a patch node into an offline cue node. Values, external dependencies and ShowKontrol acceptance are not validated.'};
+ const masked=maskOpaqueNodeText(donorXml,donorNode,allowOpaqueNodeText),warnings=opaqueNodeWarnings([{nodeId:templateNodeId,keys:masked.keys.filter(k=>k===key)}],name,cueId,{[templateNodeId]:nodeId});
+ const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});return {...result,cueId,nodeId,templateNodeId,key,value,replaced:existing.length===1,warnings,note:'Copied a setting from a patch node into an offline cue node. Values, external dependencies and ShowKontrol acceptance are not validated.'};
 }
