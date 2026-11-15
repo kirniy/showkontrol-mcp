@@ -68,3 +68,22 @@ test('rejects a generated cue ID already present elsewhere',async t=>{
   }
  }finally{Date.now=oldNow;crypto.randomInt=oldRandomInt;syncBuiltinESMExports();}
 });
+test('copies a donor graph to a newly created cue after an item index shift',async t=>{
+ const args=await fixture(t,{extra:part('patch.skf','<showkontrol version="2"><appSettings/><graph><node id="n900" type="router"/></graph></showkontrol>'),remaining:'<graph><node id="n800"/></graph>'});
+ const donor=path.join(args.dir,'donor.sktl');const xml='<sktimeline version="1"><layers/><cue id="donor"><graph><node id="n1" type="groupin"/><node id="n2" type="action"/><connection fromNode="n1" fromPin="0" toNode="n2" toPin="0"/></graph></cue></sktimeline>';await writeFile(donor,xml);
+ const op={action:'copy_timeline_cue_graph',index:0,cueFromOperation:0,donor,donorSha256:hash('sha256',xml),donorCueId:'donor'};
+ const result=await run(args,[{...add,index:1},{action:'remove',index:0},op]);
+ assert.deepEqual(result.copiedCueGraphs[0].idMap,{n1:'n901',n2:'n902'});
+ const program=(await readShowPart({file:args.destination,name:'content/Program.skpr'})).text;
+ assert.match(program,/id="n900"|id="n800"/);assert.match(program,/fromNode="n901"/);assert.match(program,/toNode="n902"/);
+});
+test('rejects stale donors, unsupported references, wrong item and later failure atomically',async t=>{
+ for(const variant of ['stale','reference','router','wrong','later']){
+  const args=await fixture(t);const donor=path.join(args.dir,'donor.sktl');
+  const setting=variant==='reference'?'<settings><setting key="other">n77</setting></settings>':variant==='router'?'<settings><setting key="route.router_target">n77</setting></settings>':'';
+  const xml=`<sktimeline version="1"><layers/><cue id="donor"><graph><node id="n1" type="action">${setting}</node></graph></cue></sktimeline>`;await writeFile(donor,xml);
+  const op={action:'copy_timeline_cue_graph',index:variant==='wrong'?0:1,cueFromOperation:0,donor,donorSha256:variant==='stale'?'0'.repeat(64):hash('sha256',xml),donorCueId:'donor'};
+  const operations=[{...add,index:1},op,...(variant==='later'?[{action:'edit',index:99,name:'x'}]:[])];
+  await assert.rejects(run(args,operations));await assert.rejects(readFile(args.destination),{code:'ENOENT'});assert.equal(await readFile(args.source,'utf8'),args.show);
+ }
+});
