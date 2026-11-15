@@ -13,6 +13,7 @@ import {editPatchBatchCopy} from './batch-patch.js';
 import {inspectXml,editXmlCopy,inspectShow,readShowPart,editShowPart} from './xml-copy.js';
 import {readShowPartPage} from './show-part-page.js';
 import {inspectShowOverview} from './overview.js';
+import {inspectShowMedia} from './media-inventory.js';
 import {validateShow} from './validate-show.js';
 import {editTimelineLayerCopy} from './layers.js';
 import {addShowTimelineCuesCopy} from './batch-cues.js';
@@ -229,6 +230,7 @@ add('showkontrol_copy_patch_node','Copy one existing node from an offline templa
 add('showkontrol_inspect_xml','Inspect an offline UTF-8 XML file and return its SHA-256 checksum and exact text. Do not use this to edit an active show.',{file:z.string()},inspectXml,readOnly);
 add('showkontrol_edit_xml_copy','Apply exact unique text replacements to an offline XML file and write a new file. Requires the checksum from inspection. The source and all unmodified text are preserved. This validates XML syntax only, not ShowKontrol schema or compatibility.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),edits:z.array(z.object({find:z.string().min(1),replace:z.string()})).min(1)},editXmlCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
 add('showkontrol_inspect_show','Read an offline .skshow wrapper manifest and verify part MD5 checksums.',{file:z.string()},inspectShow,readOnly);
+add('showkontrol_inspect_show_media','Inventory literal media.map mappings, archive parts and timeline audio clips from an offline show; does not test playback or access external media.',{file:z.string()},inspectShowMedia,readOnly);
 add('showkontrol_inspect_show_overview','Summarize an offline show from one consistent snapshot: parts, tracks, cues, set lists, and patch nodes. Fails on invalid checksums or unsupported native structures.',{file:z.string()},inspectShowOverview,readOnly);
 add('showkontrol_validate_show','Check an offline show snapshot for part checksums, duplicate node IDs, graph connections and set-track references. Unsupported or invalid parts can make checks incomplete. This does not validate pin compatibility or prove that ShowKontrol will load or run the show.',{file:z.string()},validateShow,readOnly);
 add('showkontrol_read_show_part','Read a UTF-8 part from an offline .skshow file after verifying its MD5.',{file:z.string(),name:z.string()},readShowPart,readOnly);
