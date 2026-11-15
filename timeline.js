@@ -550,15 +550,16 @@ export async function addTimelineAudioClipCopy({source,destination,format,sha256
 
 // Find where a new lane goes. A deck-bearing timeline keeps its lanes before the unique deck.
 // The R27 27.0.11 app-saved empty track has no deck: its only lane directly follows layers and ends the timeline.
-// Without a deck, accept only that shape (any number of lanes, including none) and append after the last lane.
+// Cues added by this server are appended at the end, after the lanes, as cues follow the lanes and deck in a deck-bearing timeline.
+// Without a deck, accept layers, then any lanes, then only direct cues, and append after the last lane.
 function audioLaneInsertion(xml,root,lanes){
  const decks=root.children.filter(n=>n.name==='deck');if(decks.length>1)throw Error('Expected at most one direct deck element for audio lane insertion');
  if(decks.length){if(lanes.some(n=>n.start>decks[0].start))throw Error('Audio lane order is unsupported');return {pos:decks[0].start,position:'before_deck'};}
  const layers=root.children.filter(n=>n.name==='layers');if(layers.length!==1)throw Error('A timeline without a deck needs exactly one direct layers element for audio lane insertion');
- const after=root.children.slice(root.children.indexOf(layers[0])+1);
- if(after.length!==lanes.length||after.some(n=>n.name!=='audio'))throw Error('Without a deck, audio lanes are supported only directly after layers at the end of the timeline');
- let cursor=layers[0].end;for(const n of [...after,{start:root.closeStart,end:root.closeStart}]){if(xml.slice(cursor,n.start).trim())throw Error('Without a deck, only whitespace may surround the audio lanes after layers');cursor=n.end;}
- return {pos:after.length?after.at(-1).end:layers[0].end,position:after.length?'after_last_lane':'after_layers'};
+ const after=root.children.slice(root.children.indexOf(layers[0])+1),laneEnd=after.findIndex(n=>n.name!=='audio'),cues=laneEnd<0?[]:after.slice(laneEnd);
+ if(after.length-cues.length!==lanes.length||cues.some(n=>n.name!=='cue'))throw Error('Without a deck, audio lanes are supported only directly after layers, followed by nothing but direct cues to the end of the timeline');
+ let cursor=layers[0].end;for(const n of [...after,{start:root.closeStart,end:root.closeStart}]){if(xml.slice(cursor,n.start).trim())throw Error('Without a deck, only whitespace may surround the audio lanes and cues after layers');cursor=n.end;}
+ return {pos:lanes.length?lanes.at(-1).end:layers[0].end,position:lanes.length?'after_last_lane':'after_layers'};
 }
 
 // Insert an empty audio lane using the app-saved R27 lane shape.

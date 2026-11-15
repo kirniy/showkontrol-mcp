@@ -68,6 +68,24 @@ test('Program lane operations append after the last lane of an item holding the 
  assert.equal(await readFile(show.file,'utf8'),show.xml);
 });
 
+test('a Program item staged from a new track with cues takes a lane before those cues',async t=>{
+ const dir=await tempDir(t,'sk-program-deckless-cues-'),template=path.join(dir,'empty.sktl');await writeFile(template,APP_EMPTY_TRACK);
+ const sourceXml=`<skshow>${part('content/Main.sktl',deckTimeline)}${part('patch.skf',patch)}</skshow>`,source=path.join(dir,'in.skshow');await writeFile(source,sourceXml);
+ const first=path.join(dir,'first.skshow');
+ const a=await composeFullShowCopy({source,destination:first,sha256:sha(sourceXml),
+  tracks:[{templateDonor:{file:template,format:'sktl',sha256:sha(APP_EMPTY_TRACK)},trackName:'Intro',partName:'content/Intro.sktl',cues:[{layer:0,startMs:0,lengthMs:500,label:'Hit'}]}],
+  program:{items:[{start:0,name:'Intro',notes:'',timeline:{stagedShow:{trackIndex:0},remapCueIds:true}}]}});
+ assert.match(await programText(first),/<audio name="Audio 1" follow="0"\/><cue [^>]*label="Hit"\/><\/sktimeline><\/item>/);
+ const second=path.join(dir,'second.skshow');
+ const b=await composeProgramEditsCopy({source:first,destination:second,sha256:a.sha256,operations:[
+  {action:'add_timeline_audio_lane',index:0,laneName:'Audio 2',follow:true},
+  {action:'add_timeline_audio_clip',index:0,audioIndex:1,clip}
+ ]});
+ assert.deepEqual(b.audioOperations.map(o=>[o.action,o.audioIndex,o.position]),[['add_timeline_audio_lane',1,'after_last_lane'],['add_timeline_audio_clip',1,undefined]]);
+ assert.match(await programText(second),/<audio name="Audio 1" follow="0"\/><audio name="Audio 2" follow="1"><clip name="Kick" [^>]*\/><\/audio><cue [^>]*label="Hit"\/><\/sktimeline><\/item>/);
+ assert.deepEqual(b.validation?.diagnostics?.filter(d=>d.severity==='error')??[],[]);
+});
+
 test('removing and re-adding the app lane in a Program item restores the embedded bytes',async t=>{
  const dir=await tempDir(t,'sk-program-deckless-roundtrip-'),programXml=await embeddedAppItem(dir),show=await showFile(dir,programXml),destination=path.join(dir,'out.skshow');
  const r=await composeProgramEditsCopy({source:show.file,destination,sha256:show.sha256,operations:[
@@ -81,8 +99,8 @@ test('removing and re-adding the app lane in a Program item restores the embedde
 test('unobserved deckless Program item layouts are rejected and publish nothing',async t=>{
  const dir=await tempDir(t,'sk-program-deckless-reject-'),appProgram=await embeddedAppItem(dir);
  const cases=[
-  ['cue after the lane',programWith(APP_ROOT.replace(APP_LANE,APP_LANE+'<cue id="c1" layer="0" startMs="0" lenMs="100" label="Go"/>')),[{action:'add_timeline_audio_lane',index:0,laneName:'New',follow:false}],/directly after layers at the end/],
-  ['element between layers and lane',programWith(APP_ROOT.replace(APP_LANE,'<titles/>'+APP_LANE)),[{action:'add_timeline_audio_lane',index:0,laneName:'New',follow:false}],/directly after layers at the end/],
+  ['lane after a cue',programWith(APP_ROOT.replace(APP_LANE,APP_LANE+'<cue id="c1" layer="0" startMs="0" lenMs="100" label="Go"/><audio name="Late" follow="0"/>')),[{action:'add_timeline_audio_lane',index:0,laneName:'New',follow:false}],/directly after layers, followed by nothing but direct cues/],
+  ['element between layers and lane',programWith(APP_ROOT.replace(APP_LANE,'<titles/>'+APP_LANE)),[{action:'add_timeline_audio_lane',index:0,laneName:'New',follow:false}],/directly after layers, followed by nothing but direct cues/],
   ['two layers',programWith(APP_ROOT.replace('<titles/>','<layers/>')),[{action:'add_timeline_audio_lane',index:0,laneName:'New',follow:false}],/exactly one direct layers/],
   ['duplicate app lane name',appProgram,[{action:'add_timeline_audio_lane',index:0,laneName:'Audio 1',follow:true}],/already exists/],
   // A valid deckless addition before a failing one leaves nothing behind.

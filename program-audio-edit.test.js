@@ -111,8 +111,8 @@ test('unsafe, ambiguous or unsupported Program audio operations publish nothing'
  const noDeck=program(doors.replace('<deck id="d" foo="1"/>',''),other);
  const cases=[
   [{},[{action:'add_timeline_audio_lane',index:0,laneName:'Main',follow:true}],/lane name already exists/],
-  // Without a deck only the app-saved empty-track shape is accepted; here a cue precedes and a marker follows the lane.
-  [{programXml:noDeck},[{action:'add_timeline_audio_lane',index:0,laneName:'New',follow:true}],/directly after layers at the end/],
+  // Without a deck, cues may follow the lanes but not precede them; here a cue precedes and a marker follows the lane.
+  [{programXml:noDeck},[{action:'add_timeline_audio_lane',index:0,laneName:'New',follow:true}],/directly after layers, followed by nothing but direct cues/],
   [{},[{action:'add_timeline_audio_clip',index:2,audioIndex:0,clip}],/no embedded timeline/],
   [{},[{action:'add_timeline_audio_clip',index:0,audioIndex:5,clip}],/Audio lane does not exist/],
   [{},[{action:'add_timeline_audio_clip',index:0,audioIndex:0,clip:{...clip,trimEndMs:'0'}}],/trimEndMs must exceed/],

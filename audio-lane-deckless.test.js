@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,readFile,readdir,rm,access,realpath} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import path from 'node:path';import os from 'node:os';
-import {addTimelineAudioLaneCopy,removeTimelineAudioLaneCopy,parseTimeline,inspectShowTimeline} from './timeline.js';
+import {addTimelineAudioLaneCopy,addTimelineCueCopy,removeTimelineAudioLaneCopy,parseTimeline,inspectShowTimeline} from './timeline.js';
 import {composeShowCopy} from './compose-show.js';
 import {composeMultiTrackShowCopy} from './compose-multi-show.js';
 import {composeSessionMediaCopy} from './session-media-copy.js';
@@ -62,11 +62,13 @@ test('keeps the deck rule and rejects unobserved deckless layouts without writin
  const cases=[
   ['lane after deck','<sktimeline version="1"><layers/><deck/><audio name="A"/></sktimeline>',/Audio lane order is unsupported/],
   ['two decks','<sktimeline version="1"><layers/><deck/><deck/></sktimeline>',/at most one direct deck/],
-  ['cue after lanes','<sktimeline version="1"><layers/><audio name="A"/><cue id="c"/></sktimeline>',/directly after layers at the end/],
-  ['lane before layers','<sktimeline version="1"><audio name="A"/><layers/></sktimeline>',/directly after layers at the end/],
-  ['lane before layers and cue after','<sktimeline version="1"><audio name="A"/><layers/><cue id="c"/></sktimeline>',/directly after layers at the end/],
-  ['element between layers and lane','<sktimeline version="1"><layers/><titles/><audio name="A"/></sktimeline>',/directly after layers at the end/],
-  ['element between lanes','<sktimeline version="1"><layers/><audio name="A"/><titles/><audio name="B"/></sktimeline>',/directly after layers at the end/],
+  ['lane after a cue','<sktimeline version="1"><layers/><audio name="A"/><cue id="c"/><audio name="B"/></sktimeline>',/directly after layers, followed by nothing but direct cues/],
+  ['element after a cue','<sktimeline version="1"><layers/><audio name="A"/><cue id="c"/><titles/></sktimeline>',/directly after layers, followed by nothing but direct cues/],
+  ['comment between lane and cue','<sktimeline version="1"><layers/><audio name="A"/><!-- x --><cue id="c"/></sktimeline>',/only whitespace/],
+  ['lane before layers','<sktimeline version="1"><audio name="A"/><layers/></sktimeline>',/directly after layers, followed by nothing but direct cues/],
+  ['lane before layers and cue after','<sktimeline version="1"><audio name="A"/><layers/><cue id="c"/></sktimeline>',/directly after layers, followed by nothing but direct cues/],
+  ['element between layers and lane','<sktimeline version="1"><layers/><titles/><audio name="A"/></sktimeline>',/directly after layers, followed by nothing but direct cues/],
+  ['element between lanes','<sktimeline version="1"><layers/><audio name="A"/><titles/><audio name="B"/></sktimeline>',/directly after layers, followed by nothing but direct cues/],
   ['comment after lane','<sktimeline version="1"><layers/><audio name="A"/><!-- x --></sktimeline>',/only whitespace/],
   ['text before lane','<sktimeline version="1"><layers/>x<audio name="A"/></sktimeline>',/only whitespace/],
   ['no layers','<sktimeline version="1"><audio name="A"/></sktimeline>',/exactly one direct layers/],
@@ -77,6 +79,26 @@ test('keeps the deck rule and rejects unobserved deckless layouts without writin
   await assert.rejects(addTimelineAudioLaneCopy({source:file,destination,format:'sktl',sha256,laneName:'New',follow:false}),error,label);
   await assert.rejects(access(destination),label);assert.equal(await readFile(file,'utf8'),xml,label);
  }
+});
+
+// The server appends cues at the end, after the lanes, so a lane added later goes after the last lane and before the cues.
+test('adds a lane to the app-saved empty track after this server added cues to it',async t=>{
+ const dir=await tempDir(t,'sk-deckless-cues-');
+ const app=await timelineFile(dir,APP_EMPTY_TRACK,'app.sktl'),cued=path.join(dir,'cued.sktl'),laned=path.join(dir,'laned.sktl');
+ const cue=await addTimelineCueCopy({source:app.file,destination:cued,sha256:app.sha256,layer:1,startMs:5000,lengthMs:2000,label:'Go'});
+ const cuedXml=await readFile(cued,'utf8');
+ const r=await addTimelineAudioLaneCopy({source:cued,destination:laned,format:'sktl',sha256:sha(cuedXml),laneName:'Audio 2',follow:true});
+ assert.equal(r.position,'after_last_lane');assert.equal(r.audioIndex,1);
+ const out=await readFile(laned,'utf8');
+ assert.equal(out,APP_EMPTY_TRACK.replace('<audio name="Audio 1" follow="0"/>',`<audio name="Audio 1" follow="0"/><audio name="Audio 2" follow="1"/><cue id="${cue.id}" layer="1" startMs="5000" lenMs="2000" label="Go"/>`));
+ // A pretty-printed timeline keeps the whitespace around the cues, and a laneless one takes the lane after layers.
+ const pretty=await timelineFile(dir,'<sktimeline version="1">\n <layers/>\n <audio name="A" follow="0"/>\n <cue id="c1"/>\n <cue id="c2"/>\n</sktimeline>\n','pretty.sktl');
+ const p=await addTimelineAudioLaneCopy({source:pretty.file,destination:path.join(dir,'pretty-out.sktl'),format:'sktl',sha256:pretty.sha256,laneName:'B',follow:false});
+ assert.equal(p.position,'after_last_lane');assert.equal(await readFile(path.join(dir,'pretty-out.sktl'),'utf8'),'<sktimeline version="1">\n <layers/>\n <audio name="A" follow="0"/><audio name="B" follow="0"/>\n <cue id="c1"/>\n <cue id="c2"/>\n</sktimeline>\n');
+ const laneless=await timelineFile(dir,'<sktimeline version="1"><layers/><cue id="c"/></sktimeline>','laneless.sktl');
+ const l=await addTimelineAudioLaneCopy({source:laneless.file,destination:path.join(dir,'laneless-out.sktl'),format:'sktl',sha256:laneless.sha256,laneName:'A',follow:false});
+ assert.equal(l.position,'after_layers');assert.equal(await readFile(path.join(dir,'laneless-out.sktl'),'utf8'),'<sktimeline version="1"><layers/><audio name="A" follow="0"/><cue id="c"/></sktimeline>');
+ assert.equal(await readFile(app.file,'utf8'),APP_EMPTY_TRACK);
 });
 
 test('composes lanes, clips and cues on a new track from the app-saved empty template',async t=>{
