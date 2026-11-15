@@ -53,3 +53,14 @@ test('action discovery uses encoded IDs and reports HTTP errors',async t=>{
  const error=await client.callTool({name:'showkontrol_get_action',arguments:{id:'missing'}});assert.equal(error.isError,true);assert.match(error.content[0].text,/404/);
  assert.deepEqual(seen,[{method:'GET',url:'/api/v1/actions'},{method:'GET',url:'/api/v1/actions/Action%20%2F%20%23%3F'},{method:'GET',url:'/api/v1/actions/missing'}]);
 });
+
+test('create node forwards optional JSON params and rejects non-object params',async t=>{
+ const seen=[];const mock=http.createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;seen.push({method:req.method,url:req.url,body:JSON.parse(body)});res.writeHead(200,{'Content-Type':'application/json'});res.end('{"ok":true}');});
+ await new Promise(r=>mock.listen(0,'127.0.0.1',r));t.after(()=>mock.close());
+ const client=new Client({name:'create-node-params-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:{...process.env,SHOWKONTROL_URL:`http://127.0.0.1:${mock.address().port}`}}));t.after(()=>client.close());
+ const call=args=>client.callTool({name:'showkontrol_create_node',arguments:args});
+ const params={'node.name':'Final',enabled:true,count:2,nested:{items:[null,'value']}};
+ for(const args of [{request:'trigger',title:'Preview',params,dryRun:true},{request:'group',dryRun:false}])assert.equal((await call(args)).isError,undefined);
+ for(const params of [null,[],42,'bad'])assert.equal((await call({request:'group',params,dryRun:true})).isError,true);
+ assert.deepEqual(seen,[{method:'POST',url:'/api/v1/nodes',body:{request:'trigger',title:'Preview',params,dryRun:true}},{method:'POST',url:'/api/v1/nodes',body:{request:'group',dryRun:false}}]);
+});
