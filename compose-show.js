@@ -3,6 +3,7 @@ import path from 'node:path';
 import {inspectShow} from './xml-copy.js';
 import {createShowTrackCopy, addShowTimelineCueCopy, copyCueGraphInShow, editCueGraphSettingCopy} from './timeline.js';
 import {addShowSetlistTrackCopy} from './setlist.js';
+import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
 
 // Compose only structures supported by the existing offline writers.
 export async function composeShowCopy({source, destination, sha256, templateName, trackName, partName, cues, donor, set}) {
@@ -10,8 +11,11 @@ export async function composeShowCopy({source, destination, sha256, templateName
  if (!Array.isArray(cues) || cues.length < 1 || cues.length > 100) throw Error('Provide between 1 and 100 cues');
  const validDonor = value => value === undefined || value === null || (typeof value === 'object' && path.isAbsolute(value.file || '') && value.sha256 && value.name && value.cueId);
  if (!validDonor(donor) || cues.some(cue => !validDonor(cue?.donor))) throw Error('Donor requires an absolute file path, SHA-256, timeline name and cue ID');
- if (cues.some(cue => cue?.settings !== undefined && (!Array.isArray(cue.settings) || cue.settings.some(setting => !setting || typeof setting.nodeId !== 'string' || !setting.nodeId || typeof setting.key !== 'string' || !setting.key || typeof setting.value !== 'string')))) throw Error('Cue settings require a node ID, key and string value');
- if (cues.some(cue => cue?.settings?.length && !(cue.donor === undefined ? donor : cue.donor))) throw Error('Cue settings require a donor graph');
+ for (const cue of cues) {
+  if (cue?.mixedGraph !== undefined && cue.donor !== undefined) throw Error('A cue cannot specify both a donor and mixed graph');
+  if (cue?.settings !== undefined && (!Array.isArray(cue.settings) || cue.settings.some(setting => !setting || typeof setting.key !== 'string' || !setting.key || typeof setting.value !== 'string' || (cue.mixedGraph !== undefined ? !Number.isInteger(setting.nodeIndex) || setting.nodeIndex < 0 || setting.nodeId !== undefined : typeof setting.nodeId !== 'string' || !setting.nodeId || setting.nodeIndex !== undefined)))) throw Error('Cue settings require a graph node reference, key and string value');
+  if (cue?.settings?.length && cue.mixedGraph === undefined && !(cue.donor === undefined ? donor : cue.donor)) throw Error('Cue settings require a donor or mixed graph');
+ }
  if (set && (!set.name || !set.setName)) throw Error('Set requires a set list part name and set name');
  const initial = await inspectShow({file: source});
  if (initial.sha256 !== sha256) throw Error('Source changed since inspection');
@@ -33,7 +37,14 @@ export async function composeShowCopy({source, destination, sha256, templateName
    const created = await step(next => addShowTimelineCueCopy({source: current, destination: next, sha256: currentHash, name: partName, layer, startMs, lengthMs, label}));
    const item = {id: created.id, layer, startMs, lengthMs, label};
    const selectedDonor = cue?.donor === undefined ? donor : cue.donor;
-   if (selectedDonor) {
+   if (cue?.mixedGraph !== undefined) {
+    const assembled = await step(next => assembleMixedCueGraphShowCopy({...cue.mixedGraph, source: current, destination: next, sha256: currentHash, name: partName, cueId: created.id}));
+    item.nodeIds = assembled.nodeIds;
+    for (const {nodeIndex, key, value} of cue.settings || []) {
+     if (nodeIndex >= assembled.nodeIds.length) throw Error(`Mixed graph has no node at index: ${nodeIndex}`);
+     await step(next => editCueGraphSettingCopy({source: current, destination: next, format: 'skshow', sha256: currentHash, name: partName, cueId: created.id, nodeId: assembled.nodeIds[nodeIndex], key, value}));
+    }
+   } else if (selectedDonor) {
     const copied = await step(next => copyCueGraphInShow({source: current, destination: next, sha256: currentHash, name: partName, sourceName: selectedDonor.name, sourceCueId: selectedDonor.cueId, targetCueId: created.id, template: selectedDonor.file, templateSha256: selectedDonor.sha256}));
     item.idMap = copied.idMap;
     for (const {nodeId, key, value} of cue.settings || []) {
