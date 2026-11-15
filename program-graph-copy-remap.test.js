@@ -44,3 +44,12 @@ test('reports a cue.active trigger in the copied direct graph',async t=>{
  const result=await copy({source:f('in.skpr'),destination:f('out.skpr'),sha256:hash('sha256',program),index:0,donor:f('donor.sktl'),donorSha256:hash('sha256',donor),donorCueId:'c',target:f('target.skshow'),targetSha256:hash('sha256',show)});
  assert.ok(result.warnings.some(w=>w.includes('trigger.path cue.active')));
 });
+test('copy permits opted-in OSC text but still rejects other references',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'graph-opaque-'));t.after(()=>rm(dir,{recursive:true,force:true}));const f=n=>path.join(dir,n);
+ const program='<skprogram version="1"><item start="0" name="A" notes=""/></skprogram>',show=`<skshow><part name="content/Program.skpr" md5="${hash('md5',program)}">${Buffer.from(program).toString('base64')}</part></skshow>`;
+ const donor='<sktimeline version="1"><layers/><cue id="c"><graph><node id="n1" type="generator" kind="OSC"><settings><setting key="gen.address">/n42</setting></settings></node></graph></cue></sktimeline>';
+ await Promise.all([writeFile(f('in.skpr'),program),writeFile(f('target.skshow'),show),writeFile(f('donor.sktl'),donor)]);
+ const args={source:f('in.skpr'),destination:f('out.skpr'),sha256:hash('sha256',program),index:0,donor:f('donor.sktl'),donorSha256:hash('sha256',donor),donorCueId:'c',target:f('target.skshow'),targetSha256:hash('sha256',show)};
+ await assert.rejects(copy(args),/unsupported internal references/);const result=await copy({...args,allowOpaqueNodeText:true});assert.match(await readFile(args.destination,'utf8'),/\/n42/);assert.deepEqual(result.warnings.find(w=>w.code==='opaque_node_references_unverified').scope,{part:args.destination,itemIndex:0,nodeId:result.mapping.n1,key:'gen.address'});
+ const unsafe=donor.replace('</settings>','<setting key="other">n2</setting></settings>');await writeFile(f('unsafe.sktl'),unsafe);await assert.rejects(copy({...args,donor:f('unsafe.sktl'),donorSha256:hash('sha256',unsafe),destination:f('bad.skpr'),allowOpaqueNodeText:true}),/unsupported internal references/);
+});

@@ -13,10 +13,11 @@ function object(value,required,optional=[]){
  if(!value||typeof value!=='object'||Array.isArray(value)||required.some(k=>!Object.hasOwn(value,k))||Object.keys(value).some(k=>!required.includes(k)&&!optional.includes(k)))throw Error('Unsupported composition input');
 }
 function donorInput(d,graph){
- object(d,graph?['donor','donorSha256','donorCueId']:['donor','donorSha256'],graph?['donorName','settings']:['donorName','remapCueIds','settings']);
+ object(d,graph?['donor','donorSha256','donorCueId']:['donor','donorSha256'],graph?['donorName','settings','allowOpaqueNodeText']:['donorName','remapCueIds','settings']);
  if(typeof d.donor!=='string'||!path.isAbsolute(d.donor)||!['.sktl','.skshow'].includes(path.extname(d.donor).toLowerCase())||!checksum(d.donorSha256))throw Error('Invalid donor path or SHA-256');
  if(d.donorName!==undefined&&(typeof d.donorName!=='string'||d.donorName.length>4096))throw Error('Invalid donor name');
  if(graph&&(typeof d.donorCueId!=='string'||!d.donorCueId||d.donorCueId.length>4096))throw Error('Invalid donor cue ID');
+ if(graph&&d.allowOpaqueNodeText!==undefined&&typeof d.allowOpaqueNodeText!=='boolean')throw Error('allowOpaqueNodeText must be a boolean');
  if(!graph&&d.remapCueIds!==undefined&&typeof d.remapCueIds!=='boolean')throw Error('remapCueIds must be a boolean');
 }
 async function donorHash(d){return path.extname(d.donor).toLowerCase()==='.skshow'?(await readShowSnapshot({file:d.donor})).sha256:(await inspectXml({file:d.donor})).sha256;}
@@ -48,7 +49,7 @@ export async function composeProgramScheduleCopy(args){
      staged={donor:file,donorSha256:hash,remapCueIds:timeline.remapCueIds};
     }
     const destination=next();const r=await embedProgramTimelineRemappedCopy({source:program,destination,sha256:current.sha256,index,...staged,target:source,targetSha256:sha256});program=destination;current=r;mapping.timeline={nodes:r.mapping,cues:r.cueMapping};r.warnings.forEach(w=>warnings.add(w));}
-   if(item.graph){const {settings=[],...graph}=item.graph;const destination=next();const r=await copyProgramItemGraphRemappedCopy({source:program,destination,sha256:current.sha256,index,...graph,target:source,targetSha256:sha256});program=destination;current=r;mapping.graph={nodes:r.mapping};r.warnings.filter(w=>w!==cueActiveWarning).forEach(w=>warnings.add(w));
+   if(item.graph){const {settings=[],...graph}=item.graph;const destination=next();const r=await copyProgramItemGraphRemappedCopy({source:program,destination,sha256:current.sha256,index,...graph,target:source,targetSha256:sha256});program=destination;current=r;mapping.graph={nodes:r.mapping};r.warnings.filter(w=>w!==cueActiveWarning).forEach(w=>warnings.add(typeof w==='object'?{...w,scope:{...w.scope,part:'content/Program.skpr'}}:w));
     for(const s of settings){if(!Object.hasOwn(r.mapping,s.nodeId))throw Error('Setting donor node ID is absent from copied graph');const destination=next();current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index,nodeId:r.mapping[s.nodeId],key:s.key,value:s.value});program=destination;warnings.add(current.note);}
    }mappings.push(mapping);
   }

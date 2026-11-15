@@ -1,3 +1,4 @@
+import {maskOpaqueNodeText,opaqueNodeWarnings} from './opaque-node-text.js';
 import {writeFile,link,unlink} from 'node:fs/promises';
 import {createHash,randomUUID} from 'node:crypto';
 import path from 'node:path';
@@ -17,7 +18,8 @@ function attribute(xml,node,key){
  return {start,end:start+m[2].length-2};
 }
 // Remap one standalone Program item graph against a checksum-verified target show.
-export async function remapProgramItemGraphCopy({source,sha256,index,target,targetSha256,destination}){
+export async function remapProgramItemGraphCopy({source,sha256,index,target,targetSha256,destination,allowOpaqueNodeText}){
+ if(allowOpaqueNodeText!==undefined&&typeof allowOpaqueNodeText!=='boolean')throw Error('allowOpaqueNodeText must be a boolean');
  if(!path.isAbsolute(source)||path.extname(source).toLowerCase()!=='.skpr'||!path.isAbsolute(target)||path.extname(target).toLowerCase()!=='.skshow'||!path.isAbsolute(destination)||path.extname(destination).toLowerCase()!=='.skpr'||path.resolve(source)===path.resolve(destination))throw Error('Absolute source .skpr, target .skshow and distinct destination .skpr paths are required');
  if(!/^[a-f0-9]{64}$/.test(sha256||'')||!/^[a-f0-9]{64}$/.test(targetSha256||''))throw Error('Source and target SHA-256 values are required');
  const [program,show,inspection]=await Promise.all([inspectXml({file:source}),readShowSnapshot({file:target}),inspectProgram({file:source})]);
@@ -38,10 +40,10 @@ export async function remapProgramItemGraphCopy({source,sha256,index,target,targ
  const edits=[];for(const n of nodes)edits.push({...attribute(program.xml,n,'id'),value:mapping[n.attributes.id]});
  for(const c of connections)for(const key of ['fromNode','toNode'])edits.push({...attribute(program.xml,c,key),value:mapping[c.attributes[key]]});
  // Remove only verified ID and wire attributes before checking for any other reference.
- let sanitized=program.xml.slice(graph.start,graph.end);for(const e of [...edits].sort((a,b)=>b.start-a.start))sanitized=sanitized.slice(0,e.start-graph.start)+'REMAPPED'+sanitized.slice(e.end-graph.start);
+ const opaque=[];let sanitized=program.xml.slice(graph.start,graph.end);for(const n of nodes){const masked=maskOpaqueNodeText(program.xml,n,allowOpaqueNodeText);opaque.push({nodeId:n.attributes.id,keys:masked.keys});sanitized=sanitized.slice(0,n.start-graph.start)+masked.masked+sanitized.slice(n.end-graph.start);}for(const e of [...edits].sort((a,b)=>b.start-a.start))sanitized=sanitized.slice(0,e.start-graph.start)+'REMAPPED'+sanitized.slice(e.end-graph.start);
  if(hasXmlReference(sanitized,idPattern))throw Error('Graph contains unsupported internal references');
  let output=program.xml;for(const e of edits.sort((a,b)=>b.start-a.start))output=output.slice(0,e.start)+e.value+output.slice(e.end);
  parseXmlSpans(output);const temp=path.join(path.dirname(destination),`.showkontrol-remap-${randomUUID()}.tmp`);let created=false;
  try{await writeFile(temp,output,{flag:'wx'});created=true;if((await inspectXml({file:source})).sha256!==sha256||(await readShowSnapshot({file:target})).sha256!==targetSha256)throw Error('Source or target changed since inspection');await link(temp,destination);}finally{if(created)await unlink(temp);}
- return {destination,sha256:hash(Buffer.from(output)),index,mapping,note:'Static ID remapping only. Runtime ID semantics and ShowKontrol acceptance are unverified.'};
+ return {destination,sha256:hash(Buffer.from(output)),index,mapping,warnings:opaqueNodeWarnings(opaque,destination,undefined,mapping).map(w=>({...w,scope:{part:destination,itemIndex:index,nodeId:w.scope.nodeId,key:w.scope.key}})),note:'Static ID remapping only. Runtime ID semantics and ShowKontrol acceptance are unverified.'};
 }

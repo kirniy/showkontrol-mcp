@@ -1,3 +1,4 @@
+import {maskOpaqueNodeText,opaqueNodeWarnings} from './opaque-node-text.js';
 import {storedStoppedWarnings} from './stored-stopped-warnings.js';
 import {inspectXml,readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';import {hasXmlReference} from './xml-references.js';
 function walk(node,fn){fn(node);for(const child of node.children)walk(child,fn);}
@@ -6,7 +7,7 @@ function withNewId(xml,node,id){
  while(pos<opening.length){if(/^\s*\/?>$/.test(opening.slice(pos)))break;attr.lastIndex=pos;const m=attr.exec(opening);if(!m)throw Error('Unsupported node attributes');if(m[1]==='id'){const start=pos+m[0].indexOf(m[2])+1;found={start,end:start+m[3].length};}pos=attr.lastIndex;}
  if(!found)throw Error('Node ID is missing');return opening.slice(0,found.start)+id+opening.slice(found.end)+xml.slice(node.openEnd,node.end);
 }
-export async function copyPatchNodeToCueShowCopy({source,destination,sha256,name,cueId,template,templateFormat,templateSha256,nodeId}){
+export async function copyPatchNodeToCueShowCopy({source,destination,sha256,name,cueId,template,templateFormat,templateSha256,nodeId,allowOpaqueNodeText}){
  if(!name?.toLowerCase().endsWith('.sktl')||typeof cueId!=='string'||!cueId||!/^n\d+$/.test(nodeId||''))throw Error('Select a timeline, cue and supported node ID');
  if(!['skf','skshow'].includes(templateFormat))throw Error('Template format must be skf or skshow');
  const target=await readShowSnapshot({file:source});if(target.sha256!==sha256)throw Error('Source changed since inspection');if(!target.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
@@ -16,9 +17,10 @@ export async function copyPatchNodeToCueShowCopy({source,destination,sha256,name
  const xml=readSnapshotPart({snapshot:target,name}).text,root=parseXmlSpans(xml),cuePath=['sktimeline',{name:'cue',attributes:{id:cueId}}],cues=selectXmlSpans(root,cuePath),graphs=selectXmlSpans(root,[...cuePath,'graph']),oldNodes=selectXmlSpans(root,[...cuePath,'graph','node']);if(root.name!=='sktimeline'||root.attributes.version!=='1'||cues.length!==1||graphs.length!==1)throw Error('Target cue and graph must occur exactly once');
  let max=0;for(const part of target.parts.filter(p=>/\.(?:skf|sktl|sksc|skpr)$/i.test(p.name)))walk(parseXmlSpans(readSnapshotPart({snapshot:target,name:part.name}).text),n=>{if(n.name==='node'&&/^n\d+$/.test(n.attributes.id||'')){const id=Number(n.attributes.id.slice(1));if(!Number.isSafeInteger(id)||id>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,id);}});
  const oldId=Number(nodeId.slice(1));if(!Number.isSafeInteger(oldId)||oldId>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,oldId);if(max>=1000000000)throw Error('No node IDs remain in the supported range');const newNodeId=`n${max+1}`,copy=withNewId(donorXml,node,newNodeId);
- if(hasXmlReference(copy,/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/,{ignoreRootId:true}))throw Error('Node contains unsupported internal references');
+ const masked=maskOpaqueNodeText(copy,parseXmlSpans(copy),allowOpaqueNodeText);
+ if(hasXmlReference(masked.masked,/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/,{ignoreRootId:true}))throw Error('Node contains unsupported internal references');
  const graph=graphs[0];let modified;if(graph.selfClosing){const opening=xml.slice(graph.start,graph.openEnd).replace(/\s*\/>$/,'>');modified=xml.slice(0,graph.start)+opening+copy+'</graph>'+xml.slice(graph.end);}else modified=xml.slice(0,graph.closeStart)+copy+xml.slice(graph.closeStart);
  const after=parseXmlSpans(modified),newGraph=selectXmlSpans(after,[...cuePath,'graph']),nodes=selectXmlSpans(after,[...cuePath,'graph','node']),copied=nodes.filter(n=>n.attributes.id===newNodeId);if(newGraph.length!==1||JSON.stringify(newGraph[0].attributes)!==JSON.stringify(graph.attributes)||nodes.length!==oldNodes.length+1||copied.length!==1||modified.slice(copied[0].start,copied[0].end)!==copy||JSON.stringify({...copied[0].attributes,id:nodeId})!==JSON.stringify(node.attributes))throw Error('Copied node could not be verified');
- const warnings=storedStoppedWarnings(modified,name).filter(w=>w.scope.cueId===cueId&&w.scope.nodeId===newNodeId);
+ const warnings=[...storedStoppedWarnings(modified,name).filter(w=>w.scope.cueId===cueId&&w.scope.nodeId===newNodeId),...opaqueNodeWarnings([{nodeId,keys:masked.keys}],name,cueId,{[nodeId]:newNodeId})];
  const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});return {...result,nodeId,newNodeId,warnings,note:['processor','generator'].includes(node.attributes.type)?'Processor kind empty and generator kind OSC are patch prototypes only; cue acceptance and execution are unverified. External dependencies are not validated.':'Copied an unconnected patch node into an offline cue graph. ShowKontrol acceptance and external dependencies are not validated.'};
 }

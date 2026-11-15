@@ -20,3 +20,9 @@ test('MCP schemas expose opaque opt-in and preserve warning scope in graph copie
  }
  assert.equal(await readFile(f('donor.sktl'),'utf8'),timeline);assert.equal(await readFile(f('program.skshow'),'utf8'),program);
 });
+test('MCP accepts patch opaque opt-in in direct and mixed copies',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'opaque-patch-mcp-'));t.after(()=>rm(dir,{recursive:true,force:true}));const f=n=>path.join(dir,n),patch='<showkontrol version="2"><graph><node id="n1" type="generator" kind="OSC"><settings><setting key="gen.address">/n42</setting></settings></node></graph></showkontrol>',timeline='<sktimeline version="1"><cue id="dst"><graph/></cue></sktimeline>',show=`<skshow>${part('track.sktl',timeline)}</skshow>`;
+ await Promise.all([writeFile(f('patch.skf'),patch),writeFile(f('show.skshow'),show)]);const client=new Client({name:'patch-opaque',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());const call=(name,args)=>client.callTool({name,arguments:args});
+ const base={source:f('show.skshow'),sha256:hash('sha256',show),name:'track.sktl',cueId:'dst'},donor={template:f('patch.skf'),templateSha256:hash('sha256',patch),templateFormat:'skf',nodeId:'n1'},direct={...base,...donor,destination:f('direct.skshow')};assert.equal((await call('showkontrol_copy_patch_node_to_cue_show_copy',direct)).isError,true);const result=parse(await call('showkontrol_copy_patch_node_to_cue_show_copy',{...direct,allowOpaqueNodeText:true}));assert.equal(result.warnings[0].scope.nodeId,result.newNodeId);assert.equal(result.warnings[0].scope.key,'gen.address');
+ const mixed=parse(await call('showkontrol_assemble_mixed_cue_graph_show_copy',{...base,destination:f('mixed.skshow'),nodes:[{kind:'patch',...donor,allowOpaqueNodeText:true}]}));assert.equal(mixed.warnings[0].scope.nodeId,mixed.nodeIds[0]);
+});

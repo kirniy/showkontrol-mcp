@@ -260,8 +260,9 @@ async function assembleProgramItemGraph({program,destination,source,sha256,curre
  const cueId='__composition_item_graph__';
  await addShowPart({source:staged,destination:withTimeline,sha256:attached.sha256,name,text:`<sktimeline version="1"><layers/><cue id="${cueId}"/></sktimeline>`});
  const mixed=await assembleMixedCueGraphShowCopy({source:withTimeline,destination:assembled,sha256:(await inspectXml({file:withTimeline})).sha256,name,cueId,nodes:operation.nodes,wires:operation.wires});
- const copied=await copyProgramItemGraphRemappedCopy({source:program,destination,sha256:currentSha,index,donor:assembled,donorSha256:mixed.sha256,donorName:name,donorCueId:cueId,target:staged,targetSha256:attached.sha256,replaceExisting:operation.replaceExisting});
- return {...copied,nodeIds:mixed.nodeIds.map(id=>copied.mapping[id]),warnings:[...mixed.warnings,...copied.warnings],note:mixed.note};
+ const copied=await copyProgramItemGraphRemappedCopy({source:program,destination,sha256:currentSha,index,donor:assembled,donorSha256:mixed.sha256,donorName:name,donorCueId:cueId,target:staged,targetSha256:attached.sha256,replaceExisting:operation.replaceExisting,allowOpaqueNodeText:operation.nodes.some(n=>n.allowOpaqueNodeText===true)});
+ const warnings=mixed.warnings.filter(w=>w.code!=='opaque_node_references_unverified').map(w=>typeof w==='object'?{...w,scope:{...w.scope,part:'content/Program.skpr',itemIndex:index,nodeId:copied.mapping[w.scope.nodeId],cueId:undefined}}:w);
+ return {...copied,nodeIds:mixed.nodeIds.map(id=>copied.mapping[id]),warnings:[...warnings,...copied.warnings.map(w=>typeof w==='object'?{...w,scope:{...w.scope,part:'content/Program.skpr'}}:w)],note:mixed.note};
 }
 function itemGraphContains(xml,index,nodeIds){
  const root=parseXmlSpans(xml),item=root.children[index];
@@ -285,7 +286,7 @@ async function copyProgramNode({timeline,edited,program,source,sha256,currentSha
  const common={source:withTimeline,destination:copied,sha256:(await inspectXml({file:withTimeline})).sha256,name,cueId,template:operation.donor,templateSha256:operation.donorSha256,nodeId:operation.donorNodeId};
  const result=operation.donorType==='cue'
   ?await copyCueGraphNodeShowCopy({...common,templateName:operation.donorName,templateCueId:operation.donorCueId,allowOpaqueNodeText:operation.allowOpaqueNodeText})
-  :await copyPatchNodeToCueShowCopy({...common,templateFormat:operation.donorFormat});
+  :await copyPatchNodeToCueShowCopy({...common,templateFormat:operation.donorFormat,allowOpaqueNodeText:operation.allowOpaqueNodeText});
  const output=readSnapshotPart({snapshot:await readShowSnapshot({file:copied}),name}).text;
  if(output.split(marker).length!==2)throw Error('Allocation sentinel was not preserved');
  const final=output.replace(marker,'');parseXmlSpans(final);await writeFile(edited,final,{flag:'wx'});
@@ -308,7 +309,7 @@ async function changeItemGraphNode({program,destination,source,sha256,currentSha
  if(outGraphs.length!==1)throw Error('Edited item graph could not be verified');
  const modified=xml.slice(0,graph.start)+output.slice(outGraphs[0].start,outGraphs[0].end)+xml.slice(graph.end);
  parseXmlSpans(modified);await writeFile(destination,modified,{flag:'wx'});
- return {...result,sha256:digest(modified)};
+ return {...result,sha256:digest(modified),warnings:(result.warnings??[]).map(w=>typeof w==='object'?{...w,scope:{...w.scope,part:'content/Program.skpr',itemIndex:index,cueId:undefined}}:w)};
 }
 
 async function copyProgramPatchSetting({timeline,edited,program,source,sha256,currentSha,cueId,nodeId,operation,dir,step}){
@@ -418,7 +419,7 @@ export async function composeProgramEditsCopy(args){
    if(typeof op.donor!=='string'||!path.isAbsolute(op.donor)||!['skf','skshow'].includes(op.donorFormat)||!/^[a-f0-9]{64}$/.test(op.donorSha256||'')||!/^n\d+$/.test(op.donorNodeId||''))throw Error('Absolute donor path, donor format, donor SHA-256 and node ID are required');
   }
   else if(op.action==='copy_item_graph_node'){
-   keys(op,['action','index','donorType','donor','donorSha256','donorNodeId'],['donorName','donorCueId','donorFormat']);
+   keys(op,['action','index','donorType','donor','donorSha256','donorNodeId'],['donorName','donorCueId','donorFormat','allowOpaqueNodeText']);
    if(!path.isAbsolute(op.donor||'')||!/^[a-f0-9]{64}$/.test(op.donorSha256||'')||!/^n\d+$/.test(op.donorNodeId||''))throw Error('Absolute donor path, donor SHA-256 and node ID are required');
    if(op.donorType==='cue'){if(!op.donorName||!op.donorCueId||op.donorFormat!==undefined)throw Error('Cue donor requires donorName and donorCueId');}
    else if(op.donorType==='patch'){if(!['skf','skshow'].includes(op.donorFormat)||op.donorName!==undefined||op.donorCueId!==undefined)throw Error('Patch donor requires donorFormat');}

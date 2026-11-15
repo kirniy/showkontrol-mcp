@@ -13,7 +13,7 @@ export async function assembleMixedCueGraphShowCopy({source,destination,sha256,n
    if(selectXmlSpans(parseXmlSpans(modified),[...cuePath,'graph']).length!==1)throw Error('Could not create target graph');const next=path.join(dir,'initial.skshow');await editShowPart({source,destination:next,sha256,name,edits:[{find:xml,replace:modified}]});current=next;currentSha=(await inspectShow({file:current})).sha256;}
   for(const [i,n] of nodes.entries()){
    const next=path.join(dir,`node-${i}.skshow`),common={source:current,destination:next,sha256:currentSha,name,cueId,template:n.template,templateSha256:n.templateSha256,nodeId:n.nodeId};
-   const copied=n.kind==='cue'?await copyCueGraphNodeShowCopy({...common,templateName:n.templateName,templateCueId:n.templateCueId,allowOpaqueNodeText:n.allowOpaqueNodeText}):await copyPatchNodeToCueShowCopy({...common,templateFormat:n.templateFormat});
+   const copied=n.kind==='cue'?await copyCueGraphNodeShowCopy({...common,templateName:n.templateName,templateCueId:n.templateCueId,allowOpaqueNodeText:n.allowOpaqueNodeText}):await copyPatchNodeToCueShowCopy({...common,templateFormat:n.templateFormat,allowOpaqueNodeText:n.allowOpaqueNodeText});
    const nextSha=(await inspectShow({file:next})).sha256;added.push(copied.newNodeId);warnings.push(...copied.warnings);if(copied.note.includes('patch prototypes only'))prototypeNotes.add(copied.note);if(current!==source)await rm(current);current=next;currentSha=nextSha;
   }
   for(const [i,w] of wires.entries()){
