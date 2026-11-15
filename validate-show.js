@@ -65,6 +65,10 @@ export async function validateShow({file}){
      if(item.hasGraph){
       const graph=root.children[item.index].children.find(child=>child.name==='graph');
       const graphScope={...scope,path:'skprogram/item/graph',itemIndex:item.index},local=new Set();
+      // Reuse the cue scanner's stored-value rules for the direct item graph.
+      for(const warning of storedStoppedWarnings(xml,part.name,{children:[{name:'cue',attributes:{},children:[graph]}]})){
+       diagnostics.push({...warning,scope:{...graphScope,nodeId:warning.scope.nodeId},message:'A Program item graph node explicitly stores a stopped value; other stored values may conflict. Its active state and effect on execution are not established'});
+      }
       add('unsupported_graph',graphScope,'Only direct node IDs, connection endpoints, numeric pins and router targets are checked; other graph contents are not checked','warning');
       collectGraphRouterTargets(graph,graphScope,xml);
       for(const node of graph.children.filter(child=>child.name==='node')){
@@ -86,6 +90,9 @@ export async function validateShow({file}){
       add('unsupported_timeline',{...timelineScope,path:basePath},'Cue timing, layers, and direct cue graph IDs and wires are checked; other timeline contents and runtime behavior are not checked','warning');
       try{parseTimeline(xml.slice(timeline.start,timeline.end));}
       catch(error){add('invalid_native_xml',{...timelineScope,path:basePath},error.message);continue;}
+      for(const warning of storedStoppedWarnings(xml,part.name,timeline)){
+       diagnostics.push({...warning,scope:{...timelineScope,...warning.scope,path:`${basePath}/cue/graph`}});
+      }
       validateTimelineCues(timeline,timelineScope,basePath,partCoverage);
       const visitGraphs=(node,path,cue)=>{for(const child of node.children){
        const childPath=`${path}/${child.name}`,directCue=node===timeline&&child.name==='cue';

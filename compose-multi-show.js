@@ -5,6 +5,7 @@ import {composeShowCopy} from './compose-show.js';
 import {readTrackTemplateDonor} from './timeline.js';
 import {editPatchBatchCopy} from './batch-patch.js';
 import {addShowSetlistTrackCopy,editShowSetlistCopy} from './setlist.js';
+import {createShowSetlistCopy} from './setlist-create.js';
 import {compositionWarnings} from './composition-warnings.js';
 
 export async function composeMultiTrackShowCopy({source,destination,sha256,tracks,patchOperations,setlistOperations}){
@@ -14,8 +15,8 @@ export async function composeMultiTrackShowCopy({source,destination,sha256,track
  if(setlistOperations!==undefined){
   if(!Array.isArray(setlistOperations)||setlistOperations.length<1||setlistOperations.length>100)throw Error('Provide between 1 and 100 set list operations');
   for(const op of setlistOperations){
-   const fields={append_track:['name','setName','trackName'],create_set:['name','newSetName'],remove_track:['name','setName','index'],move_track:['name','setName','index','toIndex']}[op?.operation];
-   if(!fields||Object.keys(op).some(key=>key!=='operation'&&!fields.includes(key))||fields.some(key=>key==='index'||key==='toIndex'?!Number.isInteger(op[key])||op[key]<0:typeof op[key]!=='string'||!op[key]))throw Error('Invalid set list operation');
+   const fields={create_setlist:['name','setName'],append_track:['name','setName','trackName'],create_set:['name','newSetName'],remove_track:['name','setName','index'],move_track:['name','setName','index','toIndex']}[op?.operation];
+   if(!fields||Object.keys(op).some(key=>key!=='operation'&&!fields.includes(key)&&!(op.operation==='create_setlist'&&key==='tracks'))||fields.some(key=>key==='index'||key==='toIndex'?!Number.isInteger(op[key])||op[key]<0:typeof op[key]!=='string'||!op[key])||(op.operation==='create_setlist'&&op.tracks!==undefined&&(!Array.isArray(op.tracks)||op.tracks.some(track=>typeof track!=='string'||!track))))throw Error('Invalid set list operation');
   }
  }
  if(!tracks.length&&!patchOperations?.length&&!setlistOperations?.length)throw Error('Provide between 1 and 20 tracks, or operations');
@@ -40,7 +41,7 @@ export async function composeMultiTrackShowCopy({source,destination,sha256,track
   for(let i=0;i<(setlistOperations?.length??0);i++){
    const op=setlistOperations[i],next=path.join(dir,`setlist-${i}.skshow`);
    const args={source:current,destination:next,sha256:currentHash,...op};
-   const edited=op.operation==='append_track'?await addShowSetlistTrackCopy(args):await editShowSetlistCopy(args);
+   const edited=op.operation==='create_setlist'?await createShowSetlistCopy(args):op.operation==='append_track'?await addShowSetlistTrackCopy(args):await editShowSetlistCopy(args);
    if(edited.cleanupWarning)warnings.push(edited.cleanupWarning);
    if(current!==source)await rm(current);
    current=next;currentHash=(await inspectShow({file:next})).sha256;
