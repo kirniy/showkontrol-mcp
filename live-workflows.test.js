@@ -42,3 +42,14 @@ test('identifier validation and bounded JSON responses',async t=>{
  for(const [name,args] of [['showkontrol_get_parameter',{node:'n1',key:'..'}],['showkontrol_set_parameter',{node:'.',key:'x',value:1}],['showkontrol_set_setting',{key:'',value:1}],['showkontrol_fire_node',{node:'..'}]]){const r=await c.callTool({name,arguments:args});assert.equal(r.isError,true)}
  assert.equal(count,0);const r=await c.callTool({name:'showkontrol_read',arguments:{path:'/state'}});assert.equal(r.isError,true);assert.match(r.content[0].text,/exceeds 5 MiB/);assert.equal(count,1);
 });
+
+test('action discovery uses encoded IDs and reports HTTP errors',async t=>{
+ const seen=[];
+ const mock=http.createServer((req,res)=>{seen.push({method:req.method,url:req.url});if(req.url==='/api/v1/actions/missing'){res.writeHead(404,{'Content-Type':'application/json'});res.end('{"error":"missing"}');return;}res.writeHead(200,{'Content-Type':'application/json'});res.end('{"parameters":[{"name":"example"}]}');});
+ await new Promise(r=>mock.listen(0,'127.0.0.1',r));t.after(()=>mock.close());
+ const client=new Client({name:'action-discovery-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:{...process.env,SHOWKONTROL_URL:`http://127.0.0.1:${mock.address().port}`}}));t.after(()=>client.close());
+ for(const [name,args] of [['showkontrol_list_actions',{}],['showkontrol_get_action',{id:'Action / #?'}]]){const result=await client.callTool({name,arguments:args});assert.equal(result.isError,undefined);assert.deepEqual(JSON.parse(result.content[0].text),{parameters:[{name:'example'}]});}
+ for(const id of ['', '.', '..']){const result=await client.callTool({name:'showkontrol_get_action',arguments:{id}});assert.equal(result.isError,true);}
+ const error=await client.callTool({name:'showkontrol_get_action',arguments:{id:'missing'}});assert.equal(error.isError,true);assert.match(error.content[0].text,/404/);
+ assert.deepEqual(seen,[{method:'GET',url:'/api/v1/actions'},{method:'GET',url:'/api/v1/actions/Action%20%2F%20%23%3F'},{method:'GET',url:'/api/v1/actions/missing'}]);
+});

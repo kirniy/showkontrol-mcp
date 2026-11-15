@@ -65,6 +65,7 @@ No credentials are needed for offline file tools.
 - `showkontrol_discover`: read live state, status, nodes, available node types, settings, variables, or the patch.
 - `showkontrol_get_deck`: read deck detail. Its frame playback data may be stale. Use `showkontrol_get_live_deck` to observe live transport state from `/state`; it returns the exact deck and any `t`, `tick`, and `epochMs` values supplied in the same response.
 - `showkontrol_deck_command`: send a documented transport command.
+- `showkontrol_list_actions`, `showkontrol_get_action`: list action metadata or read metadata for one action ID. A live R27 27.0.11 test listed actions and read `app.player.load` through MCP. Metadata parameter names do not necessarily match POST JSON fields. Do not infer the request body schema from this metadata.
 - `showkontrol_run_action`, `showkontrol_session_command`: run an action, launch the show, or switch a screen. The manual does not specify all request bodies; supply the body expected by the running app. These calls can control equipment.
 - `showkontrol_get_parameter`, `showkontrol_set_parameter`, `showkontrol_set_setting`, `showkontrol_fire_node`: common node and setting operations.
 - `showkontrol_node_type_detail`, `showkontrol_create_node`, `showkontrol_delete_node`: inspect a node type and preview, create, or delete a node. Creation requires an explicit `dryRun` value.
