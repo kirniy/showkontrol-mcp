@@ -1,19 +1,20 @@
 import {mkdtemp, link, rm} from 'node:fs/promises';
 import path from 'node:path';
 import {inspectShow} from './xml-copy.js';
-import {createShowTrackCopy, addShowTimelineCueCopy, copyCueGraphInShow, editCueGraphSettingCopy, inspectShowTimeline} from './timeline.js';
+import {createShowTrackCopy, addShowTimelineCueCopy, copyCueGraphInShow, editCueGraphSettingCopy, inspectShowTimeline, editTimelineAudioClipCopy} from './timeline.js';
 import {addShowSetlistTrackCopy, editShowSetlistCopy, inspectShowSetlist} from './setlist.js';
 import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
 import {editTimelineLayerCopy} from './layers.js';
 import {copyPatchSettingToCueShowCopy} from './patch-setting-to-cue.js';
 
 // Compose only structures supported by the existing offline writers.
-export async function composeShowCopy({source, destination, sha256, templateName, trackName, partName, existingPartName, cues, donor, set, layerOperations}) {
+export async function composeShowCopy({source, destination, sha256, templateName, trackName, partName, existingPartName, cues, donor, set, layerOperations, audioClipEdits}) {
  if (!path.isAbsolute(source) || !path.isAbsolute(destination) || path.resolve(source) === path.resolve(destination)) throw Error('Source and destination must be different absolute paths');
  const existing = existingPartName !== undefined;
  if (existing ? typeof existingPartName !== 'string' || !existingPartName || templateName !== undefined || trackName !== undefined || partName !== undefined || set !== undefined : typeof templateName !== 'string' || !templateName || typeof trackName !== 'string' || !trackName || typeof partName !== 'string' || !partName) throw Error('Choose existingPartName alone or templateName, trackName and partName for a new track');
  if (existing) partName = existingPartName;
  if (layerOperations !== undefined && (!Array.isArray(layerOperations) || layerOperations.some(op => !op || !['append', 'rename'].includes(op.operation) || typeof op.layerName !== 'string' || !op.layerName || typeof op.newName !== 'string' || !op.newName.trim()))) throw Error('Layer operations require append or rename, a layer name and a new name');
+ if (audioClipEdits !== undefined && (!Array.isArray(audioClipEdits) || audioClipEdits.length > 100)) throw Error('Audio clip edits must be an array of at most 100 entries');
  if (!Array.isArray(cues) || cues.length < 1 || cues.length > 100) throw Error('Provide between 1 and 100 cues');
  const validDonor = value => value === undefined || value === null || (typeof value === 'object' && path.isAbsolute(value.file || '') && value.sha256 && value.name && value.cueId);
  if (!validDonor(donor) || cues.some(cue => !validDonor(cue?.donor))) throw Error('Donor requires an absolute file path, SHA-256, timeline name and cue ID');
@@ -42,6 +43,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
   if (existing) await inspectShowTimeline({file: current, name: partName});
   else await step(next => createShowTrackCopy({source: current, destination: next, sha256: currentHash, templateName, trackName, partName}));
   for (const operation of layerOperations || []) await step(next => editTimelineLayerCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, operation: operation.operation, layerName: operation.layerName, newName: operation.newName}));
+  for (const edit of audioClipEdits || []) await step(next => editTimelineAudioClipCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, audioIndex: edit?.audioIndex, clipIndex: edit?.clipIndex, attributes: edit?.attributes}));
   for (const cue of cues) {
    const {layer, startMs, lengthMs, label} = cue || {};
    const created = await step(next => addShowTimelineCueCopy({source: current, destination: next, sha256: currentHash, name: partName, layer, startMs, lengthMs, label}));

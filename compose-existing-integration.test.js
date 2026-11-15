@@ -8,6 +8,7 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 import {inspectShow,readShowSnapshot} from './xml-copy.js';
 import {inspectShowTimeline,inspectCueGraph} from './timeline.js';
+import {composeShowCopy} from './compose-show.js';
 
 const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
 test('MCP composes on existing timelines and mixes new tracks atomically',async t=>{
@@ -45,5 +46,48 @@ test('MCP composes on existing timelines and mixes new tracks atomically',async 
  for(const [name,args] of [['conflict',{...existing,trackName:'Bad'}],['missing',{...existing,existingPartName:'content/Missing.sktl'}],['late',{tracks:[existing,{...fresh,cues:[{...fresh.cues[0],layer:99}]}]}]]){
   const destination=path.join(dir,`${name}.skshow`);const response=await call(name==='late'?'showkontrol_compose_multi_track_show_copy':'showkontrol_compose_show_copy',{source,destination,sha256,...args});assert.equal(response.isError,true,JSON.stringify(response));await assert.rejects(readFile(destination),/ENOENT/);
  }
+ assert.equal(await readFile(source,'utf8'),input);assert.deepEqual((await readdir(dir)).filter(name=>name.startsWith('.showkontrol-')),[]);
+});
+
+test('MCP composes ordered audio clip edits atomically across existing and new tracks',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-compose-audio-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skshow');
+ const timeline='<sktimeline version="1" name="Existing"><layers><layer name="Layer 1"/></layers><audio name="Audio 1"><clip name="original" pps="1" offsetMs="0" vol="1" trimStartMs="0" trimEndMs="1000" fadeInMs="0" custom="keep"><file>media/song.wav</file></clip><unknown value="keep"/></audio></sktimeline>';
+ const empty='<sktimeline version="1" name="Empty"><layers><layer name="Layer 1"/></layers></sktimeline>';
+ const input=`<skshow><!-- preserve -->${part('content/Existing.sktl',timeline)}${part('content/Empty.sktl',empty)}${part('media/song.wav','media bytes')}${part('patch.skf','<showkontrol version="2"><graph/></showkontrol>')}</skshow>`;
+ await writeFile(source,input);const sha256=(await inspectShow({file:source})).sha256;
+ const client=new Client({name:'compose-audio-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const call=(name,args)=>client.callTool({name,arguments:args});
+ const edits=[{audioIndex:0,clipIndex:0,attributes:{vol:'0.5',offsetMs:'120'}},{audioIndex:0,clipIndex:0,attributes:{vol:'0.25',fadeInMs:'40'}}];
+ const existing={existingPartName:'content/Existing.sktl',audioClipEdits:edits,cues:[{layer:0,startMs:100,lengthMs:40,label:'Added'}]};
+ const fresh={templateName:'content/Empty.sktl',trackName:'New',partName:'content/New.sktl',cues:[{layer:0,startMs:200,lengthMs:40,label:'New cue'}]};
+ for(const multi of [false,true]){
+  const destination=path.join(dir,multi?'multi.skshow':'single.skshow');
+  const result=await call(multi?'showkontrol_compose_multi_track_show_copy':'showkontrol_compose_show_copy',{source,destination,sha256,...(multi?{tracks:[fresh,existing]}:existing)});
+  assert.equal(result.isError,undefined,JSON.stringify(result));
+  const snapshot=await readShowSnapshot({file:destination});assert.ok(snapshot.parts.every(p=>p.valid));
+  const target=snapshot.parts.find(p=>p.name===existing.existingPartName).bytes.toString();
+  assert.ok(target.includes('pps="1" offsetMs="120" vol="0.25" trimStartMs="0" trimEndMs="1000" fadeInMs="40" custom="keep"'));assert.ok(target.includes('<unknown value="keep"/>'));
+  assert.equal(snapshot.parts.find(p=>p.name==='media/song.wav').bytes.toString(),'media bytes');
+  assert.equal((await inspectShowTimeline({file:destination,name:existing.existingPartName})).cueElements.length,1);
+  const again=await call(multi?'showkontrol_compose_multi_track_show_copy':'showkontrol_compose_show_copy',{source,destination,sha256,...(multi?{tracks:[fresh,existing]}:existing)});assert.equal(again.isError,true);
+ }
+ const newTrackFailure=path.join(dir,'new-track-failure.skshow');
+ const newTrackResult=await call('showkontrol_compose_show_copy',{source,destination:newTrackFailure,sha256,...fresh,audioClipEdits:edits});
+ assert.equal(newTrackResult.isError,true);assert.match(newTrackResult.content[0].text,/Audio clip index/);await assert.rejects(readFile(newTrackFailure),/ENOENT/);
+ const tooMany=Array.from({length:101},()=>edits[0]);
+ for(const multi of [false,true]){
+  const destination=path.join(dir,`too-many-${multi}.skshow`);
+  const response=await call(multi?'showkontrol_compose_multi_track_show_copy':'showkontrol_compose_show_copy',{source,destination,sha256,...(multi?{tracks:[{...existing,audioClipEdits:tooMany}]}:{...existing,audioClipEdits:tooMany})});
+  assert.equal(response.isError,true);await assert.rejects(readFile(destination),/ENOENT/);
+ }
+ const directFailure=path.join(dir,'too-many-direct.skshow');
+ await assert.rejects(composeShowCopy({source,destination:directFailure,sha256,...existing,audioClipEdits:tooMany}),/at most 100/);await assert.rejects(readFile(directFailure),/ENOENT/);
+ const failed=path.join(dir,'failed.skshow');
+ const result=await call('showkontrol_compose_multi_track_show_copy',{source,destination:failed,sha256,tracks:[fresh,{...existing,audioClipEdits:[...edits,{audioIndex:0,clipIndex:0,attributes:{fadeOutMs:'2'}}]}]});
+ assert.equal(result.isError,true);assert.match(result.content[0].text,/must exist/);await assert.rejects(readFile(failed),/ENOENT/);
+ const missing=path.join(dir,'missing.skshow');
+ const bad=await call('showkontrol_compose_show_copy',{source,destination:missing,sha256,...existing,audioClipEdits:[...edits,{audioIndex:0,clipIndex:0,attributes:{vol:'1',unsupported:'3'}}]});
+ assert.equal(bad.isError,true);await assert.rejects(readFile(missing),/ENOENT/);
  assert.equal(await readFile(source,'utf8'),input);assert.deepEqual((await readdir(dir)).filter(name=>name.startsWith('.showkontrol-')),[]);
 });
