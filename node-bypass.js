@@ -1,4 +1,5 @@
 import {SafeCallError} from './staged-live-graph.js';
+import {reportsFailure} from './verified-parameter.js';
 
 // The tested action body addresses a node by title.
 export async function setNodeBypass({id, bypassed}, call) {
@@ -18,6 +19,6 @@ export async function setNodeBypass({id, bypassed}, call) {
   let result;
   try { result = await call('GET', `/nodes/${encodeURIComponent(id)}/params/node.bypassed`); }
   catch (error) { return {status:'readback_unknown', id, bypassed, warning, detail:error instanceof SafeCallError ? error.message : 'The write was sent but readback failed; no automatic retry.'}; }
-  if (!result || typeof result !== 'object' || Array.isArray(result) || result.key !== 'node.bypassed' || typeof result.value !== 'boolean') return {status:'readback_unknown', id, bypassed, warning, detail:'The write was sent but readback was malformed; no automatic retry.'};
+  if (!result || typeof result !== 'object' || Array.isArray(result) || result.key !== 'node.bypassed' || typeof result.value !== 'boolean' || reportsFailure(result)) return {status:'readback_unknown', id, bypassed, warning, detail:'The write was sent but readback was malformed; no automatic retry.'};
   return {status:result.value === bypassed ? 'matched' : 'mismatch', id, bypassed, observed:result.value, warning};
 }

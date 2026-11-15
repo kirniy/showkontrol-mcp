@@ -64,21 +64,35 @@ const base = new URL(process.env.SHOWKONTROL_URL || 'http://127.0.0.1:8090');
 if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash || !['', '/'].includes(base.pathname)) throw Error('SHOWKONTROL_URL must be an HTTP(S) origin without credentials or a path');
 const timeout = Number(process.env.SHOWKONTROL_TIMEOUT_MS || 5000);
 if (!Number.isFinite(timeout) || timeout < 100 || timeout > 120000) throw Error('Invalid SHOWKONTROL_TIMEOUT_MS');
+// fetch strips surrounding whitespace from header values and stringifies numbers, so the redacted value must be the sent one.
+const secretValue = value => typeof value === 'string' ? value.trim() : typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
 async function credentials() {
-  let pair = process.env.SHOWKONTROL_PAIR_KEY || '';
-  let token = process.env.SHOWKONTROL_TOKEN || '';
+  let pair = secretValue(process.env.SHOWKONTROL_PAIR_KEY);
+  let token = secretValue(process.env.SHOWKONTROL_TOKEN);
   let port;
   if (!pair && process.env.SHOWKONTROL_USE_LOCAL_PAIRING === '1') {
     if (!['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)) throw Error('Local pairing is limited to loopback');
     const file = process.env.SHOWKONTROL_PAIRING_FILE || path.join(homedir(), 'Documents/TC Supply/WEB/streamdeck.json');
     try {
       const data = JSON.parse(await readFile(file, 'utf8'));
-      if (data.enabled !== false) { pair = data.key || ''; token ||= data.token || ''; port = Number(data.port) || undefined; }
+      if (data.enabled !== false) { pair = secretValue(data.key); token ||= secretValue(data.token); port = Number(data.port) || undefined; }
     } catch (e) { if (e.code !== 'ENOENT') throw Error('Could not read local pairing file'); }
   }
   return {token, pair, port};
 }
 const responseCredentials = new WeakMap();
+function redact(text, res, minLength = 1) {
+  let s = text;
+  for (const secret of Object.values(responseCredentials.get(res) ?? {})) if (typeof secret === 'string' && secret.length >= minLength) s = s.split(secret).join('[redacted]');
+  return s;
+}
+// Response text for an error message: no control characters or credentials, at most 500 characters.
+function cleanText(value, res) {
+  const s = redact(String(value).replace(/[\x00-\x1f\x7f-\x9f]/g, ' '), res);
+  return s.length > 500 ? s.slice(0, 500) + '…' : s;
+}
+// A non-GET request that received a response may have been applied even when this server cannot return the body.
+const writeOutcome = (method, res) => method === 'GET' ? '' : `; ${method} returned HTTP ${res.status}, so the write may have been applied; no automatic retry`;
 async function request(method, apiPath, body, accept = 'application/json', signal = AbortSignal.timeout(timeout)) {
   if (!apiPath.startsWith('/') || apiPath.startsWith('//') || apiPath.includes('#') || /[\r\n\\]/.test(apiPath)) throw Error('Path must be a relative API path beginning with one slash');
   const url = new URL('/api/v1' + apiPath, base);
@@ -98,25 +112,21 @@ async function request(method, apiPath, body, accept = 'application/json', signa
 async function call(method, apiPath, body) {
   const signal = AbortSignal.timeout(timeout);
   const res = await request(method, apiPath, body, 'application/json', signal);
-  const contentType = res.headers.get('content-type') || '';
-  if (contentType.toLowerCase().startsWith('text/event-stream')) { await res.body?.cancel(); throw Error('Use showkontrol_sample_events for event streams'); }
-  if (!contentType.includes('json') && !contentType.startsWith('text/') && res.status !== 204) throw Error(`HTTP ${res.status}: binary response is not supported by this tool`);
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+  if (contentType.startsWith('text/event-stream')) { await res.body?.cancel(); throw Error(`Use showkontrol_sample_events for event streams${writeOutcome(method, res)}`); }
+  if (!contentType.includes('json') && !contentType.startsWith('text/') && res.status !== 204) { await res.body?.cancel(); throw Error(`HTTP ${res.status}: binary response is not supported by this tool${writeOutcome(method, res)}`); }
   const limit = 5 * 1024 * 1024;
-  if (Number(res.headers.get('content-length')) > limit) { await res.body?.cancel(); throw Error('Response exceeds 5 MiB limit'); }
+  if (Number(res.headers.get('content-length')) > limit) { await res.body?.cancel(); throw Error(`Response exceeds 5 MiB limit${writeOutcome(method, res)}`); }
   const reader = res.body?.getReader(); const chunks = []; let size = 0;
   const sizeError = Error('Response exceeds 5 MiB limit');
   try { if (reader) while (true) { const {done,value} = await reader.read(); if(done) break; size += value.length; if(size > limit) throw sizeError; chunks.push(value); } }
-  catch(e) { await reader?.cancel().catch(()=>{}); if (e === sizeError) throw e; throw new SafeCallError(`${method} ${new URL(res.url).pathname}: ${signal.aborted && signal.reason?.name === 'TimeoutError' ? 'response timed out' : 'response connection failed'}${method === 'GET' ? '' : '; the outcome of the write may be unknown'}; no automatic retry`); }
-  const text = Buffer.concat(chunks).toString('utf8');
+  catch(e) { await reader?.cancel().catch(()=>{}); if (e === sizeError) throw Error(`${e.message}${writeOutcome(method, res)}`); throw new SafeCallError(`${method} ${new URL(res.url).pathname}: ${signal.aborted && signal.reason?.name === 'TimeoutError' ? 'response timed out' : 'response connection failed'}${method === 'GET' ? '' : '; the outcome of the write may be unknown'}; no automatic retry`); }
+  // Successful bodies are redacted too (a settings read can echo the token); a secret under 8 characters is left, so it cannot rewrite ordinary data.
+  const text = redact(Buffer.concat(chunks).toString('utf8'), res, 8);
   let result = text;
   if (text) {try { result = JSON.parse(text); } catch { /* retain text */ }} else result = {};
   if (!res.ok) {
-    const {token, pair} = responseCredentials.get(res);
-    const clean = value => {
-      let s = value.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ');
-      for (const secret of [token, pair]) if (typeof secret === 'string' && secret) s = s.split(secret).join('[redacted]');
-      return s.length > 500 ? s.slice(0, 500) + '…' : s;
-    };
+    const clean = value => cleanText(value, res);
     const message = typeof result?.error === 'string' && result.error ? clean(result.error) : clean(res.statusText);
     const problems = method === 'PUT' && apiPath.split('?')[0] === '/patch' && Array.isArray(result?.problems)
       ? result.problems.slice(0, 10).filter(p => typeof p === 'string').map(clean) : [];
@@ -128,7 +138,7 @@ async function call(method, apiPath, body) {
 // Limit returned media to keep MCP messages bounded. No file is written.
 async function readBinary(apiPath) {
   const res = await request('GET', apiPath, undefined, '*/*');
-  if (!res.ok) { await res.body?.cancel(); throw Error(`HTTP ${res.status}: ${res.statusText}`); }
+  if (!res.ok) { await res.body?.cancel(); throw Error(`HTTP ${res.status}: ${cleanText(res.statusText, res)}`); }
   const mimeType = (res.headers.get('content-type') || 'application/octet-stream').split(';')[0].trim().toLowerCase();
   if (!/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(mimeType)) { await res.body?.cancel(); throw Error('Invalid response content type'); }
   if (mimeType === 'text/event-stream') { await res.body?.cancel(); throw Error('Use showkontrol_sample_events for event streams'); }
@@ -148,18 +158,19 @@ async function readBinary(apiPath) {
 async function sampleEvents({durationMs, maxEvents}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), durationMs);
-  let reader; const events = []; let buffer = '', size = 0, ended = false;
+  let reader; const events = []; let buffer = '', size = 0, ended = false, failed = false;
   try {
     let res;
     try { res = await request('GET','/events',undefined,'text/event-stream',controller.signal); }
     catch(e) { if (controller.signal.aborted) throw Error('Timed out before event stream headers'); throw e; }
-    if (!res.ok) { await res.body?.cancel(); throw Error(`HTTP ${res.status}: ${res.statusText}`); }
+    if (!res.ok) { await res.body?.cancel(); throw Error(`HTTP ${res.status}: ${cleanText(res.statusText, res)}`); }
     if (!(res.headers.get('content-type') || '').toLowerCase().startsWith('text/event-stream')) { await res.body?.cancel(); throw Error('Expected text/event-stream'); }
     reader = res.body?.getReader(); const decoder = new TextDecoder();
     let name = '', data = [];
     while (reader && events.length < maxEvents) {
       let chunk;
-      try { chunk = await reader.read(); } catch(e) { if (controller.signal.aborted) break; throw e; }
+      // A dropped connection keeps the events already received; with none, it fails.
+      try { chunk = await reader.read(); } catch(e) { if (controller.signal.aborted) break; if (events.length) { failed = true; break; } throw Error('Event stream connection failed before any event'); }
       if (chunk.done) { ended = true; break; }
       size += chunk.value.length; if (size > 1024 * 1024) throw Error('Event stream exceeds 1 MiB limit');
       buffer += decoder.decode(chunk.value,{stream:true});
@@ -175,7 +186,7 @@ async function sampleEvents({durationMs, maxEvents}) {
         if(field==='event') name=value; else if(field==='data') data.push(value);
       }
     }
-    return {events,reason:events.length >= maxEvents ? 'maxEvents' : ended ? 'streamClosed' : 'duration'};
+    return {events,reason:events.length >= maxEvents ? 'maxEvents' : failed ? 'connectionFailed' : ended ? 'streamClosed' : 'duration'};
   } finally { clearTimeout(timer); controller.abort(); await reader?.cancel().catch(()=>{}); }
 }
 const server = new McpServer({name:'showkontrol',version:'0.1.0'},{instructions:'Use discovery tools to inspect the running show and available node types before live changes. For offline authoring, inspect the show or part first, use the returned SHA-256, and write each change to a new copy. Inspect each new copy before the next edit. Native show formats and some action bodies are not fully verified: report the actual validation level and check the result in ShowKontrol. Live writes are not retried; after a timeout, read the current state before deciding whether to repeat a write.'});
@@ -226,6 +237,7 @@ add('showkontrol_diagnose_live_node','Read a live node and compare its requested
  const effective=typeof effectiveRaw==='boolean' ? effectiveRaw : 'unknown';
  const warnings=[];
  if(requested!=='unknown' && effective!=='unknown' && requested!==effective) warnings.push('Requested and effective stopped states differ; the cause is unknown.');
+ if(Object.hasOwn(object,'id') && object.id!==id) warnings.push('The response node ID differs from the requested identifier. This is expected when a title was supplied; otherwise the values may belong to another node.');
  return {id:object.id ?? null,title:object.title ?? null,type:object.type ?? null,requestedStopped:requested,effectiveStopped:effective,raw:{params:Object.hasOwn(object,'params') ? object.params : null,requestedMatches:matches,effectiveStopped:effectiveRaw},warnings};
 },readOnly);
 add('showkontrol_set_node_bypass','Set a node bypass state by ID. Resolves one exact, unique title, sends one action, and reads node.bypassed by ID. Title resolution can race or differ from app matching; readback does not prove which node the action affected. Changes the running show. No automatic retry.',{id:z.string().min(1),bypassed:z.boolean()},args=>setNodeBypass(args,call),write);

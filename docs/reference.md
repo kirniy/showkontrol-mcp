@@ -32,13 +32,15 @@ Contents:
 
 These tools call the running ShowKontrol web engine. Write tools can change the show and control equipment.
 
+The token and pair key are sent with surrounding whitespace removed, and a numeric value from the pairing file as its decimal text. Those values are replaced with `[redacted]` in error messages, HTTP status text and returned bodies; in returned bodies only values of 8 or more characters are replaced, so a shorter key cannot rewrite ordinary data. Media types are compared without case. When a non-GET request receives a response this server cannot return (a binary or event-stream type, or more than 5 MiB), the error says that the write may have been applied.
+
 ### Read and observe
 
 - `showkontrol_read`: call a JSON or text GET endpoint under `/api/v1`.
 
 - `showkontrol_read_binary`: read a binary endpoint as an embedded base64 resource, limited to 5 MiB.
 
-- `showkontrol_sample_events`: sample the event stream for up to 30 seconds and 100 events. The server can replay the most recent event of each type when the connection starts.
+- `showkontrol_sample_events`: sample the event stream for up to 30 seconds and 100 events. The server can replay the most recent event of each type when the connection starts. `reason` is `maxEvents`, `duration`, `streamClosed`, or `connectionFailed` when the connection failed after at least one event; a failure before any event is an error.
 
 - `showkontrol_discover`: read live state, status, nodes, available node types, settings, variables, or the patch.
 
@@ -66,9 +68,9 @@ These tools call the running ShowKontrol web engine. Write tools can change the 
 
 ### Nodes and parameters
 
-- `showkontrol_set_node_bypass`: set `node.bypassed` using a node ID and a boolean. The tool checks that the ID and its nonempty exact title are unique in `/nodes`, sends one bypass action, and reads the parameter by ID. A timeout or failed write has an unknown outcome. A failed or malformed readback is unknown; a different value is a mismatch. No write is retried. The action addresses a title, so a concurrent rename or the app’s title matching rules can select another node. These checks are not atomic, and a matching readback does not prove which node the action affected. The tool was tested on a disconnected group in R27 27.0.11; it reported matching readbacks for bypass on and off.
+- `showkontrol_set_node_bypass`: set `node.bypassed` using a node ID and a boolean. The tool checks that the ID and its nonempty exact title are unique in `/nodes`, sends one bypass action, and reads the parameter by ID. A timeout or failed write has an unknown outcome. A failed or malformed readback, or one that reports failure (`ok` or `success` false, or an `error` field), is unknown; a different value is a mismatch. No write is retried. The action addresses a title, so a concurrent rename or the app’s title matching rules can select another node. These checks are not atomic, and a matching readback does not prove which node the action affected. The tool was tested on a disconnected group in R27 27.0.11; it reported matching readbacks for bypass on and off.
 
-- `showkontrol_set_parameter_verified`: send one live parameter PUT by node ID and key, then read the same parameter. The value can be any JSON value. The result is `matched`, `mismatch`, `readback_unknown`, or `write_unknown`. A failed or malformed write response has an unknown outcome; the tool does not retry. The tool requires both PUT and GET responses to be objects with the exact `key` and a `value`. A live R27 test returned this shape for a text parameter, with additional label, category, and kind fields; other parameter types are not verified. The tool accepts only IDs in the observed `n` followed by digits format. It does not check node existence or protect against concurrent deletion or ID reuse. The comparison is deep and type-sensitive. Failure results do not include parameter values. The two requests are not atomic: another writer can change the parameter during or after the operation. A matching value may already have existed and does not prove that this write caused it. Inspect live state before deciding on a further write.
+- `showkontrol_set_parameter_verified`: send one live parameter PUT by node ID and key, then read the same parameter. The value can be any JSON value. The result is `matched`, `mismatch`, `readback_unknown`, or `write_unknown`. A failed or malformed write response has an unknown outcome; the tool does not retry. The tool requires both PUT and GET responses to be objects with the exact `key` and a `value`. A response that reports failure (`ok` or `success` false or `"false"`, or an `error` field) is treated as unsuccessful or unknown, and an HTTP error from the write is quoted in `detail`; it is still `write_unknown`, because a rejection response alone does not prove the value is unchanged. A live R27 test returned this shape for a text parameter, with additional label, category, and kind fields; other parameter types are not verified. The tool accepts only IDs in the observed `n` followed by digits format. It does not check node existence or protect against concurrent deletion or ID reuse. The comparison is deep and type-sensitive. Failure results do not include parameter values. The two requests are not atomic: another writer can change the parameter during or after the operation. A matching value may already have existed and does not prove that this write caused it. Inspect live state before deciding on a further write.
 
 - `showkontrol_get_parameter`, `showkontrol_set_parameter`, `showkontrol_set_setting`, `showkontrol_fire_node`: common node and setting operations.
 
