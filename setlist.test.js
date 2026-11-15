@@ -111,3 +111,14 @@ test('create set expands a self-closing setlist root',async t=>{
  assert.deepEqual((await inspectShowSetlist({file:destination,name})).sets,[{name:'New & Set',tracks:[]}]);
  assert.match((await readShowPart({file:destination,name})).text,/<sksetlist version="2" active="0"><set name="New &amp; Set"><\/set><\/sksetlist>/);
 });
+test('track attribute preserves tab, line feed and carriage return',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-set-whitespace-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'in.skshow'),destination=path.join(dir,'out.skshow');
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const timeline='<sktimeline version="1" name="A&#x9;B&#xA;C&#xD;D"/>';
+ const list='<sksetlist version="2"><set name="Main"/></sksetlist>';
+ await writeFile(source,`<skshow>${part('track.sktl',timeline)}${part('set.skls',list)}</skshow>`);
+ const before=await inspectShowSetlist({file:source,name:'set.skls'}),trackName='A\tB\nC\rD';
+ await addShowSetlistTrackCopy({source,destination,sha256:before.sha256,name:'set.skls',setName:'Main',trackName});
+ assert.deepEqual((await inspectShowSetlist({file:destination,name:'set.skls'})).sets,[{name:'Main',tracks:[trackName]}]);
+});

@@ -23,7 +23,7 @@ export async function inspectShowTimeline({file,name}) {
 }
 function xmlAttr(s) {
  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]/u.test(s))throw Error('Invalid XML character in cue label');
- return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+ return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll('\t','&#x9;').replaceAll('\n','&#xA;').replaceAll('\r','&#xD;');
 }
 function addCue(xml,{layer,startMs,lengthMs,label}) {
  if(!Number.isInteger(layer)||layer<0)throw Error('Layer must be a non-negative integer');
@@ -34,7 +34,10 @@ function addCue(xml,{layer,startMs,lengthMs,label}) {
  if(closings.length!==1||!/^\s*$/.test(xml.slice(closings[0].index+closings[0][0].length)))throw Error('Nested timeline or trailing XML markup is not supported');
  let id;do{id=`c${Date.now()}_${randomInt(1,1000000000)}`}while(info.cueElements.some(c=>c.attributes.id===id));
  const cue=`<cue id="${id}" layer="${layer}" startMs="${startMs}" lenMs="${lengthMs}" label="${xmlAttr(label)}"/>`;
- const at=closings[0].index;return {id,modified:xml.slice(0,at)+cue+xml.slice(at)};
+ const at=closings[0].index,modified=xml.slice(0,at)+cue+xml.slice(at);
+ const created=parseTimeline(modified).cueElements.filter(c=>c.path==='sktimeline/cue'&&c.attributes.id===id);
+ if(created.length!==1||created[0].attributes.label!==label||created[0].attributes.layer!==String(layer)||created[0].attributes.startMs!==String(startMs)||created[0].attributes.lenMs!==String(lengthMs))throw Error('Cue fields could not be preserved in XML');
+ return {id,modified};
 }
 export async function addTimelineCueCopy({source,destination,sha256,layer,startMs,lengthMs,label}) {
  const {xml,sha256:actual}=await inspectXml({file:source});if(actual!==sha256)throw Error('Source changed since inspection');
@@ -91,6 +94,11 @@ function cueElements(xml,cueId){
   parser.write(opening.replace(/\s*\/?>$/,'/>')).close();return attributes.id===cueId;
  });
 }
+function insertCueGraph(xml,cue,graph){
+ if(cue.selfClosing){const open=xml.slice(cue.start,cue.openEnd).replace(/\s*\/>$/,'>');return xml.slice(0,cue.start)+open+graph+'</cue>'+xml.slice(cue.end);}
+ if(!/^\s*$/.test(xml.slice(cue.openEnd,cue.closeStart)))throw Error('Target cue must be empty or contain only whitespace');
+ return xml.slice(0,cue.closeStart)+graph+xml.slice(cue.closeStart);
+}
 export async function copyCueGraphInShow({source,destination,sha256,name,sourceName=name,sourceCueId,targetCueId,template,templateSha256}){
  if((template===undefined)!==(templateSha256===undefined))throw Error('Provide both template and templateSha256');
  if(template===undefined&&sourceName===name&&sourceCueId===targetCueId)throw Error('Select two different cues');
@@ -126,8 +134,8 @@ export async function copyCueGraphInShow({source,destination,sha256,name,sourceN
   const re=new RegExp('((?:\\sid|\\sfromNode|\\stoNode)=["\\\'])'+regexEscape(oldId)+'(["\\\'])','g');graph=graph.replace(re,(_,a,b)=>a+newId+b);
  }
  for(const oldId of ids)if(new RegExp('(^|[^A-Za-z0-9_])'+regexEscape(oldId)+'([^A-Za-z0-9_]|$)').test(graph))throw Error('Graph contains node references outside supported attributes');
- const tm=selectXmlSpans(targetRoot,['sktimeline',{name:'cue',attributes:{id:targetCueId}}]);if(tm.length!==1||!tm[0].selfClosing)throw Error('Target cue must use the simple self-closing form');
- const open=xml.slice(tm[0].start,tm[0].openEnd).replace(/\s*\/>$/,'>');const changed=xml.slice(0,tm[0].start)+open+graph+'</cue>'+xml.slice(tm[0].end);
+ const tm=selectXmlSpans(targetRoot,['sktimeline',{name:'cue',attributes:{id:targetCueId}}]);if(tm.length!==1)throw Error('Target cue must occur exactly once');
+ const changed=insertCueGraph(xml,tm[0],graph);
  const expected={nodes:src.graph.nodes.map(node=>({...node,id:idMap[node.id]})),connections:src.graph.connections.map(connection=>({...connection,fromNode:idMap[connection.fromNode],toNode:idMap[connection.toNode]}))};
  if(JSON.stringify(cueGraph(changed,targetCueId).graph)!==JSON.stringify(expected))throw Error('Copied graph did not match the selected source and target cues');
  const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:changed}]});
@@ -268,12 +276,32 @@ export async function copyCueGraphBetweenTimelines({source,destination,sha256,te
  if(max+ids.length>1000000000)throw Error('No node IDs remain in the supported range');const idMap=Object.fromEntries(ids.map(id=>[id,`n${++max}`]));
  const donorRoot=parseXmlSpans(donor.xml),targetRoot=parseXmlSpans(target.xml);
  const graphs=selectXmlSpans(donorRoot,['sktimeline',{name:'cue',attributes:{id:sourceCueId}},'graph']);if(graphs.length!==1||graphs[0].selfClosing)throw Error('Unsupported source graph serialization');
- const cues=selectXmlSpans(targetRoot,['sktimeline',{name:'cue',attributes:{id:targetCueId}}]);if(cues.length!==1||!cues[0].selfClosing)throw Error('Target cue must use the simple self-closing form');
+ const cues=selectXmlSpans(targetRoot,['sktimeline',{name:'cue',attributes:{id:targetCueId}}]);if(cues.length!==1)throw Error('Target cue must occur exactly once');
  let graph=donor.xml.slice(graphs[0].start,graphs[0].end);
  for(const [oldId,newId] of Object.entries(idMap)){const re=new RegExp('((?:\\sid|\\sfromNode|\\stoNode)=["\\\'])'+regexEscape(oldId)+'(["\\\'])','g');graph=graph.replace(re,(_,a,b)=>a+newId+b);}
  for(const oldId of ids)if(new RegExp('(^|[^A-Za-z0-9_])'+regexEscape(oldId)+'([^A-Za-z0-9_]|$)').test(graph))throw Error('Graph contains node references outside supported attributes');
- const cue=cues[0],opening=target.xml.slice(cue.start,cue.openEnd).replace(/\s*\/>$/,'>'),modified=target.xml.slice(0,cue.start)+opening+graph+'</cue>'+target.xml.slice(cue.end);
+ const modified=insertCueGraph(target.xml,cues[0],graph);
  const expected={nodes:src.graph.nodes.map(node=>({...node,id:idMap[node.id]})),connections:src.graph.connections.map(c=>({...c,fromNode:idMap[c.fromNode],toNode:idMap[c.toNode]}))};
  if(JSON.stringify(cueGraph(modified,targetCueId).graph)!==JSON.stringify(expected))throw Error('Copied graph did not match selected source and target cues');
  const result=await editXmlCopy({source,destination,sha256,edits:[{find:target.xml,replace:modified}]});return {...result,sourceCueId,targetCueId,idMap,note:'Copied a fixture-supported cue graph into an offline timeline copy. Node IDs are checked within this timeline only; validate in ShowKontrol before combining with a show.'};
+}
+
+export async function removeCueGraphCopy({source,destination,format,sha256,name,cueId}){
+ if(!['sktl','skshow'].includes(format))throw Error('Format must be sktl or skshow');
+ if(typeof cueId!=='string'||!cueId)throw Error('Cue ID is required');
+ let xml,actual;
+ if(format==='skshow'){
+  if(!name||!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
+  const show=await readShowSnapshot({file:source});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');actual=show.sha256;xml=readSnapshotPart({snapshot:show,name}).text;
+ }else ({xml,sha256:actual}=await inspectXml({file:source}));
+ if(actual!==sha256)throw Error('Source changed since inspection');
+ const before=cueGraph(xml,cueId);if(!before.graph)throw Error('Cue has no action graph');
+ const root=parseXmlSpans(xml),cues=selectXmlSpans(root,['sktimeline',{name:'cue',attributes:{id:cueId}}]),graphs=selectXmlSpans(root,['sktimeline',{name:'cue',attributes:{id:cueId}},'graph']);
+ if(cues.length!==1||graphs.length!==1)throw Error('Cue and graph must each occur exactly once');
+ const graph=graphs[0],modified=xml.slice(0,graph.start)+xml.slice(graph.end),after=cueGraph(modified,cueId);
+ if(after.graph!==null)throw Error('Cue graph removal could not be verified');
+ const beforeCue=parseTimeline(xml).cueElements.filter(c=>c.path==='sktimeline/cue'&&c.attributes.id===cueId),afterCue=parseTimeline(modified).cueElements.filter(c=>c.path==='sktimeline/cue'&&c.attributes.id===cueId);
+ if(beforeCue.length!==1||afterCue.length!==1||JSON.stringify(beforeCue[0])!==JSON.stringify(afterCue[0]))throw Error('Cue attributes changed unexpectedly');
+ const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
+ return {...result,cueId,removedNodeCount:before.graph.nodes.length,removedConnectionCount:before.graph.connections.length,note:'Removed a cue action graph from an offline copy. Cue attributes were preserved; external references and ShowKontrol acceptance are not validated.'};
 }

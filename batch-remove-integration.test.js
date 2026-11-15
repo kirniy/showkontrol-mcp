@@ -1,0 +1,17 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';import path from 'node:path';import os from 'node:os';import {createHash} from 'node:crypto';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
+test('MCP removes cue graphs and adds cue batches without overwriting',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-batch-remove-mcp-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.skshow'),removed=path.join(dir,'removed.skshow'),batch=path.join(dir,'batch.skshow');
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const timeline='<sktimeline version="1" name="Track"><layers><layer name="Layer 1"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Cue"><graph><node id="n1" type="groupin"><settings/></node></graph></cue></sktimeline>';
+ const original=`<skshow>${part('content/Track.sktl',timeline)}${part('patch.skf','<showkontrol version="2"/>')}</skshow>`;await writeFile(source,original);
+ const client=new Client({name:'batch-remove-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const names=(await client.listTools()).tools.map(t=>t.name);for(const name of ['showkontrol_remove_cue_graph_copy','showkontrol_add_show_timeline_cues_copy'])assert.ok(names.includes(name));
+ const call=(name,args)=>client.callTool({name,arguments:args}),parse=r=>JSON.parse(r.content[0].text),name='content/Track.sktl';const before=await call('showkontrol_inspect_show_timeline',{file:source,name});assert.equal(before.isError,undefined);
+ const removeArgs={source,destination:removed,format:'skshow',sha256:parse(before).sha256,name,cueId:'c1'};const removal=await call('showkontrol_remove_cue_graph_copy',removeArgs);assert.equal(removal.isError,undefined);assert.equal(parse(removal).removedNodeCount,1);
+ const read=await call('showkontrol_inspect_cue_graph',{file:removed,format:'skshow',name,cueId:'c1'});assert.equal(parse(read).graph,null);const removeAgain=await call('showkontrol_remove_cue_graph_copy',removeArgs);assert.equal(removeAgain.isError,true);
+ const info=await call('showkontrol_inspect_show_timeline',{file:removed,name});const args={source:removed,destination:batch,sha256:parse(info).sha256,cues:[{name,layer:0,startMs:100,lengthMs:40,label:'First'},{name,layer:0,startMs:200,lengthMs:40,label:'Second'}]};
+ const added=await call('showkontrol_add_show_timeline_cues_copy',args);assert.equal(added.isError,undefined);assert.equal(parse(added).cues.length,2);const after=await call('showkontrol_inspect_show_timeline',{file:batch,name});assert.deepEqual(parse(after).cueElements.map(c=>c.attributes.label),['Cue','First','Second']);
+ const saved=await readFile(batch,'utf8'),duplicate=await call('showkontrol_add_show_timeline_cues_copy',args);assert.equal(duplicate.isError,true);assert.equal(await readFile(batch,'utf8'),saved);assert.equal(await readFile(source,'utf8'),original);
+ const invalid=await call('showkontrol_add_show_timeline_cues_copy',{...args,destination:path.join(dir,'invalid.skshow'),cues:[...args.cues,{name,layer:3,startMs:0,lengthMs:40,label:'Invalid'}]});assert.equal(invalid.isError,true);await assert.rejects(readFile(path.join(dir,'invalid.skshow')),/ENOENT/);
+});

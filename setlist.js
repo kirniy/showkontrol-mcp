@@ -11,7 +11,7 @@ export function parseSetlist(xml) {
  });parser.on('text',s=>{if(s.trim())throw Error('Unsupported set list text');});parser.on('closetag',tag=>{if(tag.name==='set')current=null;stack.pop()});parser.write(xml).close();
  if(!root)throw Error('Expected a version 2 set list');return sets;
 }
-function escapeAttr(s){return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&apos;');}
+function escapeAttr(s){return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&apos;').replaceAll('\t','&#x9;').replaceAll('\n','&#xA;').replaceAll('\r','&#xD;');}
 function setEntrySpans(xml){
  const parser=new SaxesParser(),stack=[],sets=[];let current,entry;
  parser.on('opentag',tag=>{
@@ -62,7 +62,9 @@ export async function addShowSetlistTrackCopy({source,destination,sha256,name,se
  const match=matches[0],entry=`<entry track="${escapeAttr(trackName)}"/>`;
  const at=match[0].lastIndexOf('</set');
  const changed=at<0?match[0].replace(/\s*\/>$/,()=>`>${entry}</set>`):match[0].slice(0,at)+entry+match[0].slice(at);
- const modified=xml.slice(0,match.index)+changed+xml.slice(match.index+match[0].length);parseSetlist(modified);
+ const modified=xml.slice(0,match.index)+changed+xml.slice(match.index+match[0].length);
+ const expected=structuredClone(sets);expected[sets.indexOf(selected[0])].tracks.push(trackName);
+ if(JSON.stringify(parseSetlist(modified))!==JSON.stringify(expected))throw Error('Set list edit did not produce the expected track order');
  const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});
  return {...result,setName,trackName,note:'Added a track entry to an offline set list copy. Validate in ShowKontrol.'};
 }
