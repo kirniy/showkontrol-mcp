@@ -37,6 +37,7 @@ import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
 import {copyPatchSettingToCueShowCopy} from './patch-setting-to-cue.js';
 import {inspectShowSetlist,addShowSetlistTrackCopy,editShowSetlistCopy} from './setlist.js';
 import {renameShowTrackCopy} from './track-rename.js';
+import {inspectProgram,createProgramCopy} from './program.js';
 
 const base = new URL(process.env.SHOWKONTROL_URL || 'http://127.0.0.1:8090');
 if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash || !['', '/'].includes(base.pathname)) throw Error('SHOWKONTROL_URL must be an HTTP(S) origin without credentials or a path');
@@ -236,6 +237,15 @@ add('showkontrol_compose_live_patch','Submit a typed patch plan in one request. 
 add('showkontrol_validate_patch','Dry-run a proposed patch specification without applying it. ShowKontrol validates nodes and connections before a later write. The server always sets dryRun to true.',{spec:z.record(z.string(),z.unknown())},({spec})=>call('PUT','/patch',{...spec,dryRun:true}),readOnly);
 add('showkontrol_get_patch','Read the complete running patch using the ShowKontrol REST API.',{},()=>call('GET','/patch'),readOnly);
 add('showkontrol_put_patch','Submit a patch body to ShowKontrol. Get the current patch and discover its schema first. This changes the running show unless the app accepts a dry-run request.',{body:z.unknown()},({body})=>call('PUT','/patch',body),write);
+const programText=z.string().max(4096);
+const programTime=z.number().int().min(0).max(86399999);
+const programOperation=z.discriminatedUnion('action',[
+ z.object({action:z.literal('add'),start:programTime,name:programText,notes:programText}).strict(),
+ z.object({action:z.literal('edit'),index:z.number().int().nonnegative(),start:programTime.optional(),name:programText.optional(),notes:programText.optional()}).strict(),
+ z.object({action:z.literal('remove'),index:z.number().int().nonnegative(),allowContentRemoval:z.boolean().optional()}).strict()
+]);
+add('showkontrol_inspect_program','Inspect a standalone version 1 .skpr Program and return its SHA-256 and items in file order. App acceptance and sorting are unverified.',{file:z.string()},inspectProgram,readOnly);
+add('showkontrol_create_program_copy','Create a new standalone .skpr or edit an inspected copy. Source edits require SHA-256 and one operation; item indices use file order. Removing graph or timeline content requires allowContentRemoval. App acceptance and sorting are unverified.',{destination:z.string(),source:z.string().optional(),sha256:z.string().length(64).optional(),operation:programOperation.optional()},createProgramCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
 add('showkontrol_inspect_timeline','Inspect a version 1 offline .sktl timeline. Returns root attributes, layer and audio metadata, direct audio clip attributes, and discovered cue elements and paths. This does not modify the file.',{file:z.string()},inspectTimeline,readOnly);
 add('showkontrol_add_timeline_cue_copy','Add a simple cue to an offline version 1 .sktl copy. Inspect first and supply the source SHA-256. Layer is zero-based. Start and length are milliseconds. This creates no action graph; app loading is not yet verified.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),layer:z.number().int().nonnegative(),startMs:z.number().nonnegative(),lengthMs:z.number().positive(),label:z.string().min(1)},addTimelineCueCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
 add('showkontrol_inspect_show_timeline','Inspect a named .sktl part inside an offline .skshow archive. Returns the archive SHA-256 and timeline metadata.',{file:z.string(),name:z.string()},inspectShowTimeline,readOnly);
