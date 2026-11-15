@@ -101,7 +101,8 @@ export async function editShowPart({source,destination,sha256,name,edits}) {
  const replacement=`<part${attrs}>${bytes.toString('base64')}</part>`;const output=xml.slice(0,part.start)+replacement+xml.slice(part.end);validate(output);
  checkSize(Buffer.byteLength(output),maxBytes(),'XML output');
  await writeFile(destination,output,{encoding:'utf8',flag:'wx'});
- return {destination,name,md5,note:'Part and wrapper syntax checked; ShowKontrol compatibility has not been checked.'};
+ // sha256 is the written show's checksum, so the next copy tool can take it without another inspection.
+ return {destination,sha256:createHash('sha256').update(output).digest('hex'),name,md5,note:'Part and wrapper syntax checked; ShowKontrol compatibility has not been checked.'};
 }
 
 export async function addShowPart({source,destination,sha256,name,text}) {
@@ -117,7 +118,7 @@ export async function addShowPart({source,destination,sha256,name,text}) {
  const at=patch.start;const entry=`<part name="${name}" md5="${md5}">${bytes.toString('base64')}</part>`;
  const output=xml.slice(0,at)+entry+xml.slice(at);validate(output);
  checkSize(Buffer.byteLength(output),maxBytes(),'XML output');
- await writeFile(destination,output,{encoding:'utf8',flag:'wx'});return {destination,name,md5};
+ await writeFile(destination,output,{encoding:'utf8',flag:'wx'});return {destination,sha256:createHash('sha256').update(output).digest('hex'),name,md5};
 }
 
 function replacePartChecksum(attrs,md5,name){

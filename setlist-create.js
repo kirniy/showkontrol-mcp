@@ -37,7 +37,7 @@ export async function createShowSetlistCopy({source,destination,sha256,name,setN
  const limit=process.env.SHOWKONTROL_OFFLINE_MAX_BYTES??String(128*1024*1024);
  if(!/^\d+$/.test(limit)||!Number.isSafeInteger(Number(limit))||Number(limit)<1)throw Error('Invalid SHOWKONTROL_OFFLINE_MAX_BYTES');
  if(Buffer.byteLength(output)>Number(limit))throw Error('XML output exceeds offline size limit');
- let handle,tempDir,tempFile;
+ let handle,tempDir,tempFile,writtenSha256;
  try{
   tempDir=await mkdtemp(path.join(path.dirname(destination),'.sk-setlist-'));
   tempFile=path.join(tempDir,'show.skshow');
@@ -49,11 +49,11 @@ export async function createShowSetlistCopy({source,destination,sha256,name,setN
    if(matches.length!==1||matches[0].md5!==old.md5||!matches[0].bytes.equals(old.bytes))throw Error('Unrelated part changed');
   }
   if((await inspectXml({file:source})).sha256!==sha256)throw Error('Source changed since inspection');
-  await link(tempFile,destination);
+  writtenSha256=result.sha256;await link(tempFile,destination);
  }finally{
   if(handle)await handle.close().catch(()=>{});
   if(tempFile)await unlink(tempFile).catch(error=>{if(error.code!=='ENOENT')throw error;});
   if(tempDir)await rmdir(tempDir);
  }
- return {destination,name,md5,setName,tracks,note:'Created an offline set list copy. Validate in ShowKontrol.'};
+ return {destination,sha256:writtenSha256,name,md5,setName,tracks,note:'Created an offline set list copy. Validate in ShowKontrol.'};
 }

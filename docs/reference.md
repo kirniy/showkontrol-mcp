@@ -7,6 +7,7 @@ The MCP tool schemas returned by `tools/list` define the accepted arguments. Thi
 Common rules for offline tools:
 
 - Inspect the source first. Tools that edit an existing file take its inspected SHA-256 and fail if the file changed.
+- Write tools return the new copy's `sha256`; pass it to the next write instead of inspecting again.
 - Write tools create a new destination and do not replace an existing file. Many publish with a hard link, so the destination filesystem must support hard links.
 - A failed call publishes nothing, and the source is not modified.
 - Indices are zero-based unless stated otherwise.
