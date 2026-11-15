@@ -1,5 +1,6 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';import {createHash} from 'node:crypto';import path from 'node:path';import os from 'node:os';
 import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';import {composeProgramEditsCopy} from './program-edit-compose.js';
+import {assembleCueGraphShowCopy} from './cue-graph-assemble.js';
 const hash=(alg,s)=>createHash(alg).update(s).digest('hex'),part=(n,s)=>`<part name="${n}" md5="${hash('md5',s)}">${Buffer.from(s).toString('base64')}</part>`;
 test('opaque text requires opt-in in mixed and Program graph copies',async t=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'opaque-compose-'));t.after(()=>rm(dir,{recursive:true,force:true}));const f=n=>path.join(dir,n);
@@ -10,6 +11,9 @@ test('opaque text requires opt-in in mixed and Program graph copies',async t=>{
  const mix={source:f('target.skshow'),destination:f('mixed.skshow'),sha256:hash('sha256',target),name:'track.sktl',cueId:'dst',nodes:[node]};
  await assert.rejects(assembleMixedCueGraphShowCopy(mix),/unsupported internal references/);await assert.rejects(readFile(mix.destination),{code:'ENOENT'});
  const mr=await assembleMixedCueGraphShowCopy({...mix,nodes:[{...node,allowOpaqueNodeText:true}]});const mw=mr.warnings.find(w=>w.code==='opaque_node_references_unverified');assert.equal(mw.scope.nodeId,mr.nodeIds[0]);assert.equal(mw.scope.key,'proc.script');assert.ok(!JSON.stringify(mr).includes(script));
+ const cueNode={...node};delete cueNode.kind;const simple={...mix,destination:f('simple.skshow'),nodes:[cueNode]};
+ await assert.rejects(assembleCueGraphShowCopy(simple),/unsupported internal references/);await assert.rejects(readFile(simple.destination),{code:'ENOENT'});
+ const sr=await assembleCueGraphShowCopy({...simple,nodes:[{...cueNode,allowOpaqueNodeText:true}]});assert.equal(sr.warnings.find(w=>w.code==='opaque_node_references_unverified').scope.nodeId,sr.nodeIds[0]);
  const op={action:'copy_timeline_cue_graph',index:0,cueId:'dst',donor:f('donor.sktl'),donorSha256:hash('sha256',xml),donorCueId:'src'},args={source:f('program.skshow'),destination:f('program-out.skshow'),sha256:hash('sha256',program),operations:[op]};
  await assert.rejects(composeProgramEditsCopy(args),/unsupported internal references/);await assert.rejects(readFile(args.destination),{code:'ENOENT'});
  const pr=await composeProgramEditsCopy({...args,operations:[{...op,allowOpaqueNodeText:true}]});const pw=pr.warnings.find(w=>w.code==='opaque_node_references_unverified');assert.equal(pw.scope.nodeId,pr.copiedCueGraphs[0].idMap.n1);assert.equal(pw.scope.part,'content/Program.skpr');assert.ok(!JSON.stringify(pr).includes(script));

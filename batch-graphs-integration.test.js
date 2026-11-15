@@ -10,3 +10,17 @@ test('MCP copies graphs to multiple cues and does not publish failed batches',as
  const a=await call('showkontrol_inspect_cue_graph',{file:destination,format:'skshow',name,cueId:'a'}),b=await call('showkontrol_inspect_cue_graph',{file:destination,format:'skshow',name,cueId:'b'});assert.equal(a.isError,undefined);assert.equal(b.isError,undefined);assert.notEqual(parse(a).graph.nodes[0].id,parse(b).graph.nodes[0].id);assert.equal(parse(a).graph.nodes[0].settings[0].value,'cue.active');
  const bad=await call('showkontrol_copy_cue_graphs_show_copy',{...base,destination:failed,copies:[first,{...second,sourceCueId:'missing'}]});assert.equal(bad.isError,true);await assert.rejects(readFile(failed),/ENOENT/);assert.equal(await readFile(source,'utf8'),original);
 });
+test('MCP batch graph copies require an opt-in per opaque donor and roll back failures',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-graphs-opaque-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'in.skshow'),destination=path.join(dir,'out.skshow'),failed=path.join(dir,'failed.skshow');
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const script='const n12 = 1;',name='content/Track.sktl',timeline=`<sktimeline version="1"><cue id="src"><graph><node id="n1" type="processor" kind=""><settings><setting key="proc.script">${script}</setting></settings></node></graph></cue><cue id="a"/><cue id="b"/></sktimeline>`,original=`<skshow>${part(name,timeline)}</skshow>`;
+ await writeFile(source,original);
+ const client=new Client({name:'batch-opaque-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const tool=(await client.listTools()).tools.find(t=>t.name==='showkontrol_copy_cue_graphs_show_copy');assert.match(JSON.stringify(tool.inputSchema),/allowOpaqueNodeText/);
+ const call=arguments_=>client.callTool({name:tool.name,arguments:arguments_}),copy={name,sourceCueId:'src',targetCueId:'a'},base={source,sha256:createHash('sha256').update(original).digest('hex')};
+ assert.equal((await call({...base,destination,copies:[copy]})).isError,true);await assert.rejects(readFile(destination),{code:'ENOENT'});
+ const rollback=await call({...base,destination:failed,copies:[{...copy,allowOpaqueNodeText:true},{...copy,targetCueId:'b'}]});assert.equal(rollback.isError,true);await assert.rejects(readFile(failed),{code:'ENOENT'});
+ const response=await call({...base,destination,copies:[{...copy,allowOpaqueNodeText:true}]});assert.equal(response.isError,undefined,JSON.stringify(response));const result=JSON.parse(response.content[0].text),warning=result.warnings.find(w=>w.code==='opaque_node_references_unverified');
+ assert.ok(warning);assert.equal(warning.scope.part,name);assert.equal(warning.scope.cueId,'a');assert.equal(warning.scope.nodeId,result.copies[0].idMap.n1);assert.equal(warning.scope.key,'proc.script');assert.ok(!JSON.stringify(result).includes(script));assert.equal(await readFile(source,'utf8'),original);
+});

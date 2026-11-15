@@ -15,8 +15,8 @@ export async function copyCueGraphsInShow({source,destination,sha256,copies}){
  const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-graphs-'));
  try{
   for(let i=0;i<copies.length;i++){
-   const {name,sourceName=name,sourceCueId,targetCueId,template,templateSha256}=copies[i],next=path.join(dir,`${i}.skshow`);
-   const copied=await copyCueGraphInShow({source:current,destination:next,sha256:currentHash,name,sourceName,sourceCueId,targetCueId,template,templateSha256});
+   const {name,sourceName=name,sourceCueId,targetCueId,template,templateSha256,allowOpaqueNodeText}=copies[i],next=path.join(dir,`${i}.skshow`);
+   const copied=await copyCueGraphInShow({source:current,destination:next,sha256:currentHash,name,sourceName,sourceCueId,targetCueId,template,templateSha256,allowOpaqueNodeText});
    warnings.push(...copied.warnings);
    const info=await inspectShow({file:next});
    created.push({name,sourceName,sourceCueId,targetCueId,idMap:copied.idMap,...(template===undefined?{}:{template,templateSha256})});

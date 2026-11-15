@@ -6,7 +6,7 @@ import {addShowSetlistTrackCopy, editShowSetlistCopy, inspectShowSetlist} from '
 import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
 import {editTimelineLayerCopy} from './layers.js';
 import {copyPatchSettingToCueShowCopy} from './patch-setting-to-cue.js';
-import {compositionWarnings} from './composition-warnings.js';
+import {compositionWarnings, survivingOpaqueWarnings} from './composition-warnings.js';
 
 // Compose only structures supported by the existing offline writers.
 export async function composeShowCopy({source, destination, sha256, templateName, templateDonor, trackName, partName, existingPartName, cues, donor, set, layerOperations, audioClipEdits, cueRemovals, cueEdits, graphSettingEdits}) {
@@ -25,7 +25,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
  if (cues === undefined) cues = [];
  if (!Array.isArray(cues) || cues.length > 100) throw Error('Provide at most 100 cues');
  if (existing && !cues.length && !layerOperations?.length && !audioClipEdits?.length && !cueRemovals?.length && !cueEdits?.length && !graphSettingEdits?.length) throw Error('Existing track requires at least one edit or new cue');
- const validDonor = value => value === undefined || value === null || (typeof value === 'object' && path.isAbsolute(value.file || '') && value.sha256 && value.name && value.cueId);
+ const validDonor = value => value === undefined || value === null || (typeof value === 'object' && path.isAbsolute(value.file || '') && value.sha256 && value.name && value.cueId && (value.allowOpaqueNodeText === undefined || typeof value.allowOpaqueNodeText === 'boolean'));
  if (!validDonor(donor) || cues.some(cue => !validDonor(cue?.donor))) throw Error('Donor requires an absolute file path, SHA-256, timeline name and cue ID');
  for (const cue of cues) {
   if (cue?.mixedGraph !== undefined && cue.donor !== undefined) throw Error('A cue cannot specify both a donor and mixed graph');
@@ -39,7 +39,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
  if (initial.sha256 !== sha256) throw Error('Source changed since inspection');
  const dir = await mkdtemp(path.join(path.dirname(destination), '.showkontrol-compose-'));
  let current = source, currentHash = sha256, published = false, result, index = 0;
- const added = [];
+ const added = [], opaqueWarnings = [];
  try {
   const step = async fn => {
    const next = path.join(dir, `${index++}.skshow`);
@@ -63,13 +63,15 @@ export async function composeShowCopy({source, destination, sha256, templateName
    const selectedDonor = cue?.donor === undefined ? donor : cue.donor;
    if (cue?.mixedGraph !== undefined) {
     const assembled = await step(next => assembleMixedCueGraphShowCopy({...cue.mixedGraph, source: current, destination: next, sha256: currentHash, name: partName, cueId: created.id}));
+    opaqueWarnings.push(...assembled.warnings.filter(w => w.code === 'opaque_node_references_unverified'));
     item.nodeIds = assembled.nodeIds;
     for (const {nodeIndex, key, value} of cue.settings || []) {
      if (nodeIndex >= assembled.nodeIds.length) throw Error(`Mixed graph has no node at index: ${nodeIndex}`);
      await step(next => editCueGraphSettingCopy({source: current, destination: next, format: 'skshow', sha256: currentHash, name: partName, cueId: created.id, nodeId: assembled.nodeIds[nodeIndex], key, value}));
     }
    } else if (selectedDonor) {
-    const copied = await step(next => copyCueGraphInShow({source: current, destination: next, sha256: currentHash, name: partName, sourceName: selectedDonor.name, sourceCueId: selectedDonor.cueId, targetCueId: created.id, template: selectedDonor.file, templateSha256: selectedDonor.sha256}));
+    const copied = await step(next => copyCueGraphInShow({source: current, destination: next, sha256: currentHash, name: partName, sourceName: selectedDonor.name, sourceCueId: selectedDonor.cueId, targetCueId: created.id, template: selectedDonor.file, templateSha256: selectedDonor.sha256, allowOpaqueNodeText: selectedDonor.allowOpaqueNodeText}));
+    opaqueWarnings.push(...copied.warnings.filter(w => w.code === 'opaque_node_references_unverified'));
     item.idMap = copied.idMap;
     for (const {nodeId, key, value} of cue.settings || []) {
      if (!Object.hasOwn(copied.idMap, nodeId)) throw Error(`Donor graph has no node ID: ${nodeId}`);
@@ -110,7 +112,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
    }
    await step(next => addShowSetlistTrackCopy({source: current, destination: next, sha256: currentHash, name: set.name, setName: set.setName, trackName}));
   }
-  const warnings = await compositionWarnings(current, currentHash, [partName]);
+  const warnings = [...await compositionWarnings(current, currentHash, [partName]), ...await survivingOpaqueWarnings(current, currentHash, opaqueWarnings)];
   if (templateDonor !== undefined) await readTrackTemplateDonor(templateDonor);
   await link(current, destination); published = true;
   result = {destination, sha256: currentHash, ...(existing ? {existingPartName} : {trackName, partName}), cues: added, warnings, ...(set ? {set} : {}), note: 'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};

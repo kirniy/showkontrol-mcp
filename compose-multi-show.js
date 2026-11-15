@@ -6,7 +6,7 @@ import {readTrackTemplateDonor} from './timeline.js';
 import {editPatchBatchCopy} from './batch-patch.js';
 import {addShowSetlistTrackCopy,editShowSetlistCopy} from './setlist.js';
 import {createShowSetlistCopy} from './setlist-create.js';
-import {compositionWarnings} from './composition-warnings.js';
+import {compositionWarnings,survivingOpaqueWarnings} from './composition-warnings.js';
 
 export async function composeMultiTrackShowCopy({source,destination,sha256,tracks,patchOperations,setlistOperations}){
  if(!path.isAbsolute(source)||!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Source and destination must be different absolute paths');
@@ -22,7 +22,7 @@ export async function composeMultiTrackShowCopy({source,destination,sha256,track
  if(!tracks.length&&!patchOperations?.length&&!setlistOperations?.length)throw Error('Provide between 1 and 20 tracks, or operations');
  const before=await inspectShow({file:source});if(before.sha256!==sha256)throw Error('Source changed since inspection');
  const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-multitrack-'));
- let current=source,currentHash=sha256,published=false,result;const composed=[],warnings=[];
+ let current=source,currentHash=sha256,published=false,result;const composed=[],warnings=[],opaqueWarnings=[];
  try{
   if(patchOperations!==undefined){
    const next=path.join(dir,'patch.skshow');
@@ -33,6 +33,7 @@ export async function composeMultiTrackShowCopy({source,destination,sha256,track
   for(let i=0;i<tracks.length;i++){
    const {templateName,templateDonor,trackName,partName,existingPartName,cues,donor,set,layerOperations,audioClipEdits,cueRemovals,cueEdits,graphSettingEdits}=tracks[i],next=path.join(dir,`${i}.skshow`);
    const track=await composeShowCopy({source:current,destination:next,sha256:currentHash,templateName,templateDonor,trackName,partName,existingPartName,cues,donor,set,layerOperations,audioClipEdits,cueRemovals,cueEdits,graphSettingEdits});
+   opaqueWarnings.push(...track.warnings.filter(w=>w.code==='opaque_node_references_unverified'));
    composed.push({... (existingPartName !== undefined ? {existingPartName} : {trackName,partName}),cues:track.cues,...(set?{set}:{})});
    if(track.cleanupWarning)warnings.push(track.cleanupWarning);
    if(current!==source)await rm(current);
@@ -47,7 +48,7 @@ export async function composeMultiTrackShowCopy({source,destination,sha256,track
    current=next;currentHash=(await inspectShow({file:next})).sha256;
   }
   if(!tracks.length&&currentHash===sha256)throw Error('Composition must make a change');
-  const storedWarnings=await compositionWarnings(current,currentHash,tracks.map(track=>track.existingPartName ?? track.partName));
+  const storedWarnings=[...await compositionWarnings(current,currentHash,tracks.map(track=>track.existingPartName ?? track.partName)),...await survivingOpaqueWarnings(current,currentHash,opaqueWarnings)];
   for(const track of tracks)if(track.templateDonor!==undefined)await readTrackTemplateDonor(track.templateDonor);
   await link(current,destination);published=true;
   result={destination,sha256:currentHash,tracks:composed,setlistOperations:setlistOperations??[],warnings:storedWarnings,note:'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};

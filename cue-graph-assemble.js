@@ -7,6 +7,7 @@ export async function assembleCueGraphShowCopy({source,destination,sha256,name,c
  if(!path.isAbsolute(source)||!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Source and destination must be different absolute paths');
  if(!Array.isArray(nodes)||nodes.length<1||nodes.length>50||!Array.isArray(wires)||wires.length>100)throw Error('Provide 1–50 nodes and at most 100 wires');
  for(const node of nodes)if(!node||typeof node.template!=='string'||typeof node.templateSha256!=='string'||typeof node.templateName!=='string'||typeof node.templateCueId!=='string'||typeof node.nodeId!=='string')throw Error('Each node requires a template show, hash, timeline, cue ID and node ID');
+ for(const node of nodes)if(node.allowOpaqueNodeText!==undefined&&typeof node.allowOpaqueNodeText!=='boolean')throw Error('allowOpaqueNodeText must be a boolean');
  for(const wire of wires)if(!wire||!Number.isInteger(wire.from)||!Number.isInteger(wire.to)||wire.from<0||wire.to<0||wire.from>=nodes.length||wire.to>=nodes.length)throw Error('Wire indices must identify supplied nodes');
  const original=await inspectShow({file:source});if(original.sha256!==sha256)throw Error('Source changed since inspection');
  const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-graph-'));let current=source,currentSha=sha256,published=false,result;const added=[],warnings=[];
@@ -22,7 +23,7 @@ export async function assembleCueGraphShowCopy({source,destination,sha256,name,c
    const next=path.join(dir,'initial.skshow');await editShowPart({source,destination:next,sha256,name,edits:[{find:xml,replace:modified}]});current=next;currentSha=(await inspectShow({file:current})).sha256;
   }
   for(const [i,node] of nodes.entries()){
-   const next=path.join(dir,`node-${i}.skshow`),result=await copyCueGraphNodeShowCopy({source:current,destination:next,sha256:currentSha,name,cueId,template:node.template,templateSha256:node.templateSha256,templateName:node.templateName,templateCueId:node.templateCueId,nodeId:node.nodeId});
+   const next=path.join(dir,`node-${i}.skshow`),result=await copyCueGraphNodeShowCopy({source:current,destination:next,sha256:currentSha,name,cueId,template:node.template,templateSha256:node.templateSha256,templateName:node.templateName,templateCueId:node.templateCueId,nodeId:node.nodeId,allowOpaqueNodeText:node.allowOpaqueNodeText});
    const nextSha=(await inspectShow({file:next})).sha256;added.push(result.newNodeId);warnings.push(...result.warnings);if(current!==source)await rm(current);current=next;currentSha=nextSha;
   }
   for(const [i,wire] of wires.entries()){
