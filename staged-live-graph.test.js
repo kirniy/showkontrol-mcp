@@ -11,7 +11,7 @@ test('staged live graph uses actual IDs and stops on every failed write', async 
     seen.push({method:req.method, url:req.url, body:JSON.parse(raw)});
     if (seen.length === failAt && !malformed) { res.writeHead(500, {'Content-Type':'application/json'}); res.end(JSON.stringify({error:'private value'})); return; }
     res.writeHead(200, {'Content-Type':'application/json'});
-    res.end(JSON.stringify(seen.length === failAt && malformed ? {} : req.url.endsWith('/nodes') ? {id:`actual-${duplicateId ? 1 : seen.length}`, title:'Same'} : {ok:true, ...(badWire ? {wire:{from:{node:'wrong'},to:{node:'wrong'}}} : {})}));
+    res.end(JSON.stringify(seen.length === failAt && malformed ? {} : req.url.endsWith('/nodes') ? {id:`actual-${duplicateId ? 1 : seen.length}`, title:'Same'} : {ok:true, wire:badWire ? {from:{node:'wrong'},to:{node:'wrong'}} : {from:{node:seen.at(-1).body.from.node,index:seen.at(-1).body.from.pin,pin:seen.at(-1).body.from.pin},to:{node:seen.at(-1).body.to.node,index:seen.at(-1).body.to.pin,pin:seen.at(-1).body.to.pin}}}));
   });
   await new Promise(resolve => mock.listen(0,'127.0.0.1',resolve)); t.after(() => mock.close());
   const client = new Client({name:'staged-test',version:'1'});
@@ -50,4 +50,33 @@ test('staged live graph uses actual IDs and stops on every failed write', async 
   assert.equal(mismatch.status,'partial'); assert.equal(seen.length,3);
   assert.deepEqual(mismatch.failedStage,{stage:'connection',index:0});
   assert.equal(mismatch.completedConnections.length,0); assert.match(mismatch.error,/did not match/);
+});
+
+test('staged live graph verifies requested pin values and stops on unknown outcomes', async t => {
+  const seen = []; let responseWire;
+  const mock = http.createServer(async (req, res) => {
+    let raw = ''; for await (const chunk of req) raw += chunk;
+    seen.push(JSON.parse(raw));
+    res.writeHead(200, {'Content-Type':'application/json'});
+    res.end(JSON.stringify({ok:true, ...(responseWire === undefined ? {} : {wire:responseWire})}));
+  });
+  await new Promise(resolve => mock.listen(0,'127.0.0.1',resolve)); t.after(() => mock.close());
+  const client = new Client({name:'pin-verification-test',version:'1'});
+  await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:{...process.env,SHOWKONTROL_URL:`http://127.0.0.1:${mock.address().port}`}})); t.after(() => client.close());
+  const invoke = async (from, to) => JSON.parse((await client.callTool({name:'showkontrol_create_staged_live_graph',arguments:{nodes:[],connections:[{from:{existingNode:'a',...from},to:{existingNode:'b',...to}},{from:{existingNode:'a'},to:{existingNode:'b'}}]}})).content[0].text);
+  for (const [from,to,wire] of [
+    [{pin:1},{pin:2},{from:{node:'a',index:0},to:{node:'b',index:2}}],
+    [{pin:1},{pin:2},{from:{node:'a',index:1},to:{node:'b',index:0}}],
+    [{pin:'Out'},{pin:'In'},{from:{node:'a',pin:'Other'},to:{node:'b',pin:'In'}}],
+    [{pin:'Out'},{pin:'In'},{from:{node:'a',pin:'Out'},to:{node:'b'}}],
+    [{pin:0},{},{from:{node:'a'},to:{node:'b'}}],
+    [{},{},undefined],
+  ]) {
+    seen.length=0; responseWire=wire; const result=await invoke(from,to);
+    assert.equal(result.status,'partial'); assert.deepEqual(result.failedStage,{stage:'connection',index:0});
+    assert.equal(result.completedConnections.length,0); assert.equal(seen.length,1); assert.match(result.outcomeUnknown,/may have taken effect/);
+  }
+  seen.length=0; responseWire={from:{node:'a',index:1,pin:'Out'},to:{node:'b',index:2,pin:'In'}};
+  const result=await invoke({pin:1},{pin:'In'});
+  assert.equal(result.status,'complete'); assert.equal(result.completedConnections.length,2); assert.equal(seen.length,2);
 });

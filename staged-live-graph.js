@@ -31,7 +31,11 @@ export async function createStagedLiveGraph({nodes, connections}, call) {
     try { result = await call('POST', '/connections', {...connection, dryRun:false}); }
     catch { return partial('connection', index, 'Connection write failed or its response could not be read.'); }
     if (!result || typeof result !== 'object' || Array.isArray(result) || result.error || result.success === false || result.ok !== true || result.dryRun === true) return partial('connection', index, 'Connection write returned an invalid or unsuccessful response.');
-    if (result.wire !== undefined && (result.wire?.from?.node !== connection.from.node || result.wire?.to?.node !== connection.to.node)) return partial('connection', index, 'Connection response did not match the requested node IDs.');
+    if (result.wire?.from?.node !== connection.from.node || result.wire?.to?.node !== connection.to.node) return partial('connection', index, 'Connection response did not match or identify the requested node IDs.');
+    for (const side of ['from', 'to']) {
+      const pin = connection[side].pin;
+      if (pin !== undefined && result.wire[side][typeof pin === 'number' ? 'index' : 'pin'] !== pin) return partial('connection', index, `Connection response did not match or identify the requested ${side} pin.`);
+    }
     completedConnections.push(connection);
   }
   return {status:'complete', completedNodes, completedConnections};
