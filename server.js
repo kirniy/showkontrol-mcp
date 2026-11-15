@@ -50,6 +50,7 @@ import {remapProgramItemGraphCopy} from './program-graph-remap.js';
 import {registerActionSearch} from './action-search.js';
 import {toolFilter} from './toolsets.js';
 import {unionFormError} from './union-errors.js';
+import {partNameHint} from './part-hints.js';
 import {copyProgramItemGraphRemappedCopy} from './program-graph-copy-remap.js';
 import {embedProgramTimelineRemappedCopy} from './program-timeline-copy-remap.js';
 import {composeProgramScheduleCopy} from './program-compose.js';
@@ -191,7 +192,10 @@ function add(name, description, schema, handler, annotations) {
  if (toolEnabled && !toolEnabled(name, annotations)) return;
  server.registerTool(name,{description,inputSchema:schema,annotations},async args=>{
   try { const data = await handler(args); return {content:[{type:'text',text:JSON.stringify(data,null,2)}]}; }
-  catch(e) { return {isError:true,content:[{type:'text',text:await missingDestinationMessage(e,args) ?? e.message}]}; }
+  catch(e) {
+   const hint=await partNameHint(e,args);
+   return {isError:true,content:[{type:'text',text:await missingDestinationMessage(e,args) ?? (hint ? `${e.message}. ${hint}` : e.message)}]};
+  }
  });
 }
 // Writers stage beside the destination, so a missing parent directory surfaces as ENOENT on a temporary name.
