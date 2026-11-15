@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import {writeRpp} from './rpp.js';
 import {buildLiveGraphPlan} from './live-graph-plan.js';
+import {verifyLiveConnections} from './live-connection-verification.js';
 import {checkLivePatchParameters} from './live-patch-checks.js';
 import {createStagedLiveGraph, SafeCallError} from './staged-live-graph.js';
 import {inspectTimeline,setCueGraphNodeStoppedCopy,addTimelineCueCopy,inspectShowTimeline,addShowTimelineCueCopy,inspectCueGraph,copyCueGraphInShow,copyCueGraphBetweenTimelines,removeCueGraphCopy,addCueGraphSettingCopy,editCueGraphSettingCopy,editTimelineCueCopy,deleteTimelineCueCopy,createShowTrackCopy,editTimelineAudioClipCopy} from './timeline.js';
@@ -222,6 +223,7 @@ add('showkontrol_create_node','Create or preview one node using a request from n
 add('showkontrol_delete_node','Delete a running patch node by ID. This changes the show and can remove connected wires. Writes are never retried.',{id:z.string().min(1)},({id})=>call('DELETE',`/nodes/${segment(id)}`),write);
 add('showkontrol_list_connections','Read the running patch connections.',{},()=>call('GET','/connections'),readOnly);
 const endpointSchema=z.object({node:z.string().min(1),pin:z.union([z.string(),z.number().int().nonnegative()]).optional()});
+add('showkontrol_verify_live_connections','Read the live connections once and compare node IDs and optional pin indices or exact labels. Reports present, missing, ambiguous, or incomplete when live data is malformed. Presence does not prove new creation or signal execution.',{connections:z.array(z.object({from:endpointSchema.strict(),to:endpointSchema.strict()}).strict()).min(1).max(100)},args=>verifyLiveConnections(args,call),readOnly);
 add('showkontrol_create_connection','Create or preview a connection using node IDs and optional pin names or indices. Set dryRun true to preview. This can change live show routing.',{from:endpointSchema,to:endpointSchema,dryRun:z.boolean()},({from,to,dryRun})=>call('POST','/connections',{from,to,dryRun}),write);
 add('showkontrol_delete_connection','Delete a connection identified by its two endpoints. This changes live show routing.',{from:endpointSchema,to:endpointSchema},({from,to})=>call('DELETE','/connections',{from,to}),write);
 const patchPlanEndpointSchema=z.object({node:z.string().min(1),pin:z.union([z.string().min(1),z.number().int().nonnegative()]).optional()}).strict();
