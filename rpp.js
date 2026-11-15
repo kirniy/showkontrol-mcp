@@ -3,6 +3,9 @@
 import {writeFile, stat, access} from 'node:fs/promises';
 import {constants} from 'node:fs';
 import path from 'node:path';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+const execFileAsync = promisify(execFile);
 function label(s) {
  if (/[\r\n\0"`]/.test(s)) throw Error('Names cannot contain quotes, backticks, line breaks, or NUL');
  return `"${s}"`;
@@ -61,8 +64,21 @@ export async function writeRpp({file, markers = [], tracks = [], mediaTracks = [
  return {file,markers:markers.length,tracks:tracks.length,mediaTracks:mediaTracks.length,bytes:Buffer.byteLength(text),note:'Import this file in the Cue Editor; it does not contain cue action graphs.'};
 }
 
-// Check only the paths that would be written to the project; never open media data.
-export async function preflightRppMedia({file, mediaTracks}) {
+// Probe only readable regular files. Never invoke a shell or permit network protocols.
+async function probeDuration(file, timeout) {
+ try {
+  const {stdout} = await execFileAsync('ffprobe', ['-v','error','-protocol_whitelist','file','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1','-i',file], {timeout,maxBuffer:16384,encoding:'utf8',windowsHide:true});
+  const value = stdout.trim();
+  const duration = Number(value);
+  if (!/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) || !Number.isFinite(duration) || duration < 0) return {status:'unknown'};
+  return {status:'known',seconds:duration};
+ } catch (error) {
+  return {status:error.code === 'ENOENT' ? 'unavailable' : 'unknown'};
+ }
+}
+
+export async function preflightRppMedia({file, mediaTracks, probeDurations = false}) {
+ if (typeof probeDurations !== 'boolean') throw Error('probeDurations must be a boolean');
  if (typeof file !== 'string' || file.length > 4096 || file.includes('\0') || !path.isAbsolute(file) || path.extname(file).toLowerCase() !== '.rpp') throw Error('Use an absolute path ending in .rpp, at most 4096 characters');
  if (!Array.isArray(mediaTracks) || !mediaTracks.length || mediaTracks.length > 100) throw Error('Provide 1 to 100 media tracks');
  let count = 0;
@@ -77,6 +93,8 @@ export async function preflightRppMedia({file, mediaTracks}) {
  }
  renderRpp({mediaTracks});
  const findings = [];
+ const durationCache = new Map();
+ const deadline = performance.now() + 5000;
  for (const [trackIndex, track] of mediaTracks.entries()) for (const [itemIndex, item] of track.items.entries()) {
   // Do not normalize `..`: the filesystem must traverse any preceding symlink first.
   const checkedPath = path.isAbsolute(item.file) ? item.file : path.dirname(file) + path.sep + item.file;
@@ -89,7 +107,20 @@ export async function preflightRppMedia({file, mediaTracks}) {
    errorCode = typeof error.code === 'string' ? error.code : 'UNKNOWN';
    status = errorCode === 'ENOENT' || errorCode === 'ENOTDIR' ? 'not_found_at_checked_path' : 'check_failed';
   }
-  findings.push({trackIndex,itemIndex,file:item.file,checkedPath,status,...(errorCode ? {errorCode} : {})});
+  let duration = {status:probeDurations ? 'not_checked' : 'disabled'};
+  if (probeDurations && status === 'readable') {
+   if (durationCache.has(checkedPath)) duration = {...durationCache.get(checkedPath)};
+   else {
+    const remaining = Math.floor(deadline - performance.now());
+    if (remaining > 0) {
+     duration = await probeDuration(checkedPath, remaining);
+     durationCache.set(checkedPath, duration);
+     duration = {...duration};
+    }
+   }
+  }
+  if (duration.status === 'known') duration.exceedsSource = (item.sourceOffset ?? 0) + item.duration > duration.seconds;
+  findings.push({trackIndex,itemIndex,file:item.file,checkedPath,status,...(errorCode ? {errorCode} : {}),duration});
  }
- return {file,findings,limitations:['Only the exact absolute path or path relative to the intended RPP directory was checked on this computer. ShowKontrol may search additional locations.','Readability is checked at this moment and can change. Symlinks are followed.','Media format, codec, duration, and import into ShowKontrol are not verified.']};
+ return {file,findings,limitations:['Only the exact absolute path or path relative to the intended RPP directory was checked on this computer. ShowKontrol may search additional locations.','Readability is checked at this moment and can change. Symlinks are followed.','Duration is optional and depends on ffprobe; unknown or unavailable duration does not indicate whether the item fits. Media format, codec, and import into ShowKontrol are not verified.']};
 }

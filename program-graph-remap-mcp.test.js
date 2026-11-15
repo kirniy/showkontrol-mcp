@@ -1,0 +1,24 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,writeFile,rm} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
+const hash=(algorithm,value)=>createHash(algorithm).update(value).digest('hex');
+test('MCP registers and remaps a Program item graph with inspectable output',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'program-remap-mcp-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const client=new Client({name:'program-remap-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js']}));t.after(()=>client.close());
+ const name='showkontrol_remap_program_item_graph_copy',tool=(await client.listTools()).tools.find(tool=>tool.name===name);
+ assert.ok(tool);assert.deepEqual([...tool.inputSchema.required].sort(),['destination','index','sha256','source','target','targetSha256'].sort());
+ assert.equal(tool.inputSchema.properties.index.type,'integer');assert.equal(tool.inputSchema.properties.sha256.minLength,64);assert.equal(tool.inputSchema.properties.targetSha256.maxLength,64);
+ const program='<skprogram version="1"><item start="0" name="A" notes=""><graph><node id="n1" type="trigger"/><node id="n2" type="action"/><connection fromNode="n1" fromPin="0" toNode="n2" toPin="0"/></graph></item></skprogram>';
+ const wrapper=`<skshow><part name="content/Program.skpr" md5="${hash('md5',program)}">${Buffer.from(program).toString('base64')}</part></skshow>`;
+ const source=path.join(dir,'source.skpr'),target=path.join(dir,'target.skshow'),destination=path.join(dir,'output.skpr');await Promise.all([writeFile(source,program),writeFile(target,wrapper)]);
+ const response=await client.callTool({name,arguments:{source,sha256:hash('sha256',program),index:0,target,targetSha256:hash('sha256',wrapper),destination}});assert.equal(response.isError,undefined);
+ const result=JSON.parse(response.content[0].text);assert.deepEqual(result.mapping,{n1:'n3',n2:'n4'});
+ const readback=await client.callTool({name:'showkontrol_inspect_program_item_graph',arguments:{file:destination,sha256:result.sha256,index:0}});assert.equal(readback.isError,undefined);
+ const graph=JSON.parse(readback.content[0].text).graph;assert.deepEqual(graph.nodes.map(node=>node.id),['n3','n4']);assert.equal(graph.connections[0].fromNode,'n3');assert.equal(graph.connections[0].toNode,'n4');
+ const invalid=await client.callTool({name,arguments:{source,sha256:'short',index:0,target,targetSha256:hash('sha256',wrapper),destination}});assert.equal(invalid.isError,true);
+});

@@ -62,3 +62,47 @@ test('MCP exposes the read-only preflight and returns per-item results', async t
  assert.equal(result.isError,undefined,JSON.stringify(result));
  assert.deepEqual(JSON.parse(result.content[0].text).findings.map(x=>x.status),['readable','not_found_at_checked_path']);
 });
+
+test('optional duration probe reports known, unknown and unavailable results', async t => {
+ const dir = await mkdtemp(path.join(os.tmpdir(),'rpp-probe-'));
+ t.after(()=>rm(dir,{recursive:true,force:true}));
+ const bin = path.join(dir,'bin');
+ await mkdir(bin);
+ const probe = path.join(bin,'ffprobe');
+ await writeFile(probe, '#!/bin/sh\ncase "$*" in *invalid*) printf "N/A\\n";; *failure*) exit 1;; *) printf "10.5\\n";; esac\n', {mode:0o755});
+ const files = ['normal.wav','invalid.wav','failure.wav','$(touch injected).wav'];
+ for (const name of files) await writeFile(path.join(dir,name),'x');
+ const previousPath = process.env.PATH;
+ t.after(()=>{process.env.PATH = previousPath;});
+ process.env.PATH = bin;
+ const inputs = [ {...item(files[0]),sourceOffset:9,duration:2}, {...item(files[0]),sourceOffset:9,duration:1.5}, ...files.slice(1).map(item), item('missing.wav') ];
+ const result = await preflightRppMedia({file:path.join(dir,'project.rpp'),mediaTracks:[track(inputs)],probeDurations:true});
+ assert.deepEqual(result.findings.map(x=>x.duration), [
+  {status:'known',seconds:10.5,exceedsSource:true}, {status:'known',seconds:10.5,exceedsSource:false},
+  {status:'unknown'}, {status:'unknown'}, {status:'known',seconds:10.5,exceedsSource:false}, {status:'not_checked'}
+ ]);
+ await assert.rejects(import('node:fs/promises').then(fs=>fs.stat(path.join(dir,'injected'))),{code:'ENOENT'});
+ await rm(probe);
+ const unavailable = await preflightRppMedia({file:path.join(dir,'project.rpp'),mediaTracks:[track([item(files[0])])],probeDurations:true});
+ assert.deepEqual(unavailable.findings[0].duration,{status:'unavailable'});
+ const disabled = await preflightRppMedia({file:path.join(dir,'project.rpp'),mediaTracks:[track([item(files[0])])]});
+ assert.deepEqual(disabled.findings[0].duration,{status:'disabled'});
+});
+
+test('duration probes reuse duplicate paths and stop after the request budget', async t => {
+ const dir = await mkdtemp(path.join(os.tmpdir(),'rpp-probe-budget-'));
+ t.after(()=>rm(dir,{recursive:true,force:true}));
+ const bin = path.join(dir,'bin');
+ await mkdir(bin);
+ await writeFile(path.join(bin,'ffprobe'), '#!/bin/sh\ncase "$*" in *slow*) exec /bin/sleep 10;; esac\nprintf x >> "$PROBE_COUNT_FILE"\nprintf "2\\n"\n', {mode:0o755});
+ for (const name of ['same.wav','slow.wav','later.wav']) await writeFile(path.join(dir,name),'x');
+ const oldPath = process.env.PATH, oldCount = process.env.PROBE_COUNT_FILE;
+ t.after(()=>{process.env.PATH = oldPath; if (oldCount === undefined) delete process.env.PROBE_COUNT_FILE; else process.env.PROBE_COUNT_FILE = oldCount;});
+ process.env.PATH = bin;
+ process.env.PROBE_COUNT_FILE = path.join(dir,'count');
+ const result = await preflightRppMedia({file:path.join(dir,'project.rpp'),mediaTracks:[track([item('same.wav'),{...item('same.wav'),duration:3},item('slow.wav'),item('later.wav')])],probeDurations:true});
+ assert.deepEqual(result.findings.map(x=>x.duration),[
+  {status:'known',seconds:2,exceedsSource:false}, {status:'known',seconds:2,exceedsSource:true}, {status:'unknown'}, {status:'not_checked'}
+ ]);
+ assert.equal(await import('node:fs/promises').then(fs=>fs.readFile(process.env.PROBE_COUNT_FILE,'utf8')),'x');
+});
