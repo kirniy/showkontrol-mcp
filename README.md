@@ -56,6 +56,12 @@ Environment variables:
 
 No credentials are needed for offline file tools.
 
+## Offline authoring prompt
+
+Clients that support MCP prompts can discover `author_offline_show` with `prompts/list`. Supply `showPath` and `goal` to `prompts/get`. The prompt guides the agent to inspect the source and donor material, select supported copy tools, and inspect and validate the result. It does not read or change a show by itself. Client support for displaying or invoking prompts varies; you can also ask an agent to follow the same steps directly using the tools below.
+
+The tools support some offline edits, not full show authoring. Validation has partial coverage and does not prove that a show will load or run. Test the resulting copy in ShowKontrol and report the checks performed.
+
 ## Tools
 
 - `showkontrol_read`: call a JSON or text GET endpoint under `/api/v1`.
