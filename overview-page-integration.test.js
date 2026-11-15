@@ -13,3 +13,21 @@ test('MCP overview and paged part read use a consistent hash',async t=>{
  assert.ok(pages>1);assert.equal(text,timeline);
  await writeFile(file,show.replace('<skshow>','<skshow name="Changed">'));const stale=await call('showkontrol_read_show_part_page',{file,name:'content/Track.sktl',offset:0,limit:7,sha256:overview.sha256});assert.equal(stale.isError,true);assert.match(stale.content[0].text,/changed/i);
 });
+test('MCP overview summarizes the canonical Program and rejects invalid Program parts',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-overview-program-'));t.after(()=>rm(dir,{recursive:true,force:true}));const file=path.join(dir,'show.skshow');
+ const part=(name,body,md5=createHash('md5').update(body).digest('hex'))=>`<part name="${name}" md5="${md5}">${Buffer.from(body).toString('base64')}</part>`;
+ const program='<skprogram version="1"><item start="12.5" name="Intro" notes="Ready"><graph/><sktimeline/></item><item start="30" name="Next" notes=""/></skprogram>';
+ const client=new Client({name:'overview-program-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const call=()=>client.callTool({name:'showkontrol_inspect_show_overview',arguments:{file}});
+ await writeFile(file,`<skshow>${part('content/Program.skpr',program)}</skshow>`);
+ let response=await call();assert.equal(response.isError,undefined);const overview=JSON.parse(response.content[0].text);
+ assert.deepEqual(overview.program.items,[{index:0,start:12.5,name:'Intro',notes:'Ready',hasGraph:true,hasTimeline:true},{index:1,start:30,name:'Next',notes:'',hasGraph:false,hasTimeline:false}]);
+ assert.equal(overview.program.programSha256,createHash('sha256').update(program).digest('hex'));assert.match(overview.program.note,/not verified/);
+ for(const bad of [
+  part('content/Program.skpr','<skprogram version="1"><item start="1" name="x" notes=""><unknown/></item></skprogram>'),
+  part('content/Program.skpr',program,'00000000000000000000000000000000'),
+  part('content/program.skpr',program),
+  part('content/Program.skpr',program)+part('CONTENT/PROGRAM.SKPR',program),
+  part('content/Program.skpr',`<skprogram version="1">${'<item start="1" name="x" notes=""/>'.repeat(1001)}</skprogram>`),
+ ]){await writeFile(file,`<skshow>${bad}</skshow>`);response=await call();assert.equal(response.isError,true);}
+});

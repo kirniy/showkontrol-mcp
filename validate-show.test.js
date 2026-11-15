@@ -120,3 +120,25 @@ test('warns once per direct cue node with an explicitly stored stopped value',as
  assert.deepEqual(warnings.map(d=>d.scope.nodeId),['both','setting','conflict']);
  assert.ok(warnings.every(d=>d.severity==='warning'&&d.scope.part==='song.sktl'&&d.scope.cueId==='c'));
 });
+
+test('Program coverage checks outer structure and reports unchecked content',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-program-validation-'));t.after(()=>rm(dir,{recursive:true,force:true}));const file=path.join(dir,'show.skshow');
+ const program='<skprogram version="1"><item start="1.5" name="A" notes=""><graph><node id="n"/></graph><sktimeline><cue id="c"/></sktimeline></item></skprogram>';
+ const xml=`<skshow>${part('content/Program.skpr',program)}${part('other.skpr','<skprogram version="1"/>')}</skshow>`;await writeFile(file,xml);
+ const result=await validateShow({file});assert.deepEqual(result.coverage.map(c=>c.status),['partial','partial']);
+ assert.ok(result.diagnostics.some(d=>d.code==='unsupported_graph'&&d.scope.itemIndex===0));assert.ok(result.diagnostics.some(d=>d.code==='unsupported_timeline'&&d.scope.itemIndex===0));
+ assert.ok(result.diagnostics.some(d=>d.code==='unknown_program_part'));assert.equal(result.diagnostics.filter(d=>d.code==='unverified_program_semantics').length,2);assert.equal(await readFile(file,'utf8'),xml);
+ for(const bad of ['<skprogram version="2"/>','<skprogram version="1"><item start="0" name="A" notes=""><unknown/></item></skprogram>','<skprogram>']){
+  await writeFile(file,`<skshow>${part('content/Program.skpr',bad)}</skshow>`);const invalid=await validateShow({file});assert.equal(invalid.coverage[0].status,'invalid');assert.ok(invalid.diagnostics.some(d=>d.code==='invalid_native_xml'));
+ }
+ await writeFile(file,`<skshow>${part('content/Program.skpr',program)}${part('CONTENT/PROGRAM.SKPR',program)}</skshow>`);const duplicate=await validateShow({file});assert.deepEqual(duplicate.coverage.map(c=>c.status),['duplicate_name','duplicate_name']);assert.ok(duplicate.diagnostics.some(d=>d.code==='duplicate_part'));
+});
+
+test('MCP validation reports Program coverage and malformed Program',async t=>{
+ const {Client}=await import('@modelcontextprotocol/sdk/client/index.js');const {StdioClientTransport}=await import('@modelcontextprotocol/sdk/client/stdio.js');
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-program-validation-mcp-'));t.after(()=>rm(dir,{recursive:true,force:true}));const file=path.join(dir,'show.skshow');
+ const client=new Client({name:'program-validation-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ for(const [xml,status,code] of [['<skprogram version="1"><item start="0" name="A" notes=""><sktimeline/></item></skprogram>','partial','unsupported_timeline'],['<skprogram version="1"><item/></skprogram>','invalid','invalid_native_xml']]){
+  await writeFile(file,`<skshow>${part('content/Program.skpr',xml)}</skshow>`);const response=await client.callTool({name:'showkontrol_validate_show',arguments:{file}});assert.equal(response.isError,undefined);const result=JSON.parse(response.content[0].text);assert.equal(result.coverage[0].status,status);assert.ok(result.diagnostics.some(d=>d.code===code));
+ }
+});

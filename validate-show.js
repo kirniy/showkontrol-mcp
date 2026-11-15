@@ -6,6 +6,7 @@ import {parsePatch} from './patch.js';
 import {validateRouterTarget} from './patch-setting-to-cue.js';
 import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';
 import {storedStoppedWarnings} from './composition-warnings.js';
+import {inspectProgramBytes} from './program.js';
 
 // This checks references and identifiers in supported native XML, not app behavior.
 export async function validateShow({file}){
@@ -14,10 +15,25 @@ export async function validateShow({file}){
  const add=(code,scope,message,severity='error')=>diagnostics.push({code,severity,scope,message});
  const names=new Map();for(const part of snapshot.parts)names.set(part.name,(names.get(part.name)||0)+1);
  for(const [name,count] of names)if(count>1)add('duplicate_part',{part:name},`Part name occurs ${count} times`);
+ const programParts=snapshot.parts.filter(p=>p.name.toLowerCase()==='content/program.skpr');
+ if(programParts.length>1&&new Set(programParts.map(p=>p.name)).size>1)add('duplicate_part',{part:'content/Program.skpr'},`Program part occurs ${programParts.length} times, ignoring case`);
  for(const part of snapshot.parts){
   const scope={part:part.name};
   if(!part.valid){coverage.push({...scope,status:'invalid_checksum'});add('invalid_md5',scope,'Part checksum does not match');continue;}
-  if(names.get(part.name)>1){coverage.push({...scope,status:'duplicate_name'});continue;}
+  if(names.get(part.name)>1||(part.name.toLowerCase()==='content/program.skpr'&&programParts.length>1)){coverage.push({...scope,status:'duplicate_name'});continue;}
+  if(/\.skpr$/i.test(part.name)){
+   const partCoverage={...scope,status:'partial'};coverage.push(partCoverage);
+   if(part.name.toLowerCase()!=='content/program.skpr')add('unknown_program_part',scope,'Program part is at an unverified path','warning');
+   try{
+    const program=inspectProgramBytes(part.bytes);
+    add('unverified_program_semantics',scope,'Program outer structure is checked; application behavior, item order, cues and media are not validated','warning');
+    for(const item of program.items){
+     if(item.hasGraph)add('unsupported_graph',{...scope,path:'skprogram/item/graph',itemIndex:item.index},'Program graph contents are not checked','warning');
+     if(item.hasTimeline)add('unsupported_timeline',{...scope,path:'skprogram/item/sktimeline',itemIndex:item.index},'Program timeline contents are not checked','warning');
+    }
+   }catch(error){partCoverage.status='invalid';add('invalid_native_xml',scope,error.message);}
+   continue;
+  }
   if(!/\.(?:skf|sktl|sksc|skls)$/i.test(part.name)){coverage.push({...scope,status:'ignored'});continue;}
   const partCoverage={...scope,status:/\.sksc$/i.test(part.name)?'partial':'checked'};coverage.push(partCoverage);
   if(/\.sksc$/i.test(part.name))add('unverified_scene_schema',scope,'Scene schema is not validated; graph IDs and connections are checked when present','warning');

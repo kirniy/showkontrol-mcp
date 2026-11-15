@@ -67,11 +67,14 @@ export async function createProgramCopy({destination,source,sha256,operation,ite
 }
 
 const note='Static format evidence only; application acceptance, item sorting, cues and media are not verified.';
+export function inspectProgramBytes(bytes){
+ if(bytes.length>10*1024*1024)throw Error('Program exceeds 10 MiB');
+ const xml=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);
+ return {programSha256:hash(bytes),items:publicItems(parse(xml).items),note};
+}
 export async function inspectShowProgram({file}){
  const show=await prepareShowProgram({file});if(!show.bytes)return {file,sha256:show.sha256,present:false,note};
- if(show.bytes.length>10*1024*1024)throw Error('Program exceeds 10 MiB');
- const xml=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(show.bytes);
- return {file,sha256:show.sha256,present:true,programSha256:hash(show.bytes),items:publicItems(parse(xml).items),note};
+ return {file,sha256:show.sha256,present:true,...inspectProgramBytes(show.bytes)};
 }
 export async function attachShowProgramCopy({source,destination,sha256,program,programSha256,replaceExisting=false}){
  if(!path.isAbsolute(destination)||path.extname(destination).toLowerCase()!=='.skshow'||path.resolve(source)===path.resolve(destination)||path.resolve(program)===path.resolve(destination))throw Error('Destination must be a different absolute .skshow path');
