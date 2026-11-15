@@ -2,8 +2,9 @@ import {mkdtemp,link,rm} from 'node:fs/promises';
 import path from 'node:path';
 import {inspectShow} from './xml-copy.js';
 import {composeShowCopy} from './compose-show.js';
+import {editPatchBatchCopy} from './batch-patch.js';
 
-export async function composeMultiTrackShowCopy({source,destination,sha256,tracks}){
+export async function composeMultiTrackShowCopy({source,destination,sha256,tracks,patchOperations}){
  if(!path.isAbsolute(source)||!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Source and destination must be different absolute paths');
  if(!Array.isArray(tracks)||tracks.length<1||tracks.length>20)throw Error('Provide between 1 and 20 tracks');
  for(const track of tracks)if(!track||!Array.isArray(track.cues))throw Error('Each track requires cues');
@@ -11,6 +12,12 @@ export async function composeMultiTrackShowCopy({source,destination,sha256,track
  const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-multitrack-'));
  let current=source,currentHash=sha256,published=false,result;const composed=[],warnings=[];
  try{
+  if(patchOperations!==undefined){
+   const next=path.join(dir,'patch.skshow');
+   const patch=await editPatchBatchCopy({source:current,destination:next,format:'skshow',sha256:currentHash,operations:patchOperations});
+   if(patch.cleanupWarning)warnings.push(patch.cleanupWarning);
+   current=next;currentHash=patch.sha256;
+  }
   for(let i=0;i<tracks.length;i++){
    const {templateName,trackName,partName,existingPartName,cues,donor,set,layerOperations}=tracks[i],next=path.join(dir,`${i}.skshow`);
    const track=await composeShowCopy({source:current,destination:next,sha256:currentHash,templateName,trackName,partName,existingPartName,cues,donor,set,layerOperations});
