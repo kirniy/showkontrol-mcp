@@ -548,6 +548,19 @@ export async function addTimelineAudioClipCopy({source,destination,format,sha256
  return {...result,audioIndex,clipIndex:matching.length-1,note:'Added an offline clip using an observed imported-WAV structure. Media files and waveform caches are not copied or generated. App acceptance and playback are unverified.'};
 }
 
+// Find where a new lane goes. A deck-bearing timeline keeps its lanes before the unique deck.
+// The R27 27.0.11 app-saved empty track has no deck: its only lane directly follows layers and ends the timeline.
+// Without a deck, accept only that shape (any number of lanes, including none) and append after the last lane.
+function audioLaneInsertion(xml,root,lanes){
+ const decks=root.children.filter(n=>n.name==='deck');if(decks.length>1)throw Error('Expected at most one direct deck element for audio lane insertion');
+ if(decks.length){if(lanes.some(n=>n.start>decks[0].start))throw Error('Audio lane order is unsupported');return {pos:decks[0].start,position:'before_deck'};}
+ const layers=root.children.filter(n=>n.name==='layers');if(layers.length!==1)throw Error('A timeline without a deck needs exactly one direct layers element for audio lane insertion');
+ const after=root.children.slice(root.children.indexOf(layers[0])+1);
+ if(after.length!==lanes.length||after.some(n=>n.name!=='audio'))throw Error('Without a deck, audio lanes are supported only directly after layers at the end of the timeline');
+ let cursor=layers[0].end;for(const n of [...after,{start:root.closeStart,end:root.closeStart}]){if(xml.slice(cursor,n.start).trim())throw Error('Without a deck, only whitespace may surround the audio lanes after layers');cursor=n.end;}
+ return {pos:after.length?after.at(-1).end:layers[0].end,position:after.length?'after_last_lane':'after_layers'};
+}
+
 // Insert an empty audio lane using the app-saved R27 lane shape.
 export async function addTimelineAudioLaneCopy({source,destination,format,sha256,name,laneName,follow}) {
  if(!['sktl','skshow'].includes(format))throw Error('Format must be sktl or skshow');
@@ -558,12 +571,12 @@ export async function addTimelineAudioLaneCopy({source,destination,format,sha256
  }else ({xml,sha256:actual}=await inspectXml({file:source}));
  if(actual!==sha256)throw Error('Source changed since inspection');const parsed=parseTimeline(xml),root=parseXmlSpans(xml);
  const lanes=root.children.filter(n=>n.name==='audio');if(lanes.some(n=>n.attributes.name===laneName))throw Error('Audio lane name already exists');
- const decks=root.children.filter(n=>n.name==='deck');if(decks.length!==1)throw Error('Expected exactly one direct deck element for audio lane insertion');
- if(lanes.some(n=>n.start>decks[0].start))throw Error('Audio lane order is unsupported');
- const entry=`<audio name="${xmlAttr(laneName)}" follow="${follow?'1':'0'}"/>`,pos=decks[0].start,modified=xml.slice(0,pos)+entry+xml.slice(pos);
- const verified=parseTimeline(modified);if(verified.audio.length!==parsed.audio.length+1||verified.audio.at(-1)?.name!==laneName)throw Error('Audio lane could not be preserved');
+ const {pos,position}=audioLaneInsertion(xml,root,lanes);
+ const entry=`<audio name="${xmlAttr(laneName)}" follow="${follow?'1':'0'}"/>`,modified=xml.slice(0,pos)+entry+xml.slice(pos);
+ const verified=parseTimeline(modified),same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+ if(verified.audio.length!==parsed.audio.length+1||!same(verified.audio.at(-1),{name:laneName,follow:follow?'1':'0'})||!same(verified.audio.slice(0,-1),parsed.audio)||!same(verified.audioClips,parsed.audioClips))throw Error('Audio lane could not be preserved');
  const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
- return {...result,audioIndex:lanes.length,laneName,follow,note:'Added an offline lane using an app-saved structure. App acceptance and follow behavior are unverified.'};
+ return {...result,audioIndex:lanes.length,laneName,follow,position,note:`Added an offline lane using an app-saved structure ${position==='before_deck'?'before the deck':'at the end of the lanes that follow layers in a deckless timeline, as in the app-saved empty track'}. App acceptance and follow behavior are unverified.`};
 }
 
 // Read one timeline and, for a show, the other XML parts that may hold references (set lists name tracks and sets only).
