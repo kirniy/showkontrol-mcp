@@ -543,3 +543,21 @@ export async function addTimelineAudioClipCopy({source,destination,format,sha256
  const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
  return {...result,audioIndex,clipIndex:matching.length-1,note:'Added an offline clip using an observed imported-WAV structure. Media files and waveform caches are not copied or generated. App acceptance and playback are unverified.'};
 }
+
+// Insert an empty audio lane using the app-saved R27 lane shape.
+export async function addTimelineAudioLaneCopy({source,destination,format,sha256,name,laneName,follow}) {
+ if(!['sktl','skshow'].includes(format))throw Error('Format must be sktl or skshow');
+ if(typeof laneName!=='string'||!laneName.trim()||laneName.length>4096||/[\x00-\x1f\ufffe\uffff]/u.test(laneName))throw Error('Lane name must be a nonempty single-line string');
+ if(typeof follow!=='boolean')throw Error('follow must be a boolean');
+ let xml,actual;if(format==='skshow'){
+  if(!name||!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');const show=await readShowSnapshot({file:source});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');actual=show.sha256;xml=readSnapshotPart({snapshot:show,name}).text;
+ }else ({xml,sha256:actual}=await inspectXml({file:source}));
+ if(actual!==sha256)throw Error('Source changed since inspection');const parsed=parseTimeline(xml),root=parseXmlSpans(xml);
+ const lanes=root.children.filter(n=>n.name==='audio');if(lanes.some(n=>n.attributes.name===laneName))throw Error('Audio lane name already exists');
+ const decks=root.children.filter(n=>n.name==='deck');if(decks.length!==1)throw Error('Expected exactly one direct deck element for audio lane insertion');
+ if(lanes.some(n=>n.start>decks[0].start))throw Error('Audio lane order is unsupported');
+ const entry=`<audio name="${xmlAttr(laneName)}" follow="${follow?'1':'0'}"/>`,pos=decks[0].start,modified=xml.slice(0,pos)+entry+xml.slice(pos);
+ const verified=parseTimeline(modified);if(verified.audio.length!==parsed.audio.length+1||verified.audio.at(-1)?.name!==laneName)throw Error('Audio lane could not be preserved');
+ const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
+ return {...result,audioIndex:lanes.length,laneName,follow,note:'Added an offline lane using an app-saved structure. App acceptance and follow behavior are unverified.'};
+}
