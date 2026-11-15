@@ -1,3 +1,4 @@
+import {maskOpaqueNodeText,opaqueNodeWarnings} from './opaque-node-text.js';
 import {storedStoppedWarnings} from './stored-stopped-warnings.js';
 import {readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';
 import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';
@@ -15,7 +16,7 @@ function replaceId(xml,node,newId){
  if(!id)throw Error('Node ID attribute is missing');
  return {copy:opening.slice(0,id.start)+newId+opening.slice(id.end)+xml.slice(node.openEnd,node.end),outsideId:opening.slice(0,id.start)+opening.slice(id.end)+xml.slice(node.openEnd,node.end)};
 }
-export async function copyCueGraphNodeShowCopy({source,destination,sha256,name,cueId,template,templateSha256,templateName,templateCueId,nodeId}){
+export async function copyCueGraphNodeShowCopy({source,destination,sha256,name,cueId,template,templateSha256,templateName,templateCueId,nodeId,allowOpaqueNodeText}){
  if(!name?.toLowerCase().endsWith('.sktl')||!templateName?.toLowerCase().endsWith('.sktl'))throw Error('Select timeline parts');
  if(!cueId||!templateCueId||!/^n\d+$/.test(nodeId||''))throw Error('Cue IDs and supported node ID are required');
  const [target,donor]=await Promise.all([readShowSnapshot({file:source}),readShowSnapshot({file:template})]);
@@ -26,13 +27,14 @@ export async function copyCueGraphNodeShowCopy({source,destination,sha256,name,c
  let max=0;for(const part of target.parts.filter(p=>/\.(?:skf|sktl|sksc|skpr)$/i.test(p.name))){const root=parseXmlSpans(readSnapshotPart({snapshot:target,name:part.name}).text);walk(root,n=>{if(n.name==='node'&&/^n\d+$/.test(n.attributes.id||'')){const num=Number(n.attributes.id.slice(1));if(!Number.isSafeInteger(num)||num>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,num);}});}
  const donorId=Number(nodeId.slice(1));if(!Number.isSafeInteger(donorId)||donorId>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,donorId);if(max>=1000000000)throw Error('No node IDs remain in the supported range');const newNodeId=`n${max+1}`;
  const {copy}=replaceId(donorXml,node,newNodeId);
- if(hasXmlReference(copy,/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/,{ignoreRootId:true}))throw Error('Node contains unsupported internal references');
+ const masked=maskOpaqueNodeText(copy,parseXmlSpans(copy),allowOpaqueNodeText);
+ if(hasXmlReference(masked.masked,/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/,{ignoreRootId:true}))throw Error('Node contains unsupported internal references');
  const graph=targetGraph.graph;let modified;
  if(graph.selfClosing){const opening=xml.slice(graph.start,graph.openEnd).replace(/\s*\/>$/,'>');modified=xml.slice(0,graph.start)+opening+copy+'</graph>'+xml.slice(graph.end);}
  else modified=xml.slice(0,graph.closeStart)+copy+xml.slice(graph.closeStart);
  const after=graphParts(modified,cueId),copied=after.nodes.filter(n=>n.attributes.id===newNodeId);
  if(JSON.stringify(after.graph.attributes)!==JSON.stringify(graph.attributes))throw Error('Graph attributes changed unexpectedly');
  if(copied.length!==1||after.nodes.length!==targetGraph.nodes.length+1||modified.slice(copied[0].start,copied[0].end)!==copy||JSON.stringify({...copied[0].attributes,id:nodeId})!==JSON.stringify(node.attributes))throw Error('Copied node did not match template');
- const warnings=storedStoppedWarnings(modified,name).filter(w=>w.scope.cueId===cueId&&w.scope.nodeId===newNodeId);
+ const warnings=[...storedStoppedWarnings(modified,name).filter(w=>w.scope.cueId===cueId&&w.scope.nodeId===newNodeId),...opaqueNodeWarnings([{nodeId,keys:masked.keys}],name,cueId,{[nodeId]:newNodeId})];
  const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});return {...result,nodeId,newNodeId,warnings,note:['processor','generator'].includes(node.attributes.type)?cuePrototypeNote:'Copied an unconnected fixture-supported node. Internal references, hardware dependencies and ShowKontrol acceptance require validation.'};
 }

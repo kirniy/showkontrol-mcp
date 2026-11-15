@@ -1,3 +1,4 @@
+import {maskOpaqueNodeText,opaqueNodeWarnings} from './opaque-node-text.js';
 import {supportedCueCopyNode,cuePrototypeNote} from './cue-node-copy.js';
 import {storedStoppedWarnings} from './stored-stopped-warnings.js';
 import {hasXmlReference} from './xml-references.js';
@@ -119,12 +120,13 @@ function remapCueGraph(xml,graph,idMap){
  return result;
 }
 // Only node IDs and connection endpoints have verified remapping semantics.
-function validateGraphReferences(xml,graph,targetShow){
+function validateGraphReferences(xml,graph,targetShow,allowOpaqueNodeText){
  const pattern=/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/;
- const pieces=[], validatedRouterSettings=new Set();
+ const pieces=[], validatedRouterSettings=new Set(), opaque=[];
  for(const child of graph.children){
   if(child.name==='node'){
-   let nodeXml=xml.slice(child.start,child.end);
+   const masked=maskOpaqueNodeText(xml,child,allowOpaqueNodeText);let nodeXml=masked.masked;
+   if(masked.keys.length)opaque.push({nodeId:child.attributes.id,keys:masked.keys});
    const routerSettings=child.children.filter(c=>c.name==='settings').flatMap(c=>c.children.filter(s=>s.name==='setting'&&s.attributes.key==='route.router_target'));
    const allRouterSettings=[];const collect=node=>{if(node.name==='setting'&&node.attributes.key==='route.router_target')allRouterSettings.push(node);for(const nested of node.children)collect(nested);};collect(child);
    if(routerSettings.length>1||allRouterSettings.length!==routerSettings.length)throw Error('Invalid router target setting');
@@ -147,6 +149,7 @@ function validateGraphReferences(xml,graph,targetShow){
  let remaining=xml.slice(graph.start,graph.end);
  for(const child of [...graph.children].sort((a,b)=>b.start-a.start))remaining=remaining.slice(0,child.start-graph.start)+remaining.slice(child.end-graph.start);
  if(hasXmlReference(remaining,pattern)||pieces.some(piece=>hasXmlReference(piece,pattern)))throw Error('Graph contains unsupported internal references');
+ return opaque;
 }
 function cueElements(xml,cueId){
  return [...xml.matchAll(/<cue\b(?:[^"'<>]|"[^"]*"|'[^']*')*?(?:\/>|>[\s\S]*?<\/cue\s*>)/g)].filter(match=>{
@@ -160,7 +163,7 @@ function insertCueGraph(xml,cue,graph){
  if(!/^\s*$/.test(xml.slice(cue.openEnd,cue.closeStart)))throw Error('Target cue must be empty or contain only whitespace');
  return xml.slice(0,cue.closeStart)+graph+xml.slice(cue.closeStart);
 }
-export async function copyCueGraphInShow({source,destination,sha256,name,sourceName=name,sourceCueId,targetCueId,template,templateSha256}){
+export async function copyCueGraphInShow({source,destination,sha256,name,sourceName=name,sourceCueId,targetCueId,template,templateSha256,allowOpaqueNodeText}){
  if((template===undefined)!==(templateSha256===undefined))throw Error('Provide both template and templateSha256');
  if(template===undefined&&sourceName===name&&sourceCueId===targetCueId)throw Error('Select two different cues');
  if(!name?.toLowerCase().endsWith('.sktl')||!sourceName?.toLowerCase().endsWith('.sktl'))throw Error('Select .sktl parts');
@@ -190,13 +193,13 @@ export async function copyCueGraphInShow({source,destination,sha256,name,sourceN
  if(sm.length!==1||sm[0].selfClosing)throw Error('Unsupported source cue serialization');
  const gm=selectXmlSpans(sourceRoot,['sktimeline',{name:'cue',attributes:{id:sourceCueId}},'graph']);
  if(gm.length!==1||gm[0].selfClosing)throw Error('Unsupported graph serialization');
- validateGraphReferences(sourceXml,gm[0],show);
+ const opaque=validateGraphReferences(sourceXml,gm[0],show,allowOpaqueNodeText);
  const graph=remapCueGraph(sourceXml,gm[0],idMap);
  const tm=selectXmlSpans(targetRoot,['sktimeline',{name:'cue',attributes:{id:targetCueId}}]);if(tm.length!==1)throw Error('Target cue must occur exactly once');
  const changed=insertCueGraph(xml,tm[0],graph);
  const expected={nodes:src.graph.nodes.map(node=>({...node,id:idMap[node.id]})),connections:src.graph.connections.map(connection=>({...connection,fromNode:idMap[connection.fromNode],toNode:idMap[connection.toNode]}))};
  if(JSON.stringify(cueGraph(changed,targetCueId).graph)!==JSON.stringify(expected))throw Error('Copied graph did not match the selected source and target cues');
- const warnings=storedStoppedWarnings(changed,name).filter(w=>w.scope.cueId===targetCueId&&Object.values(idMap).includes(w.scope.nodeId));
+ const warnings=[...storedStoppedWarnings(changed,name).filter(w=>w.scope.cueId===targetCueId&&Object.values(idMap).includes(w.scope.nodeId)),...opaqueNodeWarnings(opaque,name,targetCueId,idMap)];
  const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:changed}]});
  return {...result,sourceName,sourceCueId,targetCueId,idMap,warnings,note:'Copied a fixture-supported cue graph into an offline show copy; validate the result in ShowKontrol.'+(nodes.some(n=>['processor','generator'].includes(n.type))?' '+cuePrototypeNote:'')};
 }
@@ -400,7 +403,7 @@ export async function copyCueGraphBetweenTimelinesWithShow(args,targetShow){
  return copyCueGraphBetweenTimelinesInternal(args,targetShow);
 }
 
-async function copyCueGraphBetweenTimelinesInternal({source,destination,sha256,template,templateSha256,sourceCueId,targetCueId},targetShow){
+async function copyCueGraphBetweenTimelinesInternal({source,destination,sha256,template,templateSha256,sourceCueId,targetCueId,allowOpaqueNodeText},targetShow){
  const [target,donor]=await Promise.all([inspectXml({file:source}),inspectXml({file:template})]);
  if(target.sha256!==sha256)throw Error('Source changed since inspection');if(donor.sha256!==templateSha256)throw Error('Template changed since inspection');
  const src=cueGraph(donor.xml,sourceCueId),dst=cueGraph(target.xml,targetCueId);if(!src.graph||!src.graph.nodes.length)throw Error('Source cue has no graph');if(dst.graph)throw Error('Target cue already has a graph');
@@ -412,12 +415,12 @@ async function copyCueGraphBetweenTimelinesInternal({source,destination,sha256,t
  const donorRoot=parseXmlSpans(donor.xml),targetRoot=parseXmlSpans(target.xml);
  const graphs=selectXmlSpans(donorRoot,['sktimeline',{name:'cue',attributes:{id:sourceCueId}},'graph']);if(graphs.length!==1||graphs[0].selfClosing)throw Error('Unsupported source graph serialization');
  const cues=selectXmlSpans(targetRoot,['sktimeline',{name:'cue',attributes:{id:targetCueId}}]);if(cues.length!==1)throw Error('Target cue must occur exactly once');
- validateGraphReferences(donor.xml,graphs[0],targetShow);
+ const opaque=validateGraphReferences(donor.xml,graphs[0],targetShow,allowOpaqueNodeText);
  const graph=remapCueGraph(donor.xml,graphs[0],idMap);
  const modified=insertCueGraph(target.xml,cues[0],graph);
  const expected={nodes:src.graph.nodes.map(node=>({...node,id:idMap[node.id]})),connections:src.graph.connections.map(c=>({...c,fromNode:idMap[c.fromNode],toNode:idMap[c.toNode]}))};
  if(JSON.stringify(cueGraph(modified,targetCueId).graph)!==JSON.stringify(expected))throw Error('Copied graph did not match selected source and target cues');
- const warnings=storedStoppedWarnings(modified,destination).filter(w=>w.scope.cueId===targetCueId&&Object.values(idMap).includes(w.scope.nodeId));
+ const warnings=[...storedStoppedWarnings(modified,destination).filter(w=>w.scope.cueId===targetCueId&&Object.values(idMap).includes(w.scope.nodeId)),...opaqueNodeWarnings(opaque,destination,targetCueId,idMap)];
  const result=await editXmlCopy({source,destination,sha256,edits:[{find:target.xml,replace:modified}]});return {...result,sourceCueId,targetCueId,idMap,warnings,note:'Copied a fixture-supported cue graph into an offline timeline copy. Node IDs are checked within this timeline only; validate in ShowKontrol before combining with a show.'+(src.graph.nodes.some(n=>['processor','generator'].includes(n.type))?' '+cuePrototypeNote:'')};
 }
 
