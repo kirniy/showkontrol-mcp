@@ -139,3 +139,5 @@ ShowKontrol opened a generated test archive containing a cue graph with that sav
 References: [Remote Control & API](https://manual.showkontrol.com/manual/remote), [Cue Editor & Timelines](https://manual.showkontrol.com/manual/timeline), and [REAPER state chunk definitions](https://github.com/ReaTeam/Doc/blob/master/State%20Chunk%20Definitions).
 
 A generated test `.skshow` was opened in ShowKontrol. Its working `session.skf` matched the edited patch part byte-for-byte except that the app changed the root name to the session name. Semantic setting changes have not yet been verified through the app.
+
+- `showkontrol_edit_timeline_audio_clip_copy`: edit existing `pps`, `offsetMs`, `vol`, `trimStartMs`, `trimEndMs`, `fadeInMs`, or `fadeOutMs` attributes on a direct audio clip in a new `.sktl` or `.skshow` copy. Inspect the source first and provide its SHA-256. `audioIndex` selects the zero-based direct audio lane; `clipIndex` selects the zero-based direct clip within that lane. Values are strings. The tool does not create clips or edit file paths. Attribute meanings, valid values, playback, and app acceptance are not verified. Validate the copy in ShowKontrol.

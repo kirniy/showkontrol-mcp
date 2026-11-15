@@ -343,3 +343,41 @@ export async function addCueGraphSettingCopy({source,destination,format,sha256,n
  const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
  return {...result,cueId,nodeId,key,value,note:'Added a fixture-supported setting to an offline cue graph. Values and ShowKontrol acceptance are not validated.'};
 }
+
+// Edit only existing attributes on a direct audio clip.
+export async function editTimelineAudioClipCopy({source,destination,format,sha256,name,audioIndex,clipIndex,attributes}) {
+ const allowed=['pps','offsetMs','vol','trimStartMs','trimEndMs','fadeInMs','fadeOutMs'];
+ if(!['sktl','skshow'].includes(format))throw Error('Format must be sktl or skshow');
+ if(!Number.isSafeInteger(audioIndex)||audioIndex<0||!Number.isSafeInteger(clipIndex)||clipIndex<0)throw Error('Audio and clip indices must be non-negative integers');
+ if(!attributes||typeof attributes!=='object'||Array.isArray(attributes)||!Object.keys(attributes).length||Object.entries(attributes).some(([key,value])=>!allowed.includes(key)||typeof value!=='string'))throw Error('Provide supported attributes as strings');
+ let xml,actual;
+ if(format==='skshow'){
+  if(!name||!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
+  const show=await readShowSnapshot({file:source});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
+  actual=show.sha256;xml=readSnapshotPart({snapshot:show,name}).text;
+ }else ({xml,sha256:actual}=await inspectXml({file:source}));
+ if(actual!==sha256)throw Error('Source changed since inspection');
+ parseTimeline(xml);
+ const root=parseXmlSpans(xml),lanes=root.children.filter(n=>n.name==='audio');
+ const clip=lanes[audioIndex]?.children.filter(n=>n.name==='clip')[clipIndex];
+ if(!clip)throw Error('Audio clip index is outside the existing direct clips');
+ const opening=xml.slice(clip.start,clip.openEnd),replacements=[];
+ const attr=/\s+([^\s=/>]+)\s*=\s*(["'])([\s\S]*?)\2/y;let pos='<clip'.length;
+ while(pos<opening.length){
+  if(/^\s*\/?>$/.test(opening.slice(pos)))break;
+  attr.lastIndex=pos;const m=attr.exec(opening);if(!m)throw Error('Unsupported clip attribute serialization');
+  if(Object.hasOwn(attributes,m[1])){
+   const start=pos+m[0].indexOf(m[2])+1;
+   replacements.push({key:m[1],start,end:start+m[3].length,value:xmlAttr(attributes[m[1]]).replaceAll("'",'&apos;')});
+  }
+  pos=attr.lastIndex;
+ }
+ for(const key of Object.keys(attributes))if(replacements.filter(r=>r.key===key).length!==1)throw Error(`Clip attribute ${key} must exist exactly once`);
+ let changed=opening;for(const r of replacements.reverse())changed=changed.slice(0,r.start)+r.value+changed.slice(r.end);
+ const modified=xml.slice(0,clip.start)+changed+xml.slice(clip.openEnd);
+ const checked=parseXmlSpans(modified).children.filter(n=>n.name==='audio')[audioIndex]?.children.filter(n=>n.name==='clip')[clipIndex];
+ if(!checked||Object.entries(attributes).some(([key,value])=>checked.attributes[key]!==value))throw Error('Clip edit did not preserve requested values');
+ const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};
+ const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
+ return {...result,audioIndex,clipIndex,attributes,note:'Changed existing audio clip attributes in an offline copy. Value meanings and ShowKontrol acceptance are not validated.'};
+}
