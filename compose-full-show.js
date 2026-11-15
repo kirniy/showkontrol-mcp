@@ -4,6 +4,7 @@ import {inspectShow,inspectXml} from './xml-copy.js';
 import {validateShow} from './validate-show.js';
 import {composeMultiTrackShowCopy} from './compose-multi-show.js';
 import {composeProgramScheduleCopy} from './program-compose.js';
+import {composeProgramEditsCopy} from './program-edit-compose.js';
 import {inspectCueGraph} from './timeline.js';
 
 const checksum=s=>typeof s==='string'&&/^[a-f0-9]{64}$/.test(s);
@@ -29,7 +30,9 @@ export async function composeFullShowCopy(args){
  if(!Array.isArray(tracks)||tracks.length>20)throw Error('Expected at most 20 tracks');
  if(patchOperations!==undefined&&(!Array.isArray(patchOperations)||!patchOperations.length||patchOperations.length>100))throw Error('Expected 1 to 100 patch operations');
  if(setlistOperations!==undefined&&(!Array.isArray(setlistOperations)||!setlistOperations.length||setlistOperations.length>100))throw Error('Expected 1 to 100 set list operations');
- if(program!==undefined&&(!object(program)||Object.keys(program).some(k=>!['items','replaceExisting'].includes(k))||!Array.isArray(program.items)||program.items.length>100||(program.replaceExisting!==undefined&&typeof program.replaceExisting!=='boolean')))throw Error('Invalid Program composition');
+ if(program!==undefined&&(!object(program)||(Object.hasOwn(program,'operations')
+  ? Object.keys(program).some(k=>k!=='operations')||!Array.isArray(program.operations)||program.operations.length>100
+  : Object.keys(program).some(k=>!['items','replaceExisting'].includes(k))||!Array.isArray(program.items)||program.items.length>100||(program.replaceExisting!==undefined&&typeof program.replaceExisting!=='boolean'))))throw Error('Invalid Program composition');
  const hasComposition=!!(tracks.length||patchOperations?.length||setlistOperations?.length);
  if(!hasComposition&&program===undefined)throw Error('Composition must make a change');
  const refs=collectReferences({tracks,patchOperations,program});
@@ -40,7 +43,9 @@ export async function composeFullShowCopy(args){
   let current=source,hash=sha256,multi;
   if(hasComposition){multi=await composeMultiTrackShowCopy({source,destination:path.join(dir,'composed.skshow'),sha256,tracks,patchOperations,setlistOperations});current=path.join(dir,'composed.skshow');hash=multi.sha256;}
   let programResult;
-  if(program!==undefined){
+  if(program!==undefined&&Object.hasOwn(program,'operations')){
+   programResult=await composeProgramEditsCopy({source:current,destination:path.join(dir,'program.skshow'),sha256:hash,operations:program.operations});current=path.join(dir,'program.skshow');hash=programResult.sha256;
+  }else if(program!==undefined){
    const items=[];
    for(const item of program.items){
     if(!object(item))throw Error('Invalid Program item');
@@ -97,7 +102,7 @@ export async function composeFullShowCopy(args){
   const validation=await validateShow({file:current});if(validation.diagnostics.some(d=>d.severity==='error'))throw Error(`Final show validation failed: ${validation.diagnostics.filter(d=>d.severity==='error').map(d=>d.code).join(', ')}`);
   if((await inspectShow({file:source})).sha256!==sha256)throw Error('Source changed since inspection');await checkReferences(refs);
   await link(current,destination);published=true;
-  result={destination,sha256:hash,tracks:multi?.tracks??[],setlistOperations:multi?.setlistOperations??[],warnings:multi?.warnings??[],...(multi?.cleanupWarnings?{cleanupWarnings:multi.cleanupWarnings}:{}),...(programResult?{program:{programSha256:programResult.programSha256,items:programResult.items,mappings:programResult.mappings,warnings:programResult.warnings}}:{}),validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
+  result={destination,sha256:hash,tracks:multi?.tracks??[],setlistOperations:multi?.setlistOperations??[],warnings:multi?.warnings??[],...(multi?.cleanupWarnings?{cleanupWarnings:multi.cleanupWarnings}:{}),...(programResult?{program:{programSha256:programResult.programSha256,items:programResult.items,...(programResult.mappings!==undefined?{mappings:programResult.mappings}:{}),warnings:programResult.warnings}}:{}),validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
  }finally{try{await rm(dir,{recursive:true,force:true});}catch(error){if(!published)throw error;result.cleanupWarnings=[...(result.cleanupWarnings??[]),`Published copy is valid, but temporary directory cleanup failed: ${dir}: ${error.message}`];}}
  return result;
 }

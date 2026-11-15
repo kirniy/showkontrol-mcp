@@ -1,5 +1,7 @@
 import {readShowSnapshot,readSnapshotPart} from './xml-copy.js';
 import {parseTimeline} from './timeline.js';
+import {inspectProgramBytes} from './program.js';
+import {parseXmlSpans} from './xml-spans.js';
 
 const MAX_ITEMS=10000, MAX_TEXT_BYTES=2*1024*1024;
 
@@ -41,20 +43,43 @@ export async function inspectShowMedia({file}){
  }
  const mappingIndex=new Map();
  for(const m of mappings)for(const value of new Set([m.sourcePath,m.archivePath])){const lines=mappingIndex.get(value)||[];lines.push(m.line);mappingIndex.set(value,lines);}
+ const addClips=(timeline,scope)=>{
+  for(const clip of timeline.audioClips){
+   const value=clip.attributes.file;
+   const mappingLines=typeof value==='string'?(mappingIndex.get(value)||[]):[];
+   references+=mappingLines.length;if(references>MAX_ITEMS)throw Error('Media inventory exceeds reference limit');
+   clips.push({...scope,...clip,mappingLines});
+   if(clips.length>MAX_ITEMS)throw Error('Clip count exceeds inventory item limit');
+  }
+ };
+ const isLimitError=error=>error.message==='Clip count exceeds inventory item limit'||error.message==='Media inventory exceeds reference limit';
  for(const part of snapshot.parts.filter(p=>/\.sktl$/i.test(p.name))){
   if(!part.valid){diagnostics.push({code:'invalid_timeline_checksum',part:part.name});continue;}
   if(partsByName.get(part.name).length!==1){if(!diagnostics.some(d=>d.code==='duplicate_timeline_part'&&d.part===part.name))diagnostics.push({code:'duplicate_timeline_part',part:part.name});continue;}
   if(part.bytes.length>MAX_TEXT_BYTES)throw Error(`Timeline exceeds inventory text limit: ${part.name}`);
   try{
    const timeline=parseTimeline(readSnapshotPart({snapshot,name:part.name}).text);
-   for(const clip of timeline.audioClips){
-    const value=clip.attributes.file;
-    const mappingLines=typeof value==='string'?(mappingIndex.get(value)||[]):[];
-    references+=mappingLines.length;if(references>MAX_ITEMS)throw Error('Media inventory exceeds reference limit');
-    clips.push({part:part.name,...clip,mappingLines});
-    if(clips.length>MAX_ITEMS)throw Error('Clip count exceeds inventory item limit');
+   addClips(timeline,{part:part.name});
+  }catch(error){if(isLimitError(error))throw error;diagnostics.push({code:'invalid_timeline',part:part.name,message:error.message});}
+ }
+ const programName='content/Program.skpr';
+ const programs=snapshot.parts.filter(p=>p.name.toLowerCase()===programName.toLowerCase());
+ if(programs.length>1)diagnostics.push({code:'duplicate_program_part',part:programName,count:programs.length});
+ else if(programs.length===1){
+  const part=programs[0];
+  if(part.name!==programName)diagnostics.push({code:'invalid_program_part_name',part:part.name});
+  else if(!part.valid)diagnostics.push({code:'invalid_program_checksum',part:part.name});
+  else if(part.bytes.length>MAX_TEXT_BYTES)throw Error('Program exceeds inventory text limit');
+  else {
+   let xml,root;
+   try{inspectProgramBytes(part.bytes);xml=readSnapshotPart({snapshot,name:part.name}).text;root=parseXmlSpans(xml);}
+   catch(error){diagnostics.push({code:'invalid_program',part:part.name,message:error.message});}
+   if(root)for(const [itemIndex,item] of root.children.entries()){
+    const node=item.children.find(child=>child.name==='sktimeline');if(!node)continue;
+    try{addClips(parseTimeline(xml.slice(node.start,node.end)),{part:part.name,itemIndex});}
+    catch(error){if(isLimitError(error))throw error;diagnostics.push({code:'invalid_timeline',part:part.name,itemIndex,message:error.message});}
    }
-  }catch(error){if(error.message==='Clip count exceeds inventory item limit'||error.message==='Media inventory exceeds reference limit')throw error;diagnostics.push({code:'invalid_timeline',part:part.name,message:error.message});}
+  }
  }
  const result={file,sha256:snapshot.sha256,mapParts,archiveParts,mappings,clips,diagnostics};
  if(Buffer.byteLength(JSON.stringify(result,null,2))>MAX_TEXT_BYTES)throw Error('Media inventory exceeds output limit');
