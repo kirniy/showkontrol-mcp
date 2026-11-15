@@ -1,6 +1,6 @@
 # Tools
 
-The server provides 120 tools and one prompt. This page lists them by task. Each group links to its section of the [reference](reference.md), which has the arguments, checks, results and evidence.
+The server provides 120 tools and one prompt. This page lists them by task. Each section below is also a toolset that `SHOWKONTROL_TOOLSETS` can register on its own; see [Choose the tools a client loads](setup.md#choose-the-tools-a-client-loads). Each group links to its section of the [reference](reference.md), which has the arguments, checks, results and evidence.
 
 ## Discover tools from the client
 

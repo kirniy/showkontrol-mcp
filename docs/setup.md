@@ -86,7 +86,31 @@ Local pairing (`SHOWKONTROL_USE_LOCAL_PAIRING=1`) reads the current user's ShowK
 - `SHOWKONTROL_PAIRING_FILE`: path of the pairing file read with `SHOWKONTROL_USE_LOCAL_PAIRING=1`. Default: `~/Documents/TC Supply/WEB/streamdeck.json`.
 - `SHOWKONTROL_TIMEOUT_MS`: request timeout from 100 to 120000 milliseconds. Default: 5000.
 - `SHOWKONTROL_OFFLINE_MAX_BYTES`: maximum offline XML input or output size in bytes. Default: 134217728 (128 MiB). This does not change the 5 MiB live API response limit. Raw XML and part inspection can return large MCP messages; client limits may be lower.
+- `SHOWKONTROL_TOOLSETS`: comma-separated toolsets to register instead of all tools. See [Choose the tools a client loads](#choose-the-tools-a-client-loads).
 - `SHOWKONTROL_SESSION_MEDIA_MAX_BYTES`: maximum total bytes that one `showkontrol_compose_session_media_copy` call copies, as a positive integer. Default: 4294967296 (4 GiB). See [Session directories](reference.md#session-directories).
+
+## Choose the tools a client loads
+
+By default the server registers all 120 tools. Their `tools/list` response is about 256 KB of names, descriptions and input schemas, and clients pass tool definitions to the model. OpenAI's API has refused requests with more than 128 tools (`array_above_max_length`), so Codex's own tools or another MCP server can take a session over that limit. This has not been observed with this server.
+
+Set `SHOWKONTROL_TOOLSETS` to a comma-separated list to register fewer tools:
+
+| Toolset | Tools | `tools/list` size | Registers |
+| --- | --- | --- | --- |
+| `live` | 36 | 25 KB | The [Live API](tools.md#live-api) tools |
+| `live_read` | 20 | 12 KB | The live tools annotated `readOnlyHint: true`: observation and dry runs, no live writes |
+| `offline` | 84 | 231 KB | Every tool except the live ones |
+| `all` | 120 | 256 KB | Every tool, as when the variable is unset or blank |
+
+Each section of the [tool index](tools.md) is also a toolset: `files`, `timelines`, `audio`, `graphs`, `tracks`, `composition`, `patch`, `programs`, `media` and `reaper`. Most write tools need a SHA-256 and indices from inspection tools in other sections, so include `files` and the sections whose inspection tools a task uses; for example, `files,programs` registers 24 tools. The `author_offline_show` prompt is registered only when every tool it names is registered, which `offline` satisfies. An unknown name, including an empty entry such as a trailing comma, stops the server at startup with a message that lists the valid names, and the client then shows no tools. Sizes were measured with Node.js 22.23.2 and change with the tools.
+
+```toml
+[mcp_servers.showkontrol.env]
+SHOWKONTROL_USE_LOCAL_PAIRING = "1"
+SHOWKONTROL_TOOLSETS = "live_read"
+```
+
+With Claude Code, add `-e SHOWKONTROL_TOOLSETS=live_read` to `claude mcp add`. Codex can also filter one server's tools by name with `enabled_tools` and `disabled_tools` in its `[mcp_servers.showkontrol]` table. `live_read` registers tools by their annotations; the server enforces nothing beyond not registering the other tools, and ShowKontrol's own token and remote-control settings still decide what the API accepts.
 
 ## Atomic session publication
 

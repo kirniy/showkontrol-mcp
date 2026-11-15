@@ -33,7 +33,7 @@ Offline write tools create new copies. They never change their source and do not
 
 4. Restart the client and ask it to call `showkontrol_discover` with `status`. For offline work, ask it to run `showkontrol_inspect_show_overview` on a show file.
 
-Network connections, tokens, other clients, environment variables and atomic session publication are covered in [Setup](docs/setup.md).
+Network connections, tokens, other clients, environment variables, smaller toolsets and atomic session publication are covered in [Setup](docs/setup.md).
 
 ## Documentation
 
