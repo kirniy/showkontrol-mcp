@@ -35,6 +35,17 @@ export async function validateShow({file}){
     const visit=(node,path)=>{for(const child of node.children){const childPath=`${path}/${child.name}`;if(child.name==='cue'&&node!==root){if(partCoverage.status==='checked')partCoverage.status='partial';add('unsupported_cue', {...baseScope,path:childPath,...(child.attributes.id?{cueId:child.attributes.id}:{})},'Nested cue timing and layer are not checked','warning');}visit(child,childPath);}};
     visit(root,basePath);
  };
+ const collectGraphRouterTargets=(graph,graphScope,xml)=>{
+  const visit=(element,path)=>{
+   if(element.name==='setting'&&element.attributes.key==='route.router_target'){
+    const node=path[1]?.name==='node'?path[1]:null,parser=new SaxesParser();let value='';
+    parser.on('text',v=>value+=v);parser.on('cdata',v=>value+=v);parser.write(xml.slice(element.start,element.end)).close();
+    routerTargets.push({scope:{...graphScope,nodeId:node?.attributes.id??null},node,nodeType:node?.attributes.type,placed:path.map(n=>n.name).join('/')==='graph/node/settings/setting',tag:element,value,nested:element.children.length>0});
+   }
+   for(const child of element.children)visit(child,[...path,child]);
+  };
+  visit(graph,[graph]);
+ };
  const names=new Map();for(const part of snapshot.parts)names.set(part.name,(names.get(part.name)||0)+1);
  for(const [name,count] of names)if(count>1)add('duplicate_part',{part:name},`Part name occurs ${count} times`);
  const programParts=snapshot.parts.filter(p=>p.name.toLowerCase()==='content/program.skpr');
@@ -54,7 +65,8 @@ export async function validateShow({file}){
      if(item.hasGraph){
       const graph=root.children[item.index].children.find(child=>child.name==='graph');
       const graphScope={...scope,path:'skprogram/item/graph',itemIndex:item.index},local=new Set();
-      add('unsupported_graph',graphScope,'Only direct node IDs, connection endpoints and numeric pins are checked; other graph contents are not checked','warning');
+      add('unsupported_graph',graphScope,'Only direct node IDs, connection endpoints, numeric pins and router targets are checked; other graph contents are not checked','warning');
+      collectGraphRouterTargets(graph,graphScope,xml);
       for(const node of graph.children.filter(child=>child.name==='node')){
        const id=node.attributes.id;
        if(!id){add('missing_node_id',graphScope,'Graph node has no ID');continue;}
@@ -79,10 +91,12 @@ export async function validateShow({file}){
        const childPath=`${path}/${child.name}`,directCue=node===timeline&&child.name==='cue';
        const currentCue=directCue?child:cue;
        if(child.name==='graph'){
-        const graphScope={...timelineScope,path:childPath,...(currentCue?.attributes.id?{cueId:currentCue.attributes.id}:{})};
+        const cueIndex=currentCue?timeline.children.filter(n=>n.name==='cue').indexOf(currentCue):-1;
+        const graphScope={...timelineScope,path:childPath,...(cueIndex>=0?{cueIndex}:{}),...(currentCue?.attributes.id?{cueId:currentCue.attributes.id}:{})};
         const supported=node===currentCue&&timeline.children.includes(currentCue);
         if(!supported)add('unsupported_graph',graphScope,'Graph path is unsupported; graph contents are not checked','warning');
         else{
+         collectGraphRouterTargets(child,graphScope,xml);
          const local=new Set();
          for(const graphNode of child.children.filter(n=>n.name==='node')){
           const id=graphNode.attributes.id;

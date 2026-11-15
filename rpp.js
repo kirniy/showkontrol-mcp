@@ -1,6 +1,7 @@
 // REAPER text project generator. ShowKontrol imports marker positions from RPP.
 // This format does not represent ShowKontrol cue action graphs.
-import {writeFile} from 'node:fs/promises';
+import {writeFile, stat, access} from 'node:fs/promises';
+import {constants} from 'node:fs';
 import path from 'node:path';
 function label(s) {
  if (/[\r\n\0"`]/.test(s)) throw Error('Names cannot contain quotes, backticks, line breaks, or NUL');
@@ -58,4 +59,37 @@ export async function writeRpp({file, markers = [], tracks = [], mediaTracks = [
  const text=renderRpp({markers,tracks,mediaTracks,projectName});
  await writeFile(file,text,{encoding:'utf8',flag:'wx'});
  return {file,markers:markers.length,tracks:tracks.length,mediaTracks:mediaTracks.length,bytes:Buffer.byteLength(text),note:'Import this file in the Cue Editor; it does not contain cue action graphs.'};
+}
+
+// Check only the paths that would be written to the project; never open media data.
+export async function preflightRppMedia({file, mediaTracks}) {
+ if (typeof file !== 'string' || file.length > 4096 || file.includes('\0') || !path.isAbsolute(file) || path.extname(file).toLowerCase() !== '.rpp') throw Error('Use an absolute path ending in .rpp, at most 4096 characters');
+ if (!Array.isArray(mediaTracks) || !mediaTracks.length || mediaTracks.length > 100) throw Error('Provide 1 to 100 media tracks');
+ let count = 0;
+ for (const track of mediaTracks) {
+  if (!track || !Array.isArray(track.items)) throw Error('Each media track needs an items array');
+  count += track.items.length;
+  if (count > 500) throw Error('At most 500 media items are supported');
+  if (typeof track.name !== 'string' || track.name.length > 4096) throw Error('Track name must be at most 4096 characters');
+  for (const item of track.items) {
+   if (!item || typeof item.file !== 'string' || item.file.length > 4096 || (item.name !== undefined && (typeof item.name !== 'string' || item.name.length > 4096))) throw Error('Media item file and name must be strings of at most 4096 characters');
+  }
+ }
+ renderRpp({mediaTracks});
+ const findings = [];
+ for (const [trackIndex, track] of mediaTracks.entries()) for (const [itemIndex, item] of track.items.entries()) {
+  // Do not normalize `..`: the filesystem must traverse any preceding symlink first.
+  const checkedPath = path.isAbsolute(item.file) ? item.file : path.dirname(file) + path.sep + item.file;
+  let status, errorCode;
+  try {
+   const info = await stat(checkedPath); // Follows symlinks, including their errors.
+   if (!info.isFile()) status = 'not_regular_file';
+   else { await access(checkedPath, constants.R_OK); status = 'readable'; }
+  } catch (error) {
+   errorCode = typeof error.code === 'string' ? error.code : 'UNKNOWN';
+   status = errorCode === 'ENOENT' || errorCode === 'ENOTDIR' ? 'not_found_at_checked_path' : 'check_failed';
+  }
+  findings.push({trackIndex,itemIndex,file:item.file,checkedPath,status,...(errorCode ? {errorCode} : {})});
+ }
+ return {file,findings,limitations:['Only the exact absolute path or path relative to the intended RPP directory was checked on this computer. ShowKontrol may search additional locations.','Readability is checked at this moment and can change. Symlinks are followed.','Media format, codec, duration, and import into ShowKontrol are not verified.']};
 }
