@@ -194,10 +194,17 @@ export async function createShowTrackCopy({source,destination,sha256,templateNam
  const stack=[];const allowed=new Set(['sktimeline','sktimeline/titles','sktimeline/layers','sktimeline/layers/layer','sktimeline/audio']);
  const p=new SaxesParser();p.on('opentag',tag=>{stack.push(tag.name);if(!allowed.has(stack.join('/')))throw Error('Template contains unsupported content');});
  p.on('text',text=>{if(text.trim())throw Error('Template contains unsupported text');});p.on('cdata',()=>{throw Error('Template contains unsupported content');});p.on('closetag',()=>stack.pop());p.write(template).close();
- const roots=[...template.matchAll(/<sktimeline\b[^>]*>/g)];if(roots.length!==1)throw Error('Unsupported timeline serialization');
- const root=roots[0][0], re=/(\sname\s*=\s*)(["'])(.*?)\2/g;if([...root.matchAll(re)].length!==1)throw Error('Timeline name must exist exactly once');
- const changed=root.replace(re,(_,prefix,quote)=>prefix+quote+xmlAttr(trackName)+quote);
- const text=template.slice(0,roots[0].index)+changed+template.slice(roots[0].index+root.length);parseTimeline(text);
+ const root=parseXmlSpans(template);if(root.name!=='sktimeline'||!Object.hasOwn(root.attributes,'name'))throw Error('Timeline name must exist exactly once');
+ const opening=template.slice(root.start,root.openEnd),attr=/\s+([^\s=/>]+)\s*=\s*(["'])([^"']*(?:(?!\2)["'][^"']*)*)\2/y;let pos='<sktimeline'.length,selected;
+ while(pos<opening.length){
+  if(/^\s*\/?>$/.test(opening.slice(pos)))break;
+  attr.lastIndex=pos;const m=attr.exec(opening);if(!m)throw Error('Unsupported timeline attribute serialization');
+  if(m[1]==='name'){const start=pos+m[0].indexOf(m[2])+1;selected={start,end:start+m[3].length};}pos=attr.lastIndex;
+ }
+ if(!selected)throw Error('Timeline name must exist exactly once');
+ const changed=opening.slice(0,selected.start)+xmlAttr(trackName)+opening.slice(selected.end);
+ const text=template.slice(0,root.start)+changed+template.slice(root.openEnd);
+ if(parseTimeline(text).attributes.name!==trackName)throw Error('Track name could not be preserved in XML');
  const result=await addShowPart({source,destination,sha256,name:partName,text});
  return {...result,trackName,templateName,note:'Added an empty timeline part to an offline show copy. The set list is unchanged. Validate in ShowKontrol.'};
 }
@@ -248,4 +255,25 @@ export async function editCueGraphSettingCopy({source,destination,format,sha256,
  if(checked?.length!==1||checked[0].settings.filter(s=>s.key===key&&s.value===value).length!==1)throw Error('Cue graph setting edit did not produce requested value');
  const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
  return {...result,cueId,nodeId,key,value,note:'Changed an existing cue graph setting in an offline copy. Value semantics and ShowKontrol acceptance are not validated.'};
+}
+
+export async function copyCueGraphBetweenTimelines({source,destination,sha256,template,templateSha256,sourceCueId,targetCueId}){
+ const [target,donor]=await Promise.all([inspectXml({file:source}),inspectXml({file:template})]);
+ if(target.sha256!==sha256)throw Error('Source changed since inspection');if(donor.sha256!==templateSha256)throw Error('Template changed since inspection');
+ const src=cueGraph(donor.xml,sourceCueId),dst=cueGraph(target.xml,targetCueId);if(!src.graph||!src.graph.nodes.length)throw Error('Source cue has no graph');if(dst.graph)throw Error('Target cue already has a graph');
+ const ids=src.graph.nodes.map(n=>n.id);if(ids.some(id=>!/^n\d+$/.test(id))||new Set(ids).size!==ids.length)throw Error('Graph has unsupported or duplicate node IDs');
+ if(src.graph.nodes.some(n=>!['groupin','trigger','action'].includes(n.type)))throw Error('Graph contains node types not present in the verified fixture');
+ if(src.graph.connections.some(c=>!ids.includes(c.fromNode)||!ids.includes(c.toNode)))throw Error('Graph has external or invalid connections');
+ let max=0;for(const id of [...xmlNodeIds(target.xml),...ids])if(/^n\d+$/.test(id)){const n=Number(id.slice(1));if(!Number.isSafeInteger(n)||n>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,n);}
+ if(max+ids.length>1000000000)throw Error('No node IDs remain in the supported range');const idMap=Object.fromEntries(ids.map(id=>[id,`n${++max}`]));
+ const donorRoot=parseXmlSpans(donor.xml),targetRoot=parseXmlSpans(target.xml);
+ const graphs=selectXmlSpans(donorRoot,['sktimeline',{name:'cue',attributes:{id:sourceCueId}},'graph']);if(graphs.length!==1||graphs[0].selfClosing)throw Error('Unsupported source graph serialization');
+ const cues=selectXmlSpans(targetRoot,['sktimeline',{name:'cue',attributes:{id:targetCueId}}]);if(cues.length!==1||!cues[0].selfClosing)throw Error('Target cue must use the simple self-closing form');
+ let graph=donor.xml.slice(graphs[0].start,graphs[0].end);
+ for(const [oldId,newId] of Object.entries(idMap)){const re=new RegExp('((?:\\sid|\\sfromNode|\\stoNode)=["\\\'])'+regexEscape(oldId)+'(["\\\'])','g');graph=graph.replace(re,(_,a,b)=>a+newId+b);}
+ for(const oldId of ids)if(new RegExp('(^|[^A-Za-z0-9_])'+regexEscape(oldId)+'([^A-Za-z0-9_]|$)').test(graph))throw Error('Graph contains node references outside supported attributes');
+ const cue=cues[0],opening=target.xml.slice(cue.start,cue.openEnd).replace(/\s*\/>$/,'>'),modified=target.xml.slice(0,cue.start)+opening+graph+'</cue>'+target.xml.slice(cue.end);
+ const expected={nodes:src.graph.nodes.map(node=>({...node,id:idMap[node.id]})),connections:src.graph.connections.map(c=>({...c,fromNode:idMap[c.fromNode],toNode:idMap[c.toNode]}))};
+ if(JSON.stringify(cueGraph(modified,targetCueId).graph)!==JSON.stringify(expected))throw Error('Copied graph did not match selected source and target cues');
+ const result=await editXmlCopy({source,destination,sha256,edits:[{find:target.xml,replace:modified}]});return {...result,sourceCueId,targetCueId,idMap,note:'Copied a fixture-supported cue graph into an offline timeline copy. Node IDs are checked within this timeline only; validate in ShowKontrol before combining with a show.'};
 }

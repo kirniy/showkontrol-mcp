@@ -206,3 +206,20 @@ test('external graph copying allocates above donor IDs when target IDs are lower
   assert.deepEqual((await inspectCueGraph({file:destination,format:'skshow',name,cueId:'c2'})).graph.nodes.map(n=>n.id),Object.values(expected));
  }
 });
+import {copyCueGraphBetweenTimelines} from './timeline.js';
+test('copy fixture graph between standalone timelines with independent hashes',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-standalone-graph-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'target.sktl'),template=path.join(dir,'donor.sktl'),destination=path.join(dir,'out.sktl');
+ const graph='<graph><node id="n1" type="groupin"><settings/></node><node id="n2" type="trigger"><settings><setting key="trigger.path">cue.active</setting><setting key="trigger.on">State On</setting></settings></node><node id="n3" type="action"><settings><setting key="action.category">Application</setting></settings></node><connection fromNode="n1" fromPin="0" toNode="n2" toPin="0"/><connection fromNode="n2" fromPin="0" toNode="n3" toPin="0"/></graph>';
+ const donor=`<sktimeline version="1"><layers><layer name="L"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Source">${graph}</cue></sktimeline>`,target='<sktimeline version="1"><layers><layer name="L"/></layers><cue id="c2" layer="0" startMs="0" lenMs="40" label="Target"/></sktimeline>';await writeFile(source,target);await writeFile(template,donor);
+ const a=await inspectTimeline({file:source}),b=await inspectTimeline({file:template});const args={source,destination,sha256:a.sha256,template,templateSha256:b.sha256,sourceCueId:'c1',targetCueId:'c2'};const r=await copyCueGraphBetweenTimelines(args);assert.deepEqual(r.idMap,{n1:'n4',n2:'n5',n3:'n6'});
+ const result=(await inspectCueGraph({file:destination,format:'sktl',cueId:'c2'})).graph;assert.equal(result.nodes[1].settings[0].value,'cue.active');assert.deepEqual(result.connections.map(c=>[c.fromNode,c.toNode]),[['n4','n5'],['n5','n6']]);assert.equal(await readFile(source,'utf8'),target);assert.equal(await readFile(template,'utf8'),donor);
+ await assert.rejects(copyCueGraphBetweenTimelines({...args,destination:path.join(dir,'bad'),templateSha256:'0'.repeat(64)}),/Template changed/);
+});
+test('track creation targets actual timeline name instead of text inside info',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-track-name-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.skshow'),destination=path.join(dir,'out.skshow');
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const template='<sktimeline version="1" info=" name=\'fake\'" name="Track 2"><titles/><layers><layer name="Layer 1"/></layers><audio name="Audio 1" follow="0"/></sktimeline>';
+ await writeFile(source,`<skshow>${part('content/Track_2.sktl',template)}${part('patch.skf','<showkontrol version="2"/>')}</skshow>`);const {sha256}=await inspectShowTimeline({file:source,name:'content/Track_2.sktl'});
+ await createShowTrackCopy({source,destination,sha256,templateName:'content/Track_2.sktl',trackName:'New Track',partName:'content/New_Track.sktl'});
+ const info=await inspectShowTimeline({file:destination,name:'content/New_Track.sktl'});assert.equal(info.attributes.name,'New Track');assert.equal(info.attributes.info," name='fake'");
+});

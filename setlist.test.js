@@ -100,3 +100,14 @@ test('remove and move target direct entries instead of commented decoys',async t
  assert.deepEqual((await inspectShowSetlist({file:moved,name})).sets,[{name:'Set 1',tracks:['B','A']}]);
  assert.match((await readShowPart({file:moved,name})).text,/<!-- <entry track="decoy"\/> -->/);
 });
+test('create set expands a self-closing setlist root',async t=>{
+ const {editShowSetlistCopy}=await import('./setlist.js');const {readShowPart}=await import('./xml-copy.js');
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-empty-list-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'in.skshow'),destination=path.join(dir,'out.skshow'),name='Setlist.skls';
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const input='<?xml version="1.0"?><sksetlist version="2" active="0" />';await writeFile(source,`<skshow>${part(name,input)}</skshow>`);
+ const before=await inspectShowSetlist({file:source,name});assert.deepEqual(before.sets,[]);
+ await editShowSetlistCopy({source,destination,sha256:before.sha256,name,operation:'create_set',newSetName:'New & Set'});
+ assert.deepEqual((await inspectShowSetlist({file:destination,name})).sets,[{name:'New & Set',tracks:[]}]);
+ assert.match((await readShowPart({file:destination,name})).text,/<sksetlist version="2" active="0"><set name="New &amp; Set"><\/set><\/sksetlist>/);
+});

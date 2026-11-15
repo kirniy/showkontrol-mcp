@@ -27,6 +27,17 @@ function setEntrySpans(xml){
  });
  parser.write(xml).close();return sets;
 }
+function setlistRootSpan(xml){
+ const parser=new SaxesParser();let depth=0,root;
+ parser.on('opentag',tag=>{
+  if(depth===0)root={start:xml.lastIndexOf('<',parser.position-1),openEnd:parser.position,selfClosing:tag.isSelfClosing};
+  depth++;
+ });
+ parser.on('closetag',()=>{
+  depth--;if(depth===0)root.closeStart=root.selfClosing?null:xml.lastIndexOf('<',parser.position-1);
+ });
+ parser.write(xml).close();return root;
+}
 async function loadShow(file,name){
  if(!name||!name.toLowerCase().endsWith('.skls'))throw Error('Select a .skls part');
  const show=await readShowSnapshot({file});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
@@ -64,8 +75,12 @@ export async function editShowSetlistCopy({source,destination,sha256,name,operat
  if(operation==='create_set'){
   if(typeof newSetName!=='string'||!newSetName.trim()||/[\x00-\x1f\ufffe\uffff]/u.test(newSetName))throw Error('A valid new set name is required');
   if(sets.some(s=>s.name===newSetName))throw Error('Set name already exists');
-  const close=[...xml.matchAll(/<\/sksetlist\s*>/g)];if(close.length!==1)throw Error('Unsupported set list serialization');
-  modified=xml.slice(0,close[0].index)+`<set name="${escapeAttr(newSetName)}"></set>`+xml.slice(close[0].index);
+  const root=setlistRootSpan(xml),entry=`<set name="${escapeAttr(newSetName)}"></set>`;
+  if(root.selfClosing){
+   const opening=xml.slice(root.start,root.openEnd).replace(/\s*\/>$/, '>');
+   modified=xml.slice(0,root.start)+opening+entry+'</sksetlist>'+xml.slice(root.openEnd);
+  }else modified=xml.slice(0,root.closeStart)+entry+xml.slice(root.closeStart);
+  expectedSets=[...sets,{name:newSetName,tracks:[]}];
  }else{
   if(typeof setName!=='string'||sets.filter(s=>s.name===setName).length!==1)throw Error('Set name must occur exactly once');
   const selectedIndex=sets.findIndex(s=>s.name===setName);
