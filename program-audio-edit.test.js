@@ -63,6 +63,7 @@ test('ordered Program audio edits add, edit and remove lanes and clips with only
  assert.deepEqual(inspected.audioClips.map(c=>[c.audioIndex,c.clipIndex,c.attributes.name,c.attributes.file]),[[0,0,'Intro','/new/intro.wav'],[1,0,'Kick','/media/kick.wav']]);
  assert.deepEqual((await validateShow({file:f.destination})).diagnostics.filter(d=>d.severity==='error'),[]);
  assert.deepEqual(r.audioOperations.map(o=>[o.operationIndex,o.action,o.itemIndex,o.audioIndex,o.clipIndex]),[[0,'add_timeline_audio_lane',0,1,undefined],[1,'add_timeline_audio_clip',0,1,0],[2,'edit_timeline_audio_clip',0,0,0],[3,'remove_timeline_audio_clip',0,0,1],[4,'edit_timeline_audio_clip',1,0,0]]);
+ assert.equal(r.audioOperations[0].position,'before_deck');
  assert.deepEqual(r.audioOperations[2].previous,{file:'/orig/intro.wav',wave:'w1',grid:'g1',vol:'1'});
  assert.equal(r.audioOperations[3].removed.name,'Loop');
  assert.equal(r.validation.file,f.destination);
@@ -110,7 +111,8 @@ test('unsafe, ambiguous or unsupported Program audio operations publish nothing'
  const noDeck=program(doors.replace('<deck id="d" foo="1"/>',''),other);
  const cases=[
   [{},[{action:'add_timeline_audio_lane',index:0,laneName:'Main',follow:true}],/lane name already exists/],
-  [{programXml:noDeck},[{action:'add_timeline_audio_lane',index:0,laneName:'New',follow:true}],/exactly one direct deck/],
+  // Without a deck only the app-saved empty-track shape is accepted; here a cue precedes and a marker follows the lane.
+  [{programXml:noDeck},[{action:'add_timeline_audio_lane',index:0,laneName:'New',follow:true}],/directly after layers at the end/],
   [{},[{action:'add_timeline_audio_clip',index:2,audioIndex:0,clip}],/no embedded timeline/],
   [{},[{action:'add_timeline_audio_clip',index:0,audioIndex:5,clip}],/Audio lane does not exist/],
   [{},[{action:'add_timeline_audio_clip',index:0,audioIndex:0,clip:{...clip,trimEndMs:'0'}}],/trimEndMs must exceed/],

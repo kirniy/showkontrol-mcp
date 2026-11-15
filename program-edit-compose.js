@@ -569,7 +569,7 @@ export async function composeProgramEditsCopy(args){
     if(operation.action==='remove_timeline_audio_lane'&&changed.removed.name)await checkLaneNameReferences(destination,changed.removed.name,source,sha256);
     collect({note:changed.note});
     const receipt={operationIndex,action:operation.action,itemIndex:index,audioIndex:changed.audioIndex};
-    if(operation.action==='add_timeline_audio_lane')Object.assign(receipt,{laneName:changed.laneName,follow:changed.follow});
+    if(operation.action==='add_timeline_audio_lane')Object.assign(receipt,{laneName:changed.laneName,follow:changed.follow,position:changed.position});
     else if(operation.action==='add_timeline_audio_clip')Object.assign(receipt,{clipIndex:changed.clipIndex,attributes:operation.clip});
     else if(operation.action==='edit_timeline_audio_clip')Object.assign(receipt,{clipIndex,attributes:changed.attributes,previous:changed.previous});
     else if(operation.action==='remove_timeline_audio_clip')Object.assign(receipt,{clipIndex,removed:changed.removed});
