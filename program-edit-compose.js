@@ -110,6 +110,29 @@ async function checkNodeRemovalReferences(program,index,cueId,nodeId,source,sha2
  }
 }
 
+async function checkItemNodeRemovalReferences(program,index,nodeId,source,sha256){
+ const xml=await readFile(program,'utf8'),root=parseXmlSpans(xml),item=root.children[index];
+ if(root.name!=='skprogram'||!Number.isInteger(index)||index<0||!item||item.name!=='item'||!/^n\d+$/.test(nodeId||''))throw Error('Item and supported node ID are required');
+ const graphs=item.children.filter(n=>n.name==='graph');if(graphs.length!==1)throw Error('Item must contain exactly one graph');
+ const graph=graphs[0],selected=graph.children.filter(n=>n.name==='node'&&n.attributes.id===nodeId);let count=0;
+ function visit(n,parent,inGraph){
+  if(inGraph&&n!==graph&&(n.name==='graph'||(n.name==='node'&&parent!==graph)))throw Error('Nested graph or node structure is unsupported');
+  if(n.name==='node'&&n.attributes.id===nodeId)count++;
+  for(const child of n.children)visit(child,n,inGraph||child===graph);
+ }
+ visit(root,null,false);if(selected.length!==1||count!==1)throw Error('Node ID must be unique in Program');
+ const node=selected[0],pattern=new RegExp(`(?<![A-Za-z0-9_])${nodeId}(?![A-Za-z0-9_])`);
+ if(hasXmlReference(xml.slice(0,node.start)+xml.slice(node.end),pattern))throw Error('Node has surviving XML references in Program');
+ const show=await readShowSnapshot({file:source});if(show.sha256!==sha256)throw Error('Source changed since inspection');if(show.parts.some(p=>!p.valid))throw Error('A part MD5 does not match');
+ const names=new Set();for(const part of show.parts){
+  if(!/\.(?:skf|sktl|sksc|skls|skpr|skcp)$/i.test(part.name))continue;
+  const key=part.name.toLowerCase();if(names.has(key))throw Error('Duplicate supported XML part name');names.add(key);
+  if(key==='content/program.skpr')continue;
+  let text;try{text=readSnapshotPart({snapshot:show,name:part.name}).text;parseXmlSpans(text);}catch{throw Error(`A supported XML part could not be scanned: ${part.name}`);}
+  if(hasXmlReference(text,pattern))throw Error(`Node has surviving XML references in ${part.name}`);
+ }
+}
+
 // Inspect all descendants, including extensions, so that hidden definitions cannot be
 // removed without checking references. Duplicate definitions are ambiguous.
 async function checkRemovalReferences(program,index){
@@ -149,7 +172,7 @@ async function graphAllocationMaximum(program,source,sha256){
  scan(await readFile(program,'utf8'));const names=new Set();
  for(const part of show.parts){
   if(!/\.(?:skf|sktl|sksc|skls|skpr|skcp)$/i.test(part.name))continue;
-  if(names.has(part.name))throw Error('Duplicate supported XML part name');names.add(part.name);
+  const key=part.name.toLowerCase();if(names.has(key))throw Error('Duplicate supported XML part name');names.add(key);
   try{scan(readSnapshotPart({snapshot:show,name:part.name}).text);}catch(e){throw Error(`A supported XML part could not be scanned: ${part.name}: ${e.message}`);}
  }
  return {max,show};
@@ -269,6 +292,25 @@ async function copyProgramNode({timeline,edited,program,source,sha256,currentSha
  return {...result,sha256:digest(final)};
 }
 
+async function changeItemGraphNode({program,destination,source,sha256,currentSha,index,operation,dir,step}){
+ const xml=await readFile(program,'utf8');if(digest(xml)!==currentSha)throw Error('Program changed since inspection');
+ const root=parseXmlSpans(xml),item=root.children[index];
+ if(root.name!=='skprogram'||!Number.isInteger(index)||index<0||!item||item.name!=='item')throw Error('Item index out of range');
+ const graphs=item.children.filter(n=>n.name==='graph');if(graphs.length!==1)throw Error('Target item must contain exactly one graph');
+ const graph=graphs[0],cueId='__composition_item_node__';
+ const timeline=path.join(dir,`item-node-${step}.sktl`),edited=path.join(dir,`item-node-edited-${step}.sktl`);
+ const proxy=`<sktimeline version="1"><cue id="${cueId}">${xml.slice(graph.start,graph.end)}</cue></sktimeline>`;
+ await writeFile(timeline,proxy,{flag:'wx'});
+ const result=operation.action==='copy_item_graph_node'
+  ?await copyProgramNode({timeline,edited,program,source,sha256,currentSha,cueId,operation,dir,step})
+  :await removeCueGraphNodeCopy({source:timeline,destination:edited,format:'sktl',sha256:digest(proxy),cueId,nodeId:operation.nodeId});
+ const output=await readFile(edited,'utf8'),parsed=parseXmlSpans(output),cues=parsed.children.filter(n=>n.name==='cue'&&n.attributes.id===cueId),outGraphs=cues.length===1?cues[0].children.filter(n=>n.name==='graph'):[];
+ if(outGraphs.length!==1)throw Error('Edited item graph could not be verified');
+ const modified=xml.slice(0,graph.start)+output.slice(outGraphs[0].start,outGraphs[0].end)+xml.slice(graph.end);
+ parseXmlSpans(modified);await writeFile(destination,modified,{flag:'wx'});
+ return {...result,sha256:digest(modified)};
+}
+
 async function copyProgramPatchSetting({timeline,edited,program,source,sha256,currentSha,cueId,nodeId,operation,dir,step}){
  const staged=path.join(dir,`setting-program-${step}.skshow`),withTimeline=path.join(dir,`setting-timeline-${step}.skshow`),copied=path.join(dir,`setting-result-${step}.skshow`);
  const attached=await attachShowProgramCopy({source,destination:staged,sha256,program,programSha256:currentSha,replaceExisting:true});
@@ -372,6 +414,15 @@ export async function composeProgramEditsCopy(args){
    if(Object.hasOwn(op,'copiedGraphFromOperation')&&(!Number.isInteger(op.copiedGraphFromOperation)||op.copiedGraphFromOperation<0||typeof op.copiedGraphDonorNodeId!=='string'||!op.copiedGraphDonorNodeId))throw Error('Invalid copiedGraphFromOperation or copiedGraphDonorNodeId');
    if(typeof op.donor!=='string'||!path.isAbsolute(op.donor)||!['skf','skshow'].includes(op.donorFormat)||!/^[a-f0-9]{64}$/.test(op.donorSha256||'')||!/^n\d+$/.test(op.donorNodeId||''))throw Error('Absolute donor path, donor format, donor SHA-256 and node ID are required');
   }
+  else if(op.action==='copy_item_graph_node'){
+   keys(op,['action','index','donorType','donor','donorSha256','donorNodeId'],['donorName','donorCueId','donorFormat']);
+   if(!path.isAbsolute(op.donor||'')||!/^[a-f0-9]{64}$/.test(op.donorSha256||'')||!/^n\d+$/.test(op.donorNodeId||''))throw Error('Absolute donor path, donor SHA-256 and node ID are required');
+   if(op.donorType==='cue'){if(!op.donorName||!op.donorCueId||op.donorFormat!==undefined)throw Error('Cue donor requires donorName and donorCueId');}
+   else if(op.donorType==='patch'){if(!['skf','skshow'].includes(op.donorFormat)||op.donorName!==undefined||op.donorCueId!==undefined)throw Error('Patch donor requires donorFormat');}
+   else throw Error('Unsupported donor type');
+  }
+  else if(op.action==='remove_item_graph_node')keys(op,['action','index','nodeId']);
+  else if(op.action==='edit_copied_item_node_setting')keys(op,['action','index','nodeFromOperation','key','value']);
   else if(op.action==='copy_timeline_cue_node'){
    keys(op,['action','index','donorType','donor','donorSha256','donorNodeId'],['donorName','donorCueId','donorFormat','cueId','cueFromOperation']);
    if(Object.hasOwn(op,'cueFromOperation')===Object.hasOwn(op,'cueId'))throw Error('Provide exactly one of cueId or cueFromOperation');
@@ -405,24 +456,39 @@ export async function composeProgramEditsCopy(args){
  try{
   let step=0;const next=()=>path.join(dir,`${step++}.skpr`);
   const warnings=new Set();
-  const createdCues=[],copiedCueGraphs=[],assembledCueGraphs=[],assembledItemGraphs=[],copiedCueNodes=[],donors=[],invalidatedGraphs=new Set();
+  const createdCues=[],copiedCueGraphs=[],assembledCueGraphs=[],assembledItemGraphs=[],copiedItemNodes=[],copiedCueNodes=[],donors=[],invalidatedGraphs=new Set();
   const collect=result=>{for(const warning of [...(result.warnings??[]),result.note])if(typeof warning==='string'&&warning)warnings.add(warning);};
   let program=next(),current=await extractShowProgramCopy({source,destination:program,sha256});collect(current);
   for(const [operationIndex,operation] of operations.entries()){
    if(operation.action==='remove'){
     await checkRemovalReferences(program,operation.index);
     const item=parseXmlSpans(await readFile(program,'utf8')).children[operation.index];
-    for(const receipt of assembledItemGraphs)if(itemGraphContains(await readFile(program,'utf8'),operation.index,receipt.nodeIds))invalidatedGraphs.add(receipt.operationIndex);
+    for(const receipt of [...assembledItemGraphs,...copiedItemNodes])if(itemGraphContains(await readFile(program,'utf8'),operation.index,receipt.nodeIds??[receipt.nodeId]))invalidatedGraphs.add(receipt.operationIndex);
     const ids=new Set();const visit=n=>{if(n.name==='cue')ids.add(n.attributes.id);for(const c of n.children)visit(c);};visit(item);
     for(const receipt of [...copiedCueNodes,...copiedCueGraphs,...assembledCueGraphs])if(ids.has(receipt.cueId))invalidatedGraphs.add(receipt.operationIndex);
    }
    const destination=next();
-   if(operation.action==='assemble_item_graph'){
+   if(['copy_item_graph_node','remove_item_graph_node'].includes(operation.action)){
+    const xml=await readFile(program,'utf8');
+    if(operation.action==='remove_item_graph_node')await checkItemNodeRemovalReferences(program,operation.index,operation.nodeId,source,sha256);
+    const prior=assembledItemGraphs.filter(r=>!invalidatedGraphs.has(r.operationIndex)&&itemGraphContains(xml,operation.index,r.nodeIds));
+    current=await changeItemGraphNode({program,destination,source,sha256,currentSha:current.sha256,index:operation.index,operation,dir,step});
+    if(operation.action==='remove_item_graph_node'){for(const r of prior)if(r.nodeIds.includes(operation.nodeId))invalidatedGraphs.add(r.operationIndex);}
+    else {const updated=await readFile(destination,'utf8');for(const r of prior)if(!itemGraphContains(updated,operation.index,r.nodeIds))invalidatedGraphs.add(r.operationIndex);}
+    if(operation.action==='copy_item_graph_node'){
+     copiedItemNodes.push({operationIndex,nodeId:current.newNodeId});donors.push({file:operation.donor,sha256:operation.donorSha256});
+    }else for(const r of copiedItemNodes)if(r.nodeId===operation.nodeId&&itemGraphContains(xml,operation.index,[r.nodeId]))invalidatedGraphs.add(r.operationIndex);
+   }else if(operation.action==='edit_copied_item_node_setting'){
+    const ref=operation.nodeFromOperation,entry=Number.isInteger(ref)&&ref>=0&&ref<operationIndex?copiedItemNodes.find(n=>n.operationIndex===ref):undefined;
+    if(!entry||invalidatedGraphs.has(ref)||!itemGraphContains(await readFile(program,'utf8'),operation.index,[entry.nodeId]))throw Error('nodeFromOperation must identify an active prior copy_item_graph_node in the selected item');
+    current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index:operation.index,nodeId:entry.nodeId,key:operation.key,value:operation.value});
+   }else if(operation.action==='assemble_item_graph'){
     if(operation.replaceExisting)await checkItemGraphReplacement(program,operation.index,source,sha256);
     const xml=await readFile(program,'utf8');
     const prior=assembledItemGraphs.filter(r=>!invalidatedGraphs.has(r.operationIndex)&&itemGraphContains(xml,operation.index,r.nodeIds));
     current=await assembleProgramItemGraph({program,destination,source,sha256,currentSha:current.sha256,index:operation.index,operation,dir,step});
     for(const r of prior)invalidatedGraphs.add(r.operationIndex);
+    for(const r of copiedItemNodes)if(itemGraphContains(xml,operation.index,[r.nodeId]))invalidatedGraphs.add(r.operationIndex);
     assembledItemGraphs.push({operationIndex,nodeIds:current.nodeIds});
     for(const node of operation.nodes)donors.push({file:node.template,sha256:node.templateSha256});
    }else if(operation.action==='edit_assembled_item_graph_setting'){
@@ -569,6 +635,6 @@ export async function composeProgramEditsCopy(args){
   if((await inspectShowProgram({file:source})).sha256!==sha256)throw Error('Source changed since inspection');
   for(const donor of donors)if((await inspectXml({file:donor.file})).sha256!==donor.sha256)throw Error('Donor changed since inspection');
   await link(candidate,destination);
-  return {destination,sha256:attached.sha256,programSha256:current.sha256,items:final.items,createdCues,copiedCueGraphs,assembledCueGraphs,assembledItemGraphs,copiedCueNodes,warnings:[...warnings],validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
+  return {destination,sha256:attached.sha256,programSha256:current.sha256,items:final.items,createdCues,copiedCueGraphs,assembledCueGraphs,assembledItemGraphs,copiedItemNodes,copiedCueNodes,warnings:[...warnings],validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
  }finally{await rm(dir,{recursive:true,force:true});}
 }
