@@ -1,7 +1,7 @@
 import {mkdtemp,rm,link,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {extractShowProgramCopy,createProgramCopy,attachShowProgramCopy,inspectShowProgram,editProgramItemGraphSettingCopy,extractProgramTimelineCopy,embedProgramTimelineCopy} from './program.js';
-import {editTimelineCueCopy} from './timeline.js';
+import {editTimelineCueCopy,editCueGraphSettingCopy} from './timeline.js';
 import {validateShow} from './validate-show.js';
 import {parseXmlSpans} from './xml-spans.js';
 import {hasXmlReference} from './xml-references.js';
@@ -45,6 +45,7 @@ export async function composeProgramEditsCopy(args){
   else if(op.action==='edit')keys(op,['action','index'],['start','name','notes']);
   else if(op.action==='remove'){keys(op,['action','index'],['allowContentRemoval']);if(op.allowContentRemoval!==undefined&&typeof op.allowContentRemoval!=='boolean')throw Error('allowContentRemoval must be a boolean');}
   else if(op.action==='edit_graph_setting')keys(op,['action','index','nodeId','key','value']);
+  else if(op.action==='edit_timeline_graph_setting')keys(op,['action','index','cueId','nodeId','key','value']);
   else if(op.action==='edit_timeline_cue'){
    keys(op,['action','index','cueId'],['layer','startMs','lengthMs','label']);
    if(['layer','startMs','lengthMs','label'].every(k=>op[k]===undefined))throw Error('Provide at least one cue field');
@@ -63,12 +64,14 @@ export async function composeProgramEditsCopy(args){
    if(operation.action==='edit_graph_setting'){
     const {index,nodeId,key,value}=operation;
     current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index,nodeId,key,value});
-   }else if(operation.action==='edit_timeline_cue'){
+   }else if(operation.action==='edit_timeline_cue'||operation.action==='edit_timeline_graph_setting'){
     const {index,cueId,layer,startMs,lengthMs,label}=operation;
     const timeline=path.join(dir,`${step++}.sktl`),edited=path.join(dir,`${step++}.sktl`);
     const extracted=await extractProgramTimelineCopy({source:program,destination:timeline,sha256:current.sha256,index});
     collect(extracted);
-    const changed=await editTimelineCueCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,layer,startMs,lengthMs,label});
+    const changed=operation.action==='edit_timeline_cue'
+     ?await editTimelineCueCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,layer,startMs,lengthMs,label})
+     :await editCueGraphSettingCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,nodeId:operation.nodeId,key:operation.key,value:operation.value});
     collect(changed);
     current=await embedProgramTimelineCopy({source:program,destination,sha256:current.sha256,index,donor:edited,donorSha256:changed.sha256,replaceExisting:true});
    }else current=await createProgramCopy({source:program,destination,sha256:current.sha256,operation});

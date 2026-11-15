@@ -262,6 +262,7 @@ const programItemOperation=z.discriminatedUnion('action',programItemOperations);
 const programOperation=z.discriminatedUnion('action',[
  ...programItemOperations,
  z.object({action:z.literal('edit_graph_setting'),index:z.number().int().nonnegative(),nodeId:z.string().min(1),key:z.string().min(1),value:z.string()}).strict(),
+ z.object({action:z.literal('edit_timeline_graph_setting'),index:z.number().int().nonnegative(),cueId:z.string().min(1),nodeId:z.string().min(1),key:z.string().min(1),value:z.string()}).strict(),
  z.object({action:z.literal('edit_timeline_cue'),index:z.number().int().nonnegative(),cueId:z.string().min(1),layer:z.number().int().nonnegative().optional(),startMs:z.number().nonnegative().optional(),lengthMs:z.number().positive().optional(),label:z.string().min(1).optional()}).strict()
 ]);
 add('showkontrol_compose_program_edits_copy','Apply ordered add, edit and remove operations to an existing Program in a new show copy. Indices follow current file order after earlier operations. Validate the result in ShowKontrol.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),operations:z.array(programOperation).min(1).max(100)},composeProgramEditsCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
