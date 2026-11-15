@@ -117,3 +117,29 @@ test('MCP composes ordered cue edits and new cues atomically',async t=>{
  }
  assert.equal(await readFile(source,'utf8'),input);assert.deepEqual((await readdir(dir)).filter(name=>name.startsWith('.showkontrol-')),[]);
 });
+
+test('MCP accepts edit-only composition and rolls back later failures',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-compose-edit-only-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skshow');
+ const timeline='<sktimeline version="1" name="Existing"><layers><layer name="Layer 1"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Original"/></sktimeline>';
+ const input=`<skshow>${part('content/Existing.sktl',timeline)}${part('content/Empty.sktl','<sktimeline version="1" name="Empty"><layers><layer name="Layer 1"/></layers></sktimeline>')}${part('patch.skf','<showkontrol version="2"><graph/></showkontrol>')}</skshow>`;
+ await writeFile(source,input);const sha256=(await inspectShow({file:source})).sha256;
+ const client=new Client({name:'edit-only-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const call=(name,args)=>client.callTool({name,arguments:{source,sha256,...args}});
+ const edit={existingPartName:'content/Existing.sktl',cueEdits:[{cueId:'c1',label:'Edited'}]};
+ const fresh={templateName:'content/Empty.sktl',trackName:'New',partName:'content/New.sktl',cues:[]};
+ for(const multi of [false,true]){
+  const destination=path.join(dir,`edit-${multi}.skshow`),name=multi?'showkontrol_compose_multi_track_show_copy':'showkontrol_compose_show_copy';
+  const result=await call(name,{destination,...(multi?{tracks:[fresh,{...edit,cues:[]}]}:edit)});assert.equal(result.isError,undefined,JSON.stringify(result));
+  const snapshot=await readShowSnapshot({file:destination});assert.match(snapshot.parts.find(p=>p.name===edit.existingPartName).bytes.toString(),/label="Edited"/);
+  assert.equal((await inspectShowTimeline({file:destination,name:edit.existingPartName})).cueElements.length,1);
+ }
+ for(const multi of [false,true]){
+  const destination=path.join(dir,`noop-${multi}.skshow`),name=multi?'showkontrol_compose_multi_track_show_copy':'showkontrol_compose_show_copy';
+  const result=await call(name,{destination,...(multi?{tracks:[{existingPartName:edit.existingPartName,cues:[]}]}:{existingPartName:edit.existingPartName})});assert.equal(result.isError,true);await assert.rejects(readFile(destination),/ENOENT/);
+ }
+ const destination=path.join(dir,'rollback.skshow');
+ const failed=await call('showkontrol_compose_multi_track_show_copy',{destination,tracks:[edit,{...edit,cueEdits:[{cueId:'missing',label:'Bad'}]}]});
+ assert.equal(failed.isError,true);await assert.rejects(readFile(destination),/ENOENT/);assert.equal(await readFile(source,'utf8'),input);
+ assert.deepEqual((await readdir(dir)).filter(name=>name.startsWith('.showkontrol-')),[]);
+});

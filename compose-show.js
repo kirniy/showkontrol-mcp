@@ -17,7 +17,9 @@ export async function composeShowCopy({source, destination, sha256, templateName
  if (audioClipEdits !== undefined && (!Array.isArray(audioClipEdits) || audioClipEdits.length > 100)) throw Error('Audio clip edits must be an array of at most 100 entries');
  if (cueEdits !== undefined && (!Array.isArray(cueEdits) || cueEdits.length > 100)) throw Error('Cue edits must be an array of at most 100 entries');
  if (!existing && cueEdits?.length) throw Error('New tracks contain no existing cues to edit');
- if (!Array.isArray(cues) || cues.length < 1 || cues.length > 100) throw Error('Provide between 1 and 100 cues');
+ if (cues === undefined) cues = [];
+ if (!Array.isArray(cues) || cues.length > 100) throw Error('Provide at most 100 cues');
+ if (existing && !cues.length && !layerOperations?.length && !audioClipEdits?.length && !cueEdits?.length) throw Error('Existing track requires at least one edit or new cue');
  const validDonor = value => value === undefined || value === null || (typeof value === 'object' && path.isAbsolute(value.file || '') && value.sha256 && value.name && value.cueId);
  if (!validDonor(donor) || cues.some(cue => !validDonor(cue?.donor))) throw Error('Donor requires an absolute file path, SHA-256, timeline name and cue ID');
  for (const cue of cues) {

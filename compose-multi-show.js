@@ -7,7 +7,7 @@ import {editPatchBatchCopy} from './batch-patch.js';
 export async function composeMultiTrackShowCopy({source,destination,sha256,tracks,patchOperations}){
  if(!path.isAbsolute(source)||!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Source and destination must be different absolute paths');
  if(!Array.isArray(tracks)||tracks.length<1||tracks.length>20)throw Error('Provide between 1 and 20 tracks');
- for(const track of tracks)if(!track||!Array.isArray(track.cues))throw Error('Each track requires cues');
+ for(const track of tracks)if(!track||typeof track!=='object'||Array.isArray(track))throw Error('Each track must be an object');
  const before=await inspectShow({file:source});if(before.sha256!==sha256)throw Error('Source changed since inspection');
  const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-multitrack-'));
  let current=source,currentHash=sha256,published=false,result;const composed=[],warnings=[];
