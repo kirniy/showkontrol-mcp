@@ -21,13 +21,18 @@ export function parseTimeline(xml) {
  });
  parser.on('closetag',()=>stack.pop());parser.write(xml).close();return result;
 }
+// Edit and removal tools select a clip by audioIndex and its zero-based clipIndex within that lane.
+function withClipIndices(timeline){
+ const next=new Map();
+ return {...timeline,audioClips:timeline.audioClips.map(clip=>{const clipIndex=next.get(clip.audioIndex)??0;next.set(clip.audioIndex,clipIndex+1);return {...clip,clipIndex};})};
+}
 export async function inspectTimeline({file}) {
- const {xml,sha256}=await inspectXml({file});return {file,sha256,...parseTimeline(xml)};
+ const {xml,sha256}=await inspectXml({file});return {file,sha256,...withClipIndices(parseTimeline(xml))};
 }
 export async function inspectShowTimeline({file,name}) {
  if(!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
  const show=await readShowSnapshot({file});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
- const {text}=readSnapshotPart({snapshot:show,name});return {file,name,sha256:show.sha256,...parseTimeline(text)};
+ const {text}=readSnapshotPart({snapshot:show,name});return {file,name,sha256:show.sha256,...withClipIndices(parseTimeline(text))};
 }
 function xmlAttr(s) {
  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]/u.test(s))throw Error('Invalid XML character in cue label');
