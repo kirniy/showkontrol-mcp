@@ -1,3 +1,4 @@
+import {cloneMediaTrackCopy} from './clone-media-track.js';
 import {mkdtemp, link, rm} from 'node:fs/promises';
 import path from 'node:path';
 import {inspectShow} from './xml-copy.js';
@@ -9,19 +10,21 @@ import {copyPatchSettingToCueShowCopy} from './patch-setting-to-cue.js';
 import {compositionWarnings, survivingOpaqueWarnings} from './composition-warnings.js';
 
 // Compose only structures supported by the existing offline writers.
-export async function composeShowCopy({source, destination, sha256, templateName, templateDonor, trackName, partName, existingPartName, cues, donor, set, layerOperations, audioClipEdits, cueRemovals, cueEdits, graphSettingEdits}) {
+export async function composeShowCopy({source, destination, sha256, templateName, templateDonor, mediaClone, trackName, partName, existingPartName, cues, donor, set, layerOperations, audioClipEdits, cueRemovals, cueEdits, graphSettingEdits}) {
  if (!path.isAbsolute(source) || !path.isAbsolute(destination) || path.resolve(source) === path.resolve(destination)) throw Error('Source and destination must be different absolute paths');
  const existing = existingPartName !== undefined;
- if (existing ? typeof existingPartName !== 'string' || !existingPartName || templateName !== undefined || templateDonor !== undefined || trackName !== undefined || partName !== undefined || set !== undefined : ((templateName === undefined) === (templateDonor === undefined)) || (templateName !== undefined && (typeof templateName !== 'string' || !templateName)) || typeof trackName !== 'string' || !trackName || typeof partName !== 'string' || !partName) throw Error('Choose existingPartName alone or templateName, trackName and partName for a new track');
+ const cloning = mediaClone !== undefined;
+ if (cloning && (!mediaClone || typeof mediaClone !== 'object' || Array.isArray(mediaClone) || Object.keys(mediaClone).some(k => !['templateName','cueMode'].includes(k)) || typeof mediaClone.templateName !== 'string' || !mediaClone.templateName || (mediaClone.cueMode !== undefined && !['copy','remove'].includes(mediaClone.cueMode)))) throw Error('Invalid mediaClone');
+ if (existing ? typeof existingPartName !== 'string' || !existingPartName || templateName !== undefined || templateDonor !== undefined || cloning || trackName !== undefined || partName !== undefined || set !== undefined : ([templateName !== undefined, templateDonor !== undefined, cloning].filter(Boolean).length !== 1) || (templateName !== undefined && (typeof templateName !== 'string' || !templateName)) || typeof trackName !== 'string' || !trackName || typeof partName !== 'string' || !partName) throw Error('Choose existingPartName alone or one track template mode with trackName and partName');
  if (existing) partName = existingPartName;
  if (layerOperations !== undefined && (!Array.isArray(layerOperations) || layerOperations.some(op => !op || typeof op !== 'object' || Array.isArray(op) || !['append', 'rename', 'move', 'remove'].includes(op.operation) || typeof op.layerName !== 'string' || !op.layerName || (['append', 'rename'].includes(op.operation) ? typeof op.newName !== 'string' || !op.newName.trim() || op.targetIndex !== undefined : op.newName !== undefined || (op.operation === 'move' ? !Number.isSafeInteger(op.targetIndex) || op.targetIndex < 0 : op.targetIndex !== undefined))))) throw Error('Layer operations require a valid operation, layer name and operation-specific fields');
  if (audioClipEdits !== undefined && (!Array.isArray(audioClipEdits) || audioClipEdits.length > 100)) throw Error('Audio clip edits must be an array of at most 100 entries');
- if (cueRemovals !== undefined && (!Array.isArray(cueRemovals) || cueRemovals.length > 100 || cueRemovals.some(item => !item || typeof item !== 'object' || Array.isArray(item) || typeof item.cueId !== 'string' || !item.cueId || (item.deleteGraph !== undefined && typeof item.deleteGraph !== 'boolean') || Object.keys(item).some(key => !['cueId', 'deleteGraph'].includes(key))))) throw Error('Cue removals must be an array of at most 100 entries with a cue ID and optional deleteGraph boolean');
- if (!existing && cueRemovals?.length) throw Error('New tracks contain no existing cues to remove');
+ if (cueRemovals !== undefined && (!Array.isArray(cueRemovals) || cueRemovals.length > 100 || cueRemovals.some(item => !item || typeof item !== 'object' || Array.isArray(item) || ((typeof item.cueId !== 'string' || !item.cueId) && (typeof item.sourceCueId !== 'string' || !item.sourceCueId)) || (item.cueId !== undefined && item.sourceCueId !== undefined) || (item.deleteGraph !== undefined && typeof item.deleteGraph !== 'boolean') || Object.keys(item).some(key => !['cueId', 'sourceCueId', 'deleteGraph'].includes(key))))) throw Error('Cue removals must be an array of at most 100 entries with a cue ID and optional deleteGraph boolean');
+ if (!existing && !(cloning && mediaClone.cueMode === 'copy') && cueRemovals?.length) throw Error('New tracks contain no existing cues to remove');
  if (cueEdits !== undefined && (!Array.isArray(cueEdits) || cueEdits.length > 100)) throw Error('Cue edits must be an array of at most 100 entries');
  if (graphSettingEdits !== undefined && (!Array.isArray(graphSettingEdits) || graphSettingEdits.length > 100)) throw Error('Graph setting edits must be an array of at most 100 entries');
- if (!existing && graphSettingEdits?.length) throw Error('New tracks contain no existing cue graphs to edit');
- if (!existing && cueEdits?.length) throw Error('New tracks contain no existing cues to edit');
+ if (!existing && !(cloning && mediaClone.cueMode === 'copy') && graphSettingEdits?.length) throw Error('New tracks contain no existing cue graphs to edit');
+ if (!existing && !(cloning && mediaClone.cueMode === 'copy') && cueEdits?.length) throw Error('New tracks contain no existing cues to edit');
  if (cues === undefined) cues = [];
  if (!Array.isArray(cues) || cues.length > 100) throw Error('Provide at most 100 cues');
  if (existing && !cues.length && !layerOperations?.length && !audioClipEdits?.length && !cueRemovals?.length && !cueEdits?.length && !graphSettingEdits?.length) throw Error('Existing track requires at least one edit or new cue');
@@ -38,7 +41,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
  const initial = await inspectShow({file: source});
  if (initial.sha256 !== sha256) throw Error('Source changed since inspection');
  const dir = await mkdtemp(path.join(path.dirname(destination), '.showkontrol-compose-'));
- let current = source, currentHash = sha256, published = false, result, index = 0;
+ let current = source, currentHash = sha256, published = false, result, index = 0, cloneReceipt;
  const added = [], opaqueWarnings = [];
  try {
   const step = async fn => {
@@ -50,12 +53,21 @@ export async function composeShowCopy({source, destination, sha256, templateName
    return value;
   };
   if (existing) await inspectShowTimeline({file: current, name: partName});
+  else if (cloning) cloneReceipt = await step(next => cloneMediaTrackCopy({source: current, destination: next, sha256: currentHash, ...mediaClone, trackName, partName}));
   else await step(next => createShowTrackCopy({source: current, destination: next, sha256: currentHash, templateName, templateDonor, trackName, partName}));
   for (const operation of layerOperations || []) await step(next => editTimelineLayerCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, operation: operation.operation, layerName: operation.layerName, newName: operation.newName, targetIndex: operation.targetIndex}));
   for (const edit of audioClipEdits || []) await step(next => editTimelineAudioClipCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, audioIndex: edit?.audioIndex, clipIndex: edit?.clipIndex, attributes: edit?.attributes}));
-  for (const removal of cueRemovals || []) await step(next => deleteTimelineCueCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, cueId: removal.cueId, deleteGraph: removal.deleteGraph}));
-  for (const edit of cueEdits || []) await step(next => editTimelineCueCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, cueId: edit?.cueId, layer: edit?.layer, startMs: edit?.startMs, lengthMs: edit?.lengthMs, label: edit?.label}));
-  for (const edit of graphSettingEdits || []) await step(next => editCueGraphSettingCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, cueId: edit?.cueId, nodeId: edit?.nodeId, key: edit?.key, value: edit?.value}));
+  const resolveId = (item, field, sourceField, mapping) => {
+   if (cloning) {
+    if (item?.[field] !== undefined || typeof item?.[sourceField] !== 'string' || !Object.hasOwn(mapping || {}, item[sourceField])) throw Error(`Clone requires a valid ${sourceField} selector`);
+    return mapping[item[sourceField]];
+   }
+   if (item?.[sourceField] !== undefined) throw Error(`${sourceField} requires mediaClone`);
+   return item?.[field];
+  };
+  for (const removal of cueRemovals || []) await step(next => deleteTimelineCueCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, cueId: resolveId(removal, 'cueId', 'sourceCueId', cloneReceipt?.cueMapping), deleteGraph: removal.deleteGraph}));
+  for (const edit of cueEdits || []) await step(next => editTimelineCueCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, cueId: resolveId(edit, 'cueId', 'sourceCueId', cloneReceipt?.cueMapping), layer: edit?.layer, startMs: edit?.startMs, lengthMs: edit?.lengthMs, label: edit?.label}));
+  for (const edit of graphSettingEdits || []) await step(next => editCueGraphSettingCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, cueId: resolveId(edit, 'cueId', 'sourceCueId', cloneReceipt?.cueMapping), nodeId: resolveId(edit, 'nodeId', 'sourceNodeId', cloneReceipt?.nodeMapping), key: edit?.key, value: edit?.value}));
   for (const cue of cues) {
    const {layer, startMs, lengthMs, label} = cue || {};
    const created = await step(next => addShowTimelineCueCopy({source: current, destination: next, sha256: currentHash, name: partName, layer, startMs, lengthMs, label}));
@@ -116,7 +128,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
   const warnings = [...await compositionWarnings(current, currentHash, [partName]), ...await survivingOpaqueWarnings(current, currentHash, opaqueWarnings)];
   if (templateDonor !== undefined) await readTrackTemplateDonor(templateDonor);
   await link(current, destination); published = true;
-  result = {destination, sha256: currentHash, ...(existing ? {existingPartName} : {trackName, partName}), cues: added, warnings, ...(set ? {set} : {}), note: 'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};
+  result = {destination, sha256: currentHash, ...(existing ? {existingPartName} : {trackName, partName}), cues: added, ...(cloneReceipt ? {mediaClone: {...cloneReceipt, destination}} : {}), warnings, ...(set ? {set} : {}), note: 'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};
  } finally {
   try { await rm(dir, {recursive: true, force: true}); }
   catch (error) { if (!published) throw error; result.cleanupWarning = `Published copy is valid, but temporary directory cleanup failed: ${dir}: ${error.message}`; }
