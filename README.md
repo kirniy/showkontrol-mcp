@@ -167,9 +167,13 @@ A generated test `.skshow` was opened in ShowKontrol. Its working `session.skf` 
 
 `showkontrol_inspect_program` reads a standalone `.skpr` file and returns its SHA-256 and items in file order. `showkontrol_create_program_copy` creates an empty Program when given only a new destination. To create a schedule in one call, supply `items` with up to 1000 objects containing `start`, `name`, and `notes`. The tool writes the items in the supplied order. Do not combine `items` with a source or operation. The destination must be a new absolute `.skpr` path. The tool validates all items before it publishes the file and does not overwrite an existing file. For an edit, supply the source, its inspected SHA-256, a new destination, and one operation: `add`, `edit`, or `remove`. Item indices are zero-based and use file order. Authored start times are integer local milliseconds since midnight, from 0 through 86399999. Inspection also accepts decimal times in that range and retains their original text during unrelated edits. Names and notes are strings of at most 4096 characters. Removal of an item with a graph or timeline requires `allowContentRemoval: true`. Edits preserve the item's graph and timeline XML. The tools reject unsupported structures.
 
+`showkontrol_inspect_program_item_graph` reads an item's graph from a standalone `.skpr` or a show's canonical Program part. Supply the inspected source SHA-256 and zero-based item index. The result includes node attributes, settings and connections. The tool rejects unsupported or ambiguous graph structures and output larger than 1 MiB. Graph behavior, dependencies and ShowKontrol acceptance are unverified.
+
 `showkontrol_inspect_program_timeline` reads an item's embedded timeline from a standalone Program or a show's canonical Program part. Supply the source SHA-256 and zero-based item index from inspection. The result includes cue, layer, audio, and clip attributes. It omits preview attributes and rejects results larger than 1 MiB. This static inspection does not verify application acceptance or media playback.
 
 These tools use static R27 code evidence. No application fixture or runtime test has verified the generated Program, item sorting, cues, or media. Check a copy in ShowKontrol before use.
+
+Show validation checks direct Program graph node IDs, wire endpoints, and numeric pin fields. It reports partial coverage for graph contents and embedded timelines. It does not prove pin compatibility or runtime behavior.
 
 To edit a schedule in a show copy:
 

@@ -27,8 +27,25 @@ export async function validateShow({file}){
    try{
     const program=inspectProgramBytes(part.bytes);
     add('unverified_program_semantics',scope,'Program outer structure is checked; application behavior, item order, cues and media are not validated','warning');
+    const xml=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(part.bytes),root=parseXmlSpans(xml);
     for(const item of program.items){
-     if(item.hasGraph)add('unsupported_graph',{...scope,path:'skprogram/item/graph',itemIndex:item.index},'Program graph contents are not checked','warning');
+     if(item.hasGraph){
+      const graph=root.children[item.index].children.find(child=>child.name==='graph');
+      const graphScope={...scope,path:'skprogram/item/graph',itemIndex:item.index},local=new Set();
+      add('unsupported_graph',graphScope,'Only direct node IDs, connection endpoints and numeric pins are checked; other graph contents are not checked','warning');
+      for(const node of graph.children.filter(child=>child.name==='node')){
+       const id=node.attributes.id;
+       if(!id){add('missing_node_id',graphScope,'Graph node has no ID');continue;}
+       if(nodeIds.has(id))add('duplicate_node_id',{...graphScope,nodeId:id},`Node ID also occurs in ${nodeIds.get(id)}`);else nodeIds.set(id,part.name);
+       local.add(id);
+      }
+      for(const connection of graph.children.filter(child=>child.name==='connection')){
+       for(const endpoint of ['fromNode','toNode'])if(!connection.attributes[endpoint]||!local.has(connection.attributes[endpoint]))add('unknown_wire_endpoint',{...graphScope,endpoint,nodeId:connection.attributes[endpoint]??null},'Connection endpoint is not a node in this graph');
+       for(const pin of ['fromPin','toPin'])if(!/^\d+$/.test(connection.attributes[pin]??''))add('invalid_wire_pin',{...graphScope,pin,value:connection.attributes[pin]??null},'Connection pin must contain digits');
+      }
+      const visit=node=>{for(const child of node.children){if(['graph','node','connection'].includes(child.name))add('unsupported_graph_structure',graphScope,`Nested ${child.name} is not checked`,'warning');visit(child);}};
+      for(const child of graph.children){if(child.name==='graph')add('unsupported_graph_structure',graphScope,'Nested graph is not checked','warning');visit(child);}
+     }
      if(item.hasTimeline)add('unsupported_timeline',{...scope,path:'skprogram/item/sktimeline',itemIndex:item.index},'Program timeline contents are not checked','warning');
     }
    }catch(error){partCoverage.status='invalid';add('invalid_native_xml',scope,error.message);}

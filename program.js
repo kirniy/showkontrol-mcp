@@ -5,6 +5,7 @@ import path from 'node:path';
 import {parseXmlSpans} from './xml-spans.js';
 import {prepareShowProgram,inspectXml,readShowSnapshot,readSnapshotPart} from './xml-copy.js';
 import {parseTimeline} from './timeline.js';
+import {SaxesParser} from 'saxes';
 
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const escape=s=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&apos;').replaceAll('\t','&#x9;').replaceAll('\n','&#xA;').replaceAll('\r','&#xD;');
@@ -77,7 +78,7 @@ export async function inspectShowProgram({file}){
  const show=await prepareShowProgram({file});if(!show.bytes)return {file,sha256:show.sha256,present:false,note};
  return {file,sha256:show.sha256,present:true,...inspectProgramBytes(show.bytes)};
 }
-async function programTimeline({file,sha256,index}){
+async function programItem({file,sha256,index}){
  if(!/^[a-f0-9]{64}$/.test(sha256||''))throw Error('A source SHA-256 is required');
  if(!Number.isInteger(index)||index<0)throw Error('Item index out of range');
  let input;
@@ -90,7 +91,10 @@ async function programTimeline({file,sha256,index}){
  }else throw Error('An absolute .skpr or .skshow path is required');
  if(input.sha256!==sha256)throw Error('Source changed since inspection');
  if(index>=input.items.length)throw Error('Item index out of range');
- const item=input.items[index],node=item.node.children.find(c=>c.name==='sktimeline');
+ return {input,item:input.items[index]};
+}
+async function programTimeline(args){
+ const {input,item}=await programItem(args),node=item.node.children.find(c=>c.name==='sktimeline');
  if(!node)throw Error('Item has no embedded timeline');
  const element=input.xml.slice(node.start,node.end);
  const timeline=parseTimeline(element);
@@ -102,6 +106,40 @@ export async function inspectProgramTimeline({file,sha256,index}){
  const clean=attributes=>Object.fromEntries(Object.entries(attributes).filter(([key])=>!/preview/i.test(key)));
  const result={file,sha256,index,item:publicItems([item])[0],attributes:clean(timeline.attributes),layers:timeline.layers.map(clean),audio:timeline.audio.map(clean),audioClips:timeline.audioClips.map(c=>({...c,attributes:clean(c.attributes)})),cueElements:timeline.cueElements.map(c=>({...c,attributes:clean(c.attributes)})),note:'Static format evidence only; application acceptance, cues and media playback are unverified. Preview attributes are omitted.'};
  if(Buffer.byteLength(JSON.stringify(result,null,2),'utf8')>1024*1024)throw Error('Timeline inspection output exceeds 1 MiB');
+ return result;
+}
+export async function inspectProgramItemGraph({file,sha256,index}){
+ const {input,item}=await programItem({file,sha256,index});
+ const graphNode=item.node.children.find(c=>c.name==='graph');
+ if(!graphNode)throw Error('Item has no graph');
+ const graph={nodes:[],connections:[]},stack=[],ids=new Set();let node,setting,settingText='',settingsSeen=false;
+ const parser=new SaxesParser();
+ parser.on('doctype',()=>{throw Error('DOCTYPE is not supported');});
+ parser.on('opentag',tag=>{
+  const parent=stack.at(-1);stack.push(tag.name);const depth=stack.length;
+  if(depth===1){if(tag.name!=='graph')throw Error('Expected graph');}
+  else if(depth===2&&parent==='graph'&&tag.name==='node'){
+   if(!tag.attributes.id||!tag.attributes.type||ids.has(tag.attributes.id))throw Error('Graph node ID and type must be present and node IDs unique');
+   ids.add(tag.attributes.id);node={...tag.attributes,settings:[]};settingsSeen=false;graph.nodes.push(node);
+  }else if(depth===2&&parent==='graph'&&tag.name==='connection'){
+   if(!tag.attributes.fromNode||!tag.attributes.toNode)throw Error('Connection endpoints are required');graph.connections.push({...tag.attributes});
+  }else if(depth===3&&parent==='node'&&tag.name==='settings'){
+   if(settingsSeen)throw Error('Multiple node settings elements');settingsSeen=true;
+  }else if(depth===4&&parent==='settings'&&tag.name==='setting'){
+   if(Object.keys(tag.attributes).join(',')!=='key'||!tag.attributes.key||node.settings.some(s=>s.key===tag.attributes.key))throw Error('Setting keys must be present and unique');
+   setting={key:tag.attributes.key};settingText='';
+  }else throw Error('Unsupported graph structure');
+ });
+ const content=s=>{if(setting)settingText+=s;else if(s.trim())throw Error('Unsupported graph text');};
+ parser.on('text',content);parser.on('cdata',content);
+ parser.on('closetag',tag=>{
+  if(tag.name==='setting'){setting.value=settingText;node.settings.push(setting);setting=null;}
+  if(tag.name==='node')node=null;stack.pop();
+ });
+ parser.write(input.xml.slice(graphNode.start,graphNode.end)).close();
+ if(graph.connections.some(c=>!ids.has(c.fromNode)||!ids.has(c.toNode)))throw Error('Connection refers to an unknown node');
+ const result={file,sha256,index,item:publicItems([item])[0],graph,note:'Static format evidence only; graph behavior, dependencies and ShowKontrol application acceptance are unverified.'};
+ if(Buffer.byteLength(JSON.stringify(result,null,2),'utf8')>1024*1024)throw Error('Graph inspection output exceeds 1 MiB');
  return result;
 }
 export async function extractProgramTimelineCopy({source,destination,sha256,index}){
