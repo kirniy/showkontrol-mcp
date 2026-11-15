@@ -1,15 +1,18 @@
 import {mkdtemp, link, rm} from 'node:fs/promises';
 import path from 'node:path';
 import {inspectShow} from './xml-copy.js';
-import {createShowTrackCopy, addShowTimelineCueCopy, copyCueGraphInShow, editCueGraphSettingCopy} from './timeline.js';
+import {createShowTrackCopy, addShowTimelineCueCopy, copyCueGraphInShow, editCueGraphSettingCopy, inspectShowTimeline} from './timeline.js';
 import {addShowSetlistTrackCopy, editShowSetlistCopy, inspectShowSetlist} from './setlist.js';
 import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
 import {editTimelineLayerCopy} from './layers.js';
 import {copyPatchSettingToCueShowCopy} from './patch-setting-to-cue.js';
 
 // Compose only structures supported by the existing offline writers.
-export async function composeShowCopy({source, destination, sha256, templateName, trackName, partName, cues, donor, set, layerOperations}) {
+export async function composeShowCopy({source, destination, sha256, templateName, trackName, partName, existingPartName, cues, donor, set, layerOperations}) {
  if (!path.isAbsolute(source) || !path.isAbsolute(destination) || path.resolve(source) === path.resolve(destination)) throw Error('Source and destination must be different absolute paths');
+ const existing = existingPartName !== undefined;
+ if (existing ? typeof existingPartName !== 'string' || !existingPartName || templateName !== undefined || trackName !== undefined || partName !== undefined || set !== undefined : typeof templateName !== 'string' || !templateName || typeof trackName !== 'string' || !trackName || typeof partName !== 'string' || !partName) throw Error('Choose existingPartName alone or templateName, trackName and partName for a new track');
+ if (existing) partName = existingPartName;
  if (layerOperations !== undefined && (!Array.isArray(layerOperations) || layerOperations.some(op => !op || !['append', 'rename'].includes(op.operation) || typeof op.layerName !== 'string' || !op.layerName || typeof op.newName !== 'string' || !op.newName.trim()))) throw Error('Layer operations require append or rename, a layer name and a new name');
  if (!Array.isArray(cues) || cues.length < 1 || cues.length > 100) throw Error('Provide between 1 and 100 cues');
  const validDonor = value => value === undefined || value === null || (typeof value === 'object' && path.isAbsolute(value.file || '') && value.sha256 && value.name && value.cueId);
@@ -36,7 +39,8 @@ export async function composeShowCopy({source, destination, sha256, templateName
    current = next; currentHash = info.sha256;
    return value;
   };
-  await step(next => createShowTrackCopy({source: current, destination: next, sha256: currentHash, templateName, trackName, partName}));
+  if (existing) await inspectShowTimeline({file: current, name: partName});
+  else await step(next => createShowTrackCopy({source: current, destination: next, sha256: currentHash, templateName, trackName, partName}));
   for (const operation of layerOperations || []) await step(next => editTimelineLayerCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, operation: operation.operation, layerName: operation.layerName, newName: operation.newName}));
   for (const cue of cues) {
    const {layer, startMs, lengthMs, label} = cue || {};
@@ -82,7 +86,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
    await step(next => addShowSetlistTrackCopy({source: current, destination: next, sha256: currentHash, name: set.name, setName: set.setName, trackName}));
   }
   await link(current, destination); published = true;
-  result = {destination, sha256: currentHash, trackName, partName, cues: added, ...(set ? {set} : {}), note: 'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};
+  result = {destination, sha256: currentHash, ...(existing ? {existingPartName} : {trackName, partName}), cues: added, ...(set ? {set} : {}), note: 'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};
  } finally {
   try { await rm(dir, {recursive: true, force: true}); }
   catch (error) { if (!published) throw error; result.cleanupWarning = `Published copy is valid, but temporary directory cleanup failed: ${dir}: ${error.message}`; }

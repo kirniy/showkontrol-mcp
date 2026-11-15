@@ -6,15 +6,15 @@ import {composeShowCopy} from './compose-show.js';
 export async function composeMultiTrackShowCopy({source,destination,sha256,tracks}){
  if(!path.isAbsolute(source)||!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Source and destination must be different absolute paths');
  if(!Array.isArray(tracks)||tracks.length<1||tracks.length>20)throw Error('Provide between 1 and 20 tracks');
- for(const track of tracks)if(!track||typeof track.templateName!=='string'||typeof track.trackName!=='string'||typeof track.partName!=='string'||!Array.isArray(track.cues))throw Error('Each track requires a template name, track name, part name and cues');
+ for(const track of tracks)if(!track||!Array.isArray(track.cues))throw Error('Each track requires cues');
  const before=await inspectShow({file:source});if(before.sha256!==sha256)throw Error('Source changed since inspection');
  const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-multitrack-'));
  let current=source,currentHash=sha256,published=false,result;const composed=[],warnings=[];
  try{
   for(let i=0;i<tracks.length;i++){
-   const {templateName,trackName,partName,cues,donor,set,layerOperations}=tracks[i],next=path.join(dir,`${i}.skshow`);
-   const track=await composeShowCopy({source:current,destination:next,sha256:currentHash,templateName,trackName,partName,cues,donor,set,layerOperations});
-   composed.push({trackName,partName,cues:track.cues,...(set?{set}:{})});
+   const {templateName,trackName,partName,existingPartName,cues,donor,set,layerOperations}=tracks[i],next=path.join(dir,`${i}.skshow`);
+   const track=await composeShowCopy({source:current,destination:next,sha256:currentHash,templateName,trackName,partName,existingPartName,cues,donor,set,layerOperations});
+   composed.push({... (existingPartName !== undefined ? {existingPartName} : {trackName,partName}),cues:track.cues,...(set?{set}:{})});
    if(track.cleanupWarning)warnings.push(track.cleanupWarning);
    if(current!==source)await rm(current);
    current=next;currentHash=track.sha256;
