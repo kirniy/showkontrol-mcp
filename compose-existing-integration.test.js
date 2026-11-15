@@ -166,3 +166,27 @@ test('MCP composes ordered existing graph setting edits atomically',async t=>{
  }
  assert.equal(await readFile(source,'utf8'),input);assert.deepEqual((await readdir(dir)).filter(name=>name.startsWith('.showkontrol-')),[]);
 });
+
+test('MCP removes existing cues before edits and additions atomically',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-compose-remove-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skshow');
+ const timeline='<sktimeline version="1" name="Existing"><layers><layer name="Layer 1"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Graph"><graph><node id="n1" type="trigger"/></graph></cue><cue id="c2" layer="0" startMs="40" lenMs="40" label="Remove"/><cue id="c3" layer="0" startMs="80" lenMs="40" label="Keep"/></sktimeline>';
+ const input=`<skshow>${part('content/Existing.sktl',timeline)}${part('media/file.wav','media bytes')}${part('patch.skf','<showkontrol version="2"><graph/></showkontrol>')}</skshow>`;
+ await writeFile(source,input);const sha256=(await inspectShow({file:source})).sha256;
+ const client=new Client({name:'remove-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const call=(name,args)=>client.callTool({name,arguments:{source,sha256,...args}});
+ const edit={existingPartName:'content/Existing.sktl',cueRemovals:[{cueId:'c1',deleteGraph:true},{cueId:'c2'}],cueEdits:[{cueId:'c3',label:'Kept'}],cues:[{layer:0,startMs:120,lengthMs:40,label:'Replacement'}]};
+ for(const multi of [false,true]){
+  const name=multi?'showkontrol_compose_multi_track_show_copy':'showkontrol_compose_show_copy',destination=path.join(dir,`result-${multi}.skshow`),args={destination,...(multi?{tracks:[edit]}:edit)};
+  const result=await call(name,args);assert.equal(result.isError,undefined,JSON.stringify(result));assert.equal(JSON.parse(result.content[0].text).sha256,(await inspectShow({file:destination})).sha256);
+  const snapshot=await readShowSnapshot({file:destination});assert.ok(snapshot.parts.every(p=>p.valid));assert.equal(snapshot.parts.find(p=>p.name==='media/file.wav').bytes.toString(),'media bytes');
+  assert.deepEqual((await inspectShowTimeline({file:destination,name:edit.existingPartName})).cueElements.map(c=>c.attributes.label),['Kept','Replacement']);assert.equal((await call(name,args)).isError,true);
+  for(const [suffix,bad] of [['graph',{...edit,cueRemovals:[{cueId:'c1'}]}],['order',{...edit,cueEdits:[{cueId:'c1',label:'Gone'}]}],['limit',{...edit,cueRemovals:Array(101).fill({cueId:'c2'})}]]){
+   const failed=path.join(dir,`${suffix}-${multi}.skshow`);assert.equal((await call(name,{destination:failed,...(multi?{tracks:[bad]}:bad)})).isError,true);await assert.rejects(readFile(failed),/ENOENT/);
+  }
+ }
+ const only=path.join(dir,'only.skshow');assert.equal((await call('showkontrol_compose_show_copy',{destination:only,existingPartName:edit.existingPartName,cueRemovals:[{cueId:'c2'}]})).isError,undefined);
+ for(const [name,args] of [['noop',{existingPartName:edit.existingPartName,cueRemovals:[]}],['new',{templateName:edit.existingPartName,trackName:'New',partName:'content/New.sktl',cueRemovals:[{cueId:'c2'}]}]]){const destination=path.join(dir,`${name}.skshow`);assert.equal((await call('showkontrol_compose_show_copy',{destination,...args})).isError,true);await assert.rejects(readFile(destination),/ENOENT/);}
+ const failed=path.join(dir,'rollback.skshow');assert.equal((await call('showkontrol_compose_multi_track_show_copy',{destination:failed,tracks:[edit,{existingPartName:edit.existingPartName,cueRemovals:[{cueId:'missing'}]}]})).isError,true);await assert.rejects(readFile(failed),/ENOENT/);
+ assert.equal(await readFile(source,'utf8'),input);assert.deepEqual((await readdir(dir)).filter(name=>name.startsWith('.showkontrol-')),[]);
+});

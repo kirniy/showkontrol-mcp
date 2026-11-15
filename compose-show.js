@@ -1,7 +1,7 @@
 import {mkdtemp, link, rm} from 'node:fs/promises';
 import path from 'node:path';
 import {inspectShow} from './xml-copy.js';
-import {createShowTrackCopy, addShowTimelineCueCopy, copyCueGraphInShow, editCueGraphSettingCopy, inspectShowTimeline, editTimelineAudioClipCopy, editTimelineCueCopy} from './timeline.js';
+import {createShowTrackCopy, addShowTimelineCueCopy, copyCueGraphInShow, editCueGraphSettingCopy, inspectShowTimeline, editTimelineAudioClipCopy, editTimelineCueCopy, deleteTimelineCueCopy} from './timeline.js';
 import {addShowSetlistTrackCopy, editShowSetlistCopy, inspectShowSetlist} from './setlist.js';
 import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
 import {editTimelineLayerCopy} from './layers.js';
@@ -9,20 +9,22 @@ import {copyPatchSettingToCueShowCopy} from './patch-setting-to-cue.js';
 import {compositionWarnings} from './composition-warnings.js';
 
 // Compose only structures supported by the existing offline writers.
-export async function composeShowCopy({source, destination, sha256, templateName, trackName, partName, existingPartName, cues, donor, set, layerOperations, audioClipEdits, cueEdits, graphSettingEdits}) {
+export async function composeShowCopy({source, destination, sha256, templateName, trackName, partName, existingPartName, cues, donor, set, layerOperations, audioClipEdits, cueRemovals, cueEdits, graphSettingEdits}) {
  if (!path.isAbsolute(source) || !path.isAbsolute(destination) || path.resolve(source) === path.resolve(destination)) throw Error('Source and destination must be different absolute paths');
  const existing = existingPartName !== undefined;
  if (existing ? typeof existingPartName !== 'string' || !existingPartName || templateName !== undefined || trackName !== undefined || partName !== undefined || set !== undefined : typeof templateName !== 'string' || !templateName || typeof trackName !== 'string' || !trackName || typeof partName !== 'string' || !partName) throw Error('Choose existingPartName alone or templateName, trackName and partName for a new track');
  if (existing) partName = existingPartName;
  if (layerOperations !== undefined && (!Array.isArray(layerOperations) || layerOperations.some(op => !op || !['append', 'rename'].includes(op.operation) || typeof op.layerName !== 'string' || !op.layerName || typeof op.newName !== 'string' || !op.newName.trim()))) throw Error('Layer operations require append or rename, a layer name and a new name');
  if (audioClipEdits !== undefined && (!Array.isArray(audioClipEdits) || audioClipEdits.length > 100)) throw Error('Audio clip edits must be an array of at most 100 entries');
+ if (cueRemovals !== undefined && (!Array.isArray(cueRemovals) || cueRemovals.length > 100 || cueRemovals.some(item => !item || typeof item !== 'object' || Array.isArray(item) || typeof item.cueId !== 'string' || !item.cueId || (item.deleteGraph !== undefined && typeof item.deleteGraph !== 'boolean') || Object.keys(item).some(key => !['cueId', 'deleteGraph'].includes(key))))) throw Error('Cue removals must be an array of at most 100 entries with a cue ID and optional deleteGraph boolean');
+ if (!existing && cueRemovals?.length) throw Error('New tracks contain no existing cues to remove');
  if (cueEdits !== undefined && (!Array.isArray(cueEdits) || cueEdits.length > 100)) throw Error('Cue edits must be an array of at most 100 entries');
  if (graphSettingEdits !== undefined && (!Array.isArray(graphSettingEdits) || graphSettingEdits.length > 100)) throw Error('Graph setting edits must be an array of at most 100 entries');
  if (!existing && graphSettingEdits?.length) throw Error('New tracks contain no existing cue graphs to edit');
  if (!existing && cueEdits?.length) throw Error('New tracks contain no existing cues to edit');
  if (cues === undefined) cues = [];
  if (!Array.isArray(cues) || cues.length > 100) throw Error('Provide at most 100 cues');
- if (existing && !cues.length && !layerOperations?.length && !audioClipEdits?.length && !cueEdits?.length && !graphSettingEdits?.length) throw Error('Existing track requires at least one edit or new cue');
+ if (existing && !cues.length && !layerOperations?.length && !audioClipEdits?.length && !cueRemovals?.length && !cueEdits?.length && !graphSettingEdits?.length) throw Error('Existing track requires at least one edit or new cue');
  const validDonor = value => value === undefined || value === null || (typeof value === 'object' && path.isAbsolute(value.file || '') && value.sha256 && value.name && value.cueId);
  if (!validDonor(donor) || cues.some(cue => !validDonor(cue?.donor))) throw Error('Donor requires an absolute file path, SHA-256, timeline name and cue ID');
  for (const cue of cues) {
@@ -51,6 +53,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
   else await step(next => createShowTrackCopy({source: current, destination: next, sha256: currentHash, templateName, trackName, partName}));
   for (const operation of layerOperations || []) await step(next => editTimelineLayerCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, operation: operation.operation, layerName: operation.layerName, newName: operation.newName}));
   for (const edit of audioClipEdits || []) await step(next => editTimelineAudioClipCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, audioIndex: edit?.audioIndex, clipIndex: edit?.clipIndex, attributes: edit?.attributes}));
+  for (const removal of cueRemovals || []) await step(next => deleteTimelineCueCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, cueId: removal.cueId, deleteGraph: removal.deleteGraph}));
   for (const edit of cueEdits || []) await step(next => editTimelineCueCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, cueId: edit?.cueId, layer: edit?.layer, startMs: edit?.startMs, lengthMs: edit?.lengthMs, label: edit?.label}));
   for (const edit of graphSettingEdits || []) await step(next => editCueGraphSettingCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, cueId: edit?.cueId, nodeId: edit?.nodeId, key: edit?.key, value: edit?.value}));
   for (const cue of cues) {
