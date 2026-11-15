@@ -34,3 +34,34 @@ test('MCP composes a show with distinct cue donors and a set entry', async t => 
  const failure = await client.callTool({name:'showkontrol_compose_show_copy',arguments:{...args,destination:path.join(dir,'bad.skshow'),cues:[...args.cues,{layer:99,startMs:300,lengthMs:40,label:'Invalid'}]}});
  assert.equal(failure.isError,true); assert.deepEqual((await readdir(dir)).sort(),['first.skshow','out.skshow','second.skshow','source.skshow']);
 });
+
+test('MCP composes ordered layer edits on single and multiple tracks', async t => {
+ const dir = await mkdtemp(path.join(os.tmpdir(),'sk-compose-layers-mcp-')); t.after(() => rm(dir,{recursive:true,force:true}));
+ const source = path.join(dir,'source.skshow');
+ const sourceText = `<skshow>${part('content/Empty.sktl','<sktimeline version="1" name="Empty"><layers><layer name="Base"/></layers></sktimeline>')}${part('patch.skf','<showkontrol version="2"><graph/></showkontrol>')}</skshow>`;
+ await writeFile(source,sourceText);
+ const client = new Client({name:'compose-layers-integration-test',version:'1'});
+ await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env})); t.after(() => client.close());
+ const call = (name,args) => client.callTool({name,arguments:args});
+ const parse = response => {assert.equal(response.isError,undefined,JSON.stringify(response)); return JSON.parse(response.content[0].text);};
+ const sha256 = parse(await call('showkontrol_inspect_show',{file:source})).sha256;
+ const track = name => ({templateName:'content/Empty.sktl',trackName:name,partName:`content/${name}.sktl`,layerOperations:[{operation:'append',layerName:'Base',newName:'Copy'},{operation:'rename',layerName:'Copy',newName:name}],cues:[{layer:1,startMs:0,lengthMs:40,label:`${name} cue`}]});
+ const verify = async (file,entry,result) => {
+  const timeline = parse(await call('showkontrol_inspect_show_timeline',{file,name:entry.partName}));
+  assert.deepEqual(timeline.layers.map(layer => layer.name),['Base',entry.trackName]);
+  assert.equal(timeline.cueElements[0].attributes.layer,'1');
+  assert.equal(timeline.cueElements[0].attributes.id,result.cues[0].id);
+ };
+ const singlePath=path.join(dir,'single.skshow'), first=track('First');
+ const single=parse(await call('showkontrol_compose_show_copy',{source,destination:singlePath,sha256,...first}));
+ await verify(singlePath,first,single);
+ const multiPath=path.join(dir,'multi.skshow'), second=track('Second'), tracks=[first,second];
+ const multi=parse(await call('showkontrol_compose_multi_track_show_copy',{source,destination:multiPath,sha256,tracks}));
+ for (const [index,entry] of tracks.entries()) await verify(multiPath,entry,multi.tracks[index]);
+ const failed=path.join(dir,'failed.skshow');
+ const failure=await call('showkontrol_compose_multi_track_show_copy',{source,destination:failed,sha256,tracks:[first,{...second,layerOperations:[...second.layerOperations,{operation:'rename',layerName:'Missing',newName:'Bad'}]}]});
+ assert.equal(failure.isError,true,JSON.stringify(failure));
+ await assert.rejects(readFile(failed),/ENOENT/);
+ assert.deepEqual((await readdir(dir)).sort(),['multi.skshow','single.skshow','source.skshow']);
+ assert.equal(await readFile(source,'utf8'),sourceText);
+});

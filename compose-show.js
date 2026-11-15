@@ -4,10 +4,12 @@ import {inspectShow} from './xml-copy.js';
 import {createShowTrackCopy, addShowTimelineCueCopy, copyCueGraphInShow, editCueGraphSettingCopy} from './timeline.js';
 import {addShowSetlistTrackCopy} from './setlist.js';
 import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
+import {editTimelineLayerCopy} from './layers.js';
 
 // Compose only structures supported by the existing offline writers.
-export async function composeShowCopy({source, destination, sha256, templateName, trackName, partName, cues, donor, set}) {
+export async function composeShowCopy({source, destination, sha256, templateName, trackName, partName, cues, donor, set, layerOperations}) {
  if (!path.isAbsolute(source) || !path.isAbsolute(destination) || path.resolve(source) === path.resolve(destination)) throw Error('Source and destination must be different absolute paths');
+ if (layerOperations !== undefined && (!Array.isArray(layerOperations) || layerOperations.some(op => !op || !['append', 'rename'].includes(op.operation) || typeof op.layerName !== 'string' || !op.layerName || typeof op.newName !== 'string' || !op.newName.trim()))) throw Error('Layer operations require append or rename, a layer name and a new name');
  if (!Array.isArray(cues) || cues.length < 1 || cues.length > 100) throw Error('Provide between 1 and 100 cues');
  const validDonor = value => value === undefined || value === null || (typeof value === 'object' && path.isAbsolute(value.file || '') && value.sha256 && value.name && value.cueId);
  if (!validDonor(donor) || cues.some(cue => !validDonor(cue?.donor))) throw Error('Donor requires an absolute file path, SHA-256, timeline name and cue ID');
@@ -32,6 +34,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
    return value;
   };
   await step(next => createShowTrackCopy({source: current, destination: next, sha256: currentHash, templateName, trackName, partName}));
+  for (const operation of layerOperations || []) await step(next => editTimelineLayerCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, operation: operation.operation, layerName: operation.layerName, newName: operation.newName}));
   for (const cue of cues) {
    const {layer, startMs, lengthMs, label} = cue || {};
    const created = await step(next => addShowTimelineCueCopy({source: current, destination: next, sha256: currentHash, name: partName, layer, startMs, lengthMs, label}));

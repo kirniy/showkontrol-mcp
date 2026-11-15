@@ -12,8 +12,8 @@ export async function composeMultiTrackShowCopy({source,destination,sha256,track
  let current=source,currentHash=sha256,published=false,result;const composed=[],warnings=[];
  try{
   for(let i=0;i<tracks.length;i++){
-   const {templateName,trackName,partName,cues,donor,set}=tracks[i],next=path.join(dir,`${i}.skshow`);
-   const track=await composeShowCopy({source:current,destination:next,sha256:currentHash,templateName,trackName,partName,cues,donor,set});
+   const {templateName,trackName,partName,cues,donor,set,layerOperations}=tracks[i],next=path.join(dir,`${i}.skshow`);
+   const track=await composeShowCopy({source:current,destination:next,sha256:currentHash,templateName,trackName,partName,cues,donor,set,layerOperations});
    composed.push({trackName,partName,cues:track.cues,...(set?{set}:{})});
    if(track.cleanupWarning)warnings.push(track.cleanupWarning);
    if(current!==source)await rm(current);

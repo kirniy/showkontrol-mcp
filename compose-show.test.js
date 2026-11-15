@@ -62,3 +62,20 @@ test('selects a donor per cue, uses the default, and skips a graph with null', a
  assert.equal(triggerValue(graphs[0]),'State On'); assert.equal(triggerValue(graphs[1]),'State Off'); assert.equal(graphs[2].graph,null);
  assert.ok(result.cues[0].idMap); assert.ok(result.cues[1].idMap); assert.equal(result.cues[2].idMap,undefined);
 });
+
+test('applies ordered layer operations before adding cues and cleans failures', async t => {
+ const dir = await mkdtemp(path.join(os.tmpdir(), 'sk-compose-layers-')); t.after(() => rm(dir, {recursive:true, force:true}));
+ const source = path.join(dir,'source.skshow'), destination = path.join(dir,'out.skshow');
+ const input = `<skshow>${part('content/Empty.sktl','<sktimeline version="1" name="Empty"><layers><layer name="Layer 1"/></layers></sktimeline>')}${part('patch.skf','<showkontrol version="2"><graph/></showkontrol>')}</skshow>`;
+ await writeFile(source,input);
+ const args = {source,destination,sha256:(await inspectShow({file:source})).sha256,templateName:'content/Empty.sktl',trackName:'New',partName:'content/New.sktl',layerOperations:[{operation:'append',layerName:'Layer 1',newName:'Copy'},{operation:'rename',layerName:'Copy',newName:'Lights'}],cues:[{layer:1,startMs:0,lengthMs:40,label:'Lights cue'}]};
+ await composeShowCopy(args);
+ const timeline = await inspectShowTimeline({file:destination,name:args.partName});
+ assert.deepEqual(timeline.layers.map(layer=>layer.name),['Layer 1','Lights']);
+ assert.equal(timeline.cueElements[0].attributes.layer,'1');
+ const bad = path.join(dir,'bad.skshow');
+ await assert.rejects(composeShowCopy({...args,destination:bad,layerOperations:[...args.layerOperations,{operation:'append',layerName:'Missing',newName:'Bad'}]}),/exactly one/);
+ await assert.rejects(composeShowCopy({...args,destination:bad,layerOperations:[{operation:'remove',layerName:'Lights',newName:'Bad'}]}),/Layer operations/);
+ assert.equal(await readFile(source,'utf8'),input);
+ assert.deepEqual((await readdir(dir)).sort(),['out.skshow','source.skshow']);
+});

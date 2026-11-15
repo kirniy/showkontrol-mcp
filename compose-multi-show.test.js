@@ -29,3 +29,17 @@ test('failed later track leaves no output and removes intermediates',async t=>{
  await assert.rejects(composeMultiTrackShowCopy({source,destination,sha256,tracks:[]}),/between 1 and 20/);
  assert.equal(await readFile(source,'utf8'),input);assert.deepEqual(await readdir(dir),['source.skshow']);
 });
+
+test('applies independent ordered layer operations to both tracks and cleans a later failure',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-multitrack-layers-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skshow'),destination=path.join(dir,'out.skshow');
+ const input=`<skshow>${part('Empty.sktl','<sktimeline version="1" name="Empty"><layers><layer name="Base"/></layers></sktimeline>')}${part('patch.skf','<showkontrol version="2"><graph/></showkontrol>')}</skshow>`;await writeFile(source,input);
+ const sha256=(await inspectShow({file:source})).sha256;
+ const track=(name)=>({templateName:'Empty.sktl',trackName:name,partName:`content/${name}.sktl`,layerOperations:[{operation:'append',layerName:'Base',newName:'Copy'},{operation:'rename',layerName:'Copy',newName:name}],cues:[{layer:1,startMs:0,lengthMs:40,label:'Cue'}]});
+ const tracks=[track('First'),track('Second')];
+ await composeMultiTrackShowCopy({source,destination,sha256,tracks});
+ for(const entry of tracks){const timeline=await inspectShowTimeline({file:destination,name:entry.partName});assert.deepEqual(timeline.layers.map(layer=>layer.name),['Base',entry.trackName]);assert.equal(timeline.cueElements[0].attributes.layer,'1');}
+ const bad=path.join(dir,'bad.skshow');
+ await assert.rejects(composeMultiTrackShowCopy({source,destination:bad,sha256,tracks:[tracks[0],{...tracks[1],layerOperations:[...tracks[1].layerOperations,{operation:'rename',layerName:'Missing',newName:'Bad'}]}]}),/exactly one/);
+ assert.equal(await readFile(source,'utf8'),input);assert.deepEqual((await readdir(dir)).sort(),['out.skshow','source.skshow']);
+});
