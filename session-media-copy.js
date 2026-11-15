@@ -10,7 +10,7 @@ import {composeFullShowCopy} from './compose-full-show.js';
 import {validateShow} from './validate-show.js';
 
 const MAX_MEDIA=100, MAX_REPORTED=100, CHUNK=1024*1024, DEFAULT_MAX_COPY_BYTES=4*1024**3, MAX_WORKING_ENTRIES=10000, MAX_WORKING_DEPTH=32, MAX_COMPARE_BYTES=128*1024*1024;
-const MAP_DIAGNOSTICS=['duplicate_media_map','invalid_media_map_checksum','invalid_media_map_utf8','malformed_mapping','duplicate_source'];
+export const MAP_DIAGNOSTICS=['duplicate_media_map','invalid_media_map_checksum','invalid_media_map_utf8','malformed_mapping','duplicate_source'];
 // Tabs and line breaks would corrupt media.map rows; a BOM would be stripped from the first row.
 const UNSAFE_TEXT=/[\x00-\x1f\x7f\ufeff\ufffe\uffff]/u;
 const READ_FLAGS=constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK;
@@ -22,11 +22,11 @@ function copyLimit(){
  return Number(value);
 }
 // macOS volumes usually compare names without case and after Unicode normalization.
-const nameKey=archivePath=>archivePath.normalize('NFC').toLowerCase();
-function checkSourcePath(file){
+export const nameKey=archivePath=>archivePath.normalize('NFC').toLowerCase();
+export function checkSourcePath(file){
  if(typeof file!=='string'||!path.isAbsolute(file)||path.normalize(file)!==file||file.endsWith('/')||file.length>4096||UNSAFE_TEXT.test(file))throw Error(`Media source must be a normalized absolute file path without control characters: ${JSON.stringify(file)}`);
 }
-function checkSidecarName(name){
+export function checkSidecarName(name){
  if(typeof name!=='string'||!name||name.startsWith('.')||/[/\\:]/.test(name)||UNSAFE_TEXT.test(name)||Buffer.byteLength(name)>255)throw Error(`Sidecar name must be one visible file name of at most 255 bytes without slashes, colons or control characters: ${JSON.stringify(name)}`);
 }
 async function absent(file){
@@ -91,7 +91,7 @@ async function copyVerified({from,planned,target,label}){
   return {size:total,sha256};
  }finally{await handle.close();}
 }
-function appendMappingRows(text,rows){
+export function appendMappingRows(text,rows){
  const eol=text.includes('\r\n')?'\r\n':'\n',separator=text.replace(/^\ufeff/,'')&&!text.endsWith('\n')?eol:'';
  return text+separator+rows.map(row=>`${row.sourcePath}\t${row.archivePath}${eol}`).join('');
 }
