@@ -81,7 +81,7 @@ Local pairing (`SHOWKONTROL_USE_LOCAL_PAIRING=1`) reads the current user's ShowK
 
 - `SHOWKONTROL_URL`: HTTP(S) origin. Default: `http://127.0.0.1:8090`.
 - `SHOWKONTROL_TOKEN`: access token, if required. Store this in the client's private environment, not in a shared configuration file.
-- `SHOWKONTROL_USE_LOCAL_PAIRING=1`: read the current user's ShowKontrol Stream Deck pairing file. This only works with a loopback URL. The file must be enabled. When no URL is specified, its port is used.
+- `SHOWKONTROL_USE_LOCAL_PAIRING=1`: read the current user's ShowKontrol Stream Deck pairing file. This only works with a loopback URL. A file with `enabled` set to `false` is ignored; a file without `enabled` is used. When no URL is specified, its port is used.
 - `SHOWKONTROL_PAIR_KEY`: explicit local pairing key, if required.
 - `SHOWKONTROL_PAIRING_FILE`: path of the pairing file read with `SHOWKONTROL_USE_LOCAL_PAIRING=1`. Default: `~/Documents/TC Supply/WEB/streamdeck.json`.
 - `SHOWKONTROL_TIMEOUT_MS`: request timeout from 100 to 120000 milliseconds. Default: 5000.

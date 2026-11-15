@@ -8,7 +8,7 @@ For live API changes, use a separate test show without connected equipment. Reco
 
 Do not commit credentials, pairing keys, private shows, media, or play data. Keep tokens in the client environment. When a format or behavior is not verified, say so in the documentation.
 
-The optional audio timeline test accepts `SHOWKONTROL_AUDIO_FIXTURE` as an absolute path to an app-reserialized `.sktl` file with a direct audio clip that has a `vol` attribute. The test skips when the variable is absent. It fails if the supplied file cannot be read or does not meet those conditions.
+The optional audio timeline test accepts `SHOWKONTROL_AUDIO_FIXTURE` as the path to an app-reserialized `.sktl` file with a direct audio clip that has a `vol` attribute. The test skips when the variable is absent. It fails if the supplied file cannot be read or does not meet those conditions.
 
 ## Documentation
 
