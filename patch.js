@@ -57,7 +57,7 @@ function openingAttributes(opening){
  let attributes;const parser=new SaxesParser();parser.on('opentag',tag=>{attributes=tag.attributes});
  parser.write(opening.replace(/>$/,'/>')).close();return attributes;
 }
-export async function editPatchSettingCopy({source,destination,format,sha256,nodeId,key,value}){
+export async function editPatchSettingCopy({source,destination,format,sha256,nodeId,key,value,skipRouterTargetCheck=false}){
  if(!/^[A-Za-z0-9_.:-]+$/.test(key)||nodeId!==undefined&&!/^[A-Za-z0-9_.:-]+$/.test(nodeId))throw Error('Unsupported node ID or setting key');
  if(/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(value))throw Error('Invalid XML characters in value');
  const loaded=await sourceData(source,format);if(loaded.sha256!==sha256)throw Error('Source changed since inspection');
@@ -72,6 +72,7 @@ export async function editPatchSettingCopy({source,destination,format,sha256,nod
  const changed=loaded.xml.slice(0,m.start)+replacement+loaded.xml.slice(m.end);
  const checked=parsePatch(changed),checkedSettings=nodeId===undefined?checked.appSettings:checked.nodes.find(n=>n.id===nodeId)?.settings;
  if(checkedSettings?.filter(s=>s.key===key&&s.value===value).length!==1)throw Error('Setting value could not be preserved in XML');
+ if(!skipRouterTargetCheck&&key==='router.name')assertRouterTargetsUnambiguous(loaded.xml,changed,loaded.snapshot);
  const args={source,destination,sha256,edits:[{find:loaded.xml,replace:changed}]};
  const result=format==='skshow'?await editShowPart({...args,name:'patch.skf'}):await editXmlCopy(args);
  return {...result,nodeId:nodeId??null,key,value,note:'Existing setting changed in an offline copy. Value semantics and ShowKontrol compatibility are not validated.'};
@@ -102,7 +103,23 @@ function hasRouterTarget(xml,name){
  parser.on('closetag',()=>{for(let i=targets.length-1;i>=0;i--)if(targets[i].depth===depth){if(targets[i].value.trim()===name.trim())found=true;targets.splice(i,1);}depth--;});
  parser.write(xml).close();return found;
 }
-export async function editPatchGraphCopy({source,destination,format,sha256,operation,nodeId,newNodeId,connection}){
+// A router target that names a router name shared by several routers is ambiguous (validate_show: ambiguous_router_target).
+// Refuse an edit that newly shares a name some router target uses; an ambiguity already in the source is not blamed on the edit.
+function assertRouterTargetsUnambiguous(beforeXml,modifiedXml,snapshot){
+ const names=xml=>{const counts=new Map();for(const n of parsePatch(xml).nodes)if(n.type==='router')for(const s of n.settings.filter(s=>s.key==='router.name')){const name=s.value.trim();counts.set(name,(counts.get(name)??0)+1);}return counts;};
+ const before=names(beforeXml);
+ for(const [name,count] of names(modifiedXml)){
+  if(count<2||!name||(before.get(name)??0)>=2)continue;
+  const where=hasRouterTarget(modifiedXml,name)?'the patch':snapshot?.parts.find(p=>p.name!=='patch.skf'&&/\.(?:skf|sktl|sksc|skls|skpr|skcp)$/i.test(p.name)&&hasRouterTarget(readSnapshotPart({snapshot,name:p.name}).text,name))?.name;
+  if(where)throw Error(`The edit gives router name ${JSON.stringify(name)} to ${count} routers while a router target in ${where} names it, so that target would be ambiguous. To copy a router, use showkontrol_edit_patch_batch_copy and change the copy's router.name in the same call`);
+ }
+}
+// The batch tool checks only its final result, so a copy can be renamed in a later step.
+export async function assertPatchEditKeepsRouterTargets({source,result,format}){
+ const [before,after]=await Promise.all([sourceData(source,format),sourceData(result,format)]);
+ assertRouterTargetsUnambiguous(before.xml,after.xml,after.snapshot);
+}
+export async function editPatchGraphCopy({source,destination,format,sha256,operation,nodeId,newNodeId,connection,skipRouterTargetCheck=false}){
  const idPattern=/^[A-Za-z0-9_.:-]+$/,loaded=await sourceData(source,format);if(loaded.sha256!==sha256)throw Error('Source changed since inspection');
  const parsed=parsePatch(loaded.xml),ids=validateConnections(parsed),{root,graph}=patchGraphSpans(loaded.xml);let modified,expectedNodes=parsed.nodes,expectedConnections=parsed.connections;
  if(operation==='duplicate_node'||operation==='remove_node'){
@@ -134,6 +151,7 @@ export async function editPatchGraphCopy({source,destination,format,sha256,opera
    if(!newNodeId||!idPattern.test(newNodeId)||ids.has(newNodeId)||format==='skshow'&&showNodeIdExists(loaded.snapshot,newNodeId))throw Error('New node ID must be valid and unused');
    const copy=copyNodeXml(loaded.xml,node,newNodeId);modified=loaded.xml.slice(0,node.end)+'\n    '+copy+loaded.xml.slice(node.end);
    const at=parsed.nodes.findIndex(n=>n.id===nodeId);expectedNodes=[...parsed.nodes.slice(0,at+1),{...parsed.nodes[at],id:newNodeId},...parsed.nodes.slice(at+1)];
+   if(!skipRouterTargetCheck)assertRouterTargetsUnambiguous(loaded.xml,modified,loaded.snapshot);
   }
  }else if(operation==='add_connection'||operation==='remove_connection'){
   if(!connection||!idPattern.test(connection.fromNode||'')||!idPattern.test(connection.toNode||'')||!Number.isSafeInteger(connection.fromPin)||connection.fromPin<0||!Number.isSafeInteger(connection.toPin)||connection.toPin<0)throw Error('Connection requires valid node IDs and nonnegative integer pins');
@@ -150,7 +168,7 @@ export async function editPatchGraphCopy({source,destination,format,sha256,opera
  const args={source,destination,sha256,edits:[{find:loaded.xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name:'patch.skf'}):await editXmlCopy(args);
  return {...result,operation,note:'Graph XML changed in an offline copy. Node and pin compatibility, unique input occupancy, and ShowKontrol acceptance are not validated. Duplicated nodes keep their settings, title and position.'};
 }
-export async function copyPatchNode({source,destination,format,sha256,template,templateFormat,templateSha256,nodeId,newNodeId}){
+export async function copyPatchNode({source,destination,format,sha256,template,templateFormat,templateSha256,nodeId,newNodeId,skipRouterTargetCheck=false}){
  const idPattern=/^[A-Za-z0-9_.:-]+$/;if(!nodeId||!idPattern.test(nodeId)||!newNodeId||!idPattern.test(newNodeId))throw Error('Node IDs contain unsupported characters');
  const [target,donor]=await Promise.all([sourceData(source,format),sourceData(template,templateFormat)]);if(target.sha256!==sha256)throw Error('Destination source changed since inspection');if(donor.sha256!==templateSha256)throw Error('Template source changed since inspection');
  const targetPatch=parsePatch(target.xml),donorPatch=parsePatch(donor.xml),targetIds=validateConnections(targetPatch);if(targetIds.has(newNodeId)||format==='skshow'&&showNodeIdExists(target.snapshot,newNodeId))throw Error('New node ID must be unused');
@@ -158,6 +176,7 @@ export async function copyPatchNode({source,destination,format,sha256,template,t
  const nodes=selectXmlSpans(donorRoot,['showkontrol','graph',{name:'node',attributes:{id:nodeId}}]);if(nodes.length!==1)throw Error('Cannot uniquely locate template node serialization');const copy=copyNodeXml(donor.xml,nodes[0],newNodeId);
  const modified=target.xml.slice(0,targetGraph.closeStart)+'    '+copy+'\n  '+target.xml.slice(targetGraph.closeStart),checked=parsePatch(modified);
  if(JSON.stringify(checked.nodes)!==JSON.stringify([...targetPatch.nodes,{...donorNode,id:newNodeId}])||JSON.stringify(checked.connections)!==JSON.stringify(targetPatch.connections))throw Error('Copied node did not match template');
+ if(!skipRouterTargetCheck)assertRouterTargetsUnambiguous(target.xml,modified,target.snapshot);
  const args={source,destination,sha256,edits:[{find:target.xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name:'patch.skf'}):await editXmlCopy(args);
  return {...result,nodeId,newNodeId,note:'Copied the node XML only. Connections are not copied. Title, position, settings, and internal references are unchanged; names may collide. Dependencies, hardware, node compatibility, and ShowKontrol acceptance are not validated.'};
 }
