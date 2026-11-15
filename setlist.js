@@ -1,5 +1,6 @@
 import {SaxesParser} from 'saxes';
 import {readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';
+import {hasXmlReference} from './xml-references.js';
 
 export function parseSetlist(xml) {
  const parser=new SaxesParser(),stack=[],sets=[];let current,root=false;
@@ -16,13 +17,13 @@ function setEntrySpans(xml){
  const parser=new SaxesParser(),stack=[],sets=[];let current,entry;
  parser.on('opentag',tag=>{
   stack.push(tag.name);const path=stack.join('/');
-  if(path==='sksetlist/set'){current={entries:[]};sets.push(current);}
+  if(path==='sksetlist/set'){current={start:xml.lastIndexOf('<',parser.position-1),entries:[]};sets.push(current);}
   if(path==='sksetlist/set/entry')entry={start:xml.lastIndexOf('<',parser.position-1)};
  });
  parser.on('closetag',tag=>{
   const path=stack.join('/');
   if(path==='sksetlist/set/entry'){entry.end=parser.position;current.entries.push(entry);entry=null;}
-  if(path==='sksetlist/set')current=null;
+  if(path==='sksetlist/set'){current.end=parser.position;current=null;}
   stack.pop();
  });
  parser.write(xml).close();return sets;
@@ -70,7 +71,7 @@ export async function addShowSetlistTrackCopy({source,destination,sha256,name,se
 }
 
 // Set and entry operations are restricted to the fixture's simple serialization.
-export async function editShowSetlistCopy({source,destination,sha256,name,operation,setName,newSetName,index,toIndex}){
+export async function editShowSetlistCopy({source,destination,sha256,name,operation,setName,newSetName,index,toIndex,allowContentRemoval}){
  const {show,xml,sets}=await loadShow(source,name);if(show.sha256!==sha256)throw Error('Source changed since inspection');
  if(!['create_set','remove_set','move_set','remove_track','move_track'].includes(operation))throw Error('Unsupported set list operation');
  let modified,expectedSets;
@@ -84,11 +85,30 @@ export async function editShowSetlistCopy({source,destination,sha256,name,operat
   }else modified=xml.slice(0,root.closeStart)+entry+xml.slice(root.closeStart);
   expectedSets=[...sets,{name:newSetName,tracks:[]}];
  }else{
-  if(typeof setName!=='string'||sets.filter(s=>s.name===setName).length!==1)throw Error('Set name must occur exactly once');
+  if(typeof setName!=='string'||!setName||sets.filter(s=>s.name===setName).length!==1)throw Error('Set name must occur exactly once');
   const selectedIndex=sets.findIndex(s=>s.name===setName);
   if(operation==='remove_set'){
-   // Active is a positional index; changing set positions would alter its meaning.
-   throw Error('Removing sets is unsupported until active-set index behavior is verified');
+   if(sets.length<=1)throw Error('Cannot remove the last set; active-set behavior is unverified');
+   if(allowContentRemoval!==undefined&&typeof allowContentRemoval!=='boolean')throw Error('allowContentRemoval must be a boolean');
+   if(sets[selectedIndex].tracks.length&&allowContentRemoval!==true)throw Error('Removing a populated set requires allowContentRemoval');
+   const pattern=new RegExp(setName.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i');
+   for(const part of show.parts.filter(p=>p.name!==name&&/\.(?:skf|sktl|sksc|skls|skpr|skcp)$/i.test(p.name))){
+    const text=readSnapshotPart({snapshot:show,name:part.name}).text;
+    if(hasXmlReference(text,pattern))throw Error(`Set name has a reference in ${part.name}`);
+   }
+   const root=setlistRootSpan(xml),opening=xml.slice(root.start,root.openEnd);
+   const attrs=[...opening.matchAll(/\s+([^\s=\/<>]+)\s*=\s*(["'])(.*?)\2/gs)];
+   const activeMatch=attrs.find(match=>match[1]==='active');
+   if(!activeMatch||!/^(0|[1-9]\d*)$/.test(activeMatch[3]))throw Error('Unsupported active-set index');
+   const active=Number(activeMatch[3]);
+   if(!Number.isSafeInteger(active)||active>=sets.length)throw Error('Unsupported active-set index');
+   const spans=setEntrySpans(xml);if(spans.length!==sets.length)throw Error('Unsupported set serialization');
+   const nextActive=Math.min(sets.length-2,active>=selectedIndex?Math.max(0,active-1):active);
+   const valueOffset=activeMatch.index+activeMatch[0].lastIndexOf(activeMatch[2]+activeMatch[3]+activeMatch[2])+1;
+   const changedOpening=opening.slice(0,valueOffset)+nextActive+opening.slice(valueOffset+activeMatch[3].length);
+   const target=spans[selectedIndex];
+   modified=xml.slice(0,root.start)+changedOpening+xml.slice(root.openEnd,target.start)+xml.slice(target.end);
+   expectedSets=structuredClone(sets);expectedSets.splice(selectedIndex,1);
   }else if(operation==='move_set'){
    throw Error('Reordering sets is unsupported until active-set index behavior is verified');
   }else{
@@ -111,5 +131,5 @@ export async function editShowSetlistCopy({source,destination,sha256,name,operat
  const resultSets=parseSetlist(modified);
  if(expectedSets&&JSON.stringify(resultSets)!==JSON.stringify(expectedSets))throw Error('Set list edit did not produce the expected track order');
  const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});
- return {...result,operation,note:'Changed an offline set list copy. Validate in ShowKontrol.'};
+ return {...result,operation,note:operation==='remove_set'?'Changed an offline set list copy. Literal references in supported XML parts were checked; encoded, computed, external and binary references and ShowKontrol acceptance are not verified.':'Changed an offline set list copy. Validate in ShowKontrol.'};
 }

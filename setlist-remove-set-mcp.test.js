@@ -1,0 +1,33 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,writeFile,readFile,readdir,rm} from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import {createHash} from 'node:crypto';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';
+import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
+import {inspectShow,readShowPart} from './xml-copy.js';
+
+const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+test('MCP removes sets directly and in multi-track composition with rollback',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-remove-mcp-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skshow'),name='Set.skls';
+ const original=`<skshow>${part('Template.sktl','<sktimeline version="1" name="Template"><layers><layer/></layers></sktimeline>')}${part(name,'<sksetlist version="2" active="2"><set name="First"/><set name="Middle"><entry track="Template"/></set><set name="Last"/></sksetlist>')}${part('patch.skf','<showkontrol version="2"><graph/></showkontrol>')}</skshow>`;
+ await writeFile(source,original);const {sha256}=await inspectShow({file:source});
+ const client=new Client({name:'remove-set-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const call=(tool,args)=>client.callTool({name:tool,arguments:args});
+ const direct='showkontrol_edit_show_setlist_copy',compose='showkontrol_compose_multi_track_show_copy';
+ const names=(await client.listTools()).tools.map(tool=>tool.name);assert.ok(names.includes(direct));assert.ok(names.includes(compose));
+ const single=path.join(dir,'single.skshow');
+ const directResult=await call(direct,{source,destination:single,sha256,name,operation:'remove_set',setName:'Middle',allowContentRemoval:true});assert.equal(directResult.isError,undefined,JSON.stringify(directResult));
+ assert.equal((await readShowPart({file:single,name})).text,'<sksetlist version="2" active="1"><set name="First"/><set name="Last"/></sksetlist>');
+ const blocked=path.join(dir,'blocked.skshow');const guard=await call(direct,{source,destination:blocked,sha256,name,operation:'remove_set',setName:'Middle'});assert.equal(guard.isError,true);await assert.rejects(readFile(blocked),{code:'ENOENT'});
+ const tracks=[{templateName:'Template.sktl',trackName:'Track One',partName:'content/One.sktl',cues:[{layer:0,startMs:0,lengthMs:10,label:'Cue 1'}]},{templateName:'Template.sktl',trackName:'Track Two',partName:'content/Two.sktl',cues:[{layer:0,startMs:0,lengthMs:10,label:'Cue 2'}]}];
+ const operations=[{operation:'remove_set',name,setName:'First'},{operation:'remove_set',name,setName:'Middle',allowContentRemoval:true}];
+ const destination=path.join(dir,'composed.skshow');const result=await call(compose,{source,destination,sha256,tracks,setlistOperations:operations});assert.equal(result.isError,undefined,JSON.stringify(result));
+ assert.deepEqual(JSON.parse(result.content[0].text).setlistOperations,operations);
+ assert.equal((await readShowPart({file:destination,name})).text,'<sksetlist version="2" active="0"><set name="Last"/></sksetlist>');
+ const composed=await inspectShow({file:destination});assert.ok(composed.parts.some(p=>p.name==='content/One.sktl'));assert.ok(composed.parts.some(p=>p.name==='content/Two.sktl'));
+ const failed=path.join(dir,'failed.skshow');const failure=await call(compose,{source,destination:failed,sha256,tracks,setlistOperations:[...operations,{operation:'remove_set',name,setName:'Last'}]});assert.equal(failure.isError,true);await assert.rejects(readFile(failed),{code:'ENOENT'});
+ assert.equal(await readFile(source,'utf8'),original);assert.deepEqual((await readdir(dir)).filter(n=>n.startsWith('.showkontrol-')),[]);
+});
