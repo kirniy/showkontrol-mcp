@@ -18,13 +18,15 @@ test('composes cues, donor graphs and a set entry without changing inputs', asyn
  const sourceText = `<skshow>${part('content/Empty.sktl','<sktimeline version="1" name="Empty"><titles/><layers><layer name="Layer 1"/></layers><audio name="Audio 1" follow="0"/></sktimeline>')}${part('content/Setlist.skls','<sksetlist version="2" active="0"><set name="Set 1"/></sksetlist>')}${part('patch.skf','<showkontrol version="2"><graph><node id="n200"/></graph></showkontrol>')}</skshow>`;
  const donorText = `<skshow>${part('content/Donor.sktl',`<sktimeline version="1" name="Donor"><layers><layer name="Layer 1"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Cue">${graph}</cue></sktimeline>`)}</skshow>`;
  await writeFile(source,sourceText); await writeFile(donorFile,donorText);
- const args = {source,destination,sha256:(await inspectShow({file:source})).sha256,templateName:'content/Empty.sktl',trackName:'New Track',partName:'content/New.sktl',cues:[{layer:0,startMs:100,lengthMs:40,label:'One'},{layer:0,startMs:200,lengthMs:40,label:'Two'}],donor:{file:donorFile,sha256:(await inspectShow({file:donorFile})).sha256,name:'content/Donor.sktl',cueId:'c1'},set:{name:'content/Setlist.skls',setName:'Set 1'}};
+ const args = {source,destination,sha256:(await inspectShow({file:source})).sha256,templateName:'content/Empty.sktl',trackName:'New Track',partName:'content/New.sktl',cues:[{layer:0,startMs:100,lengthMs:40,label:'One',settings:[{nodeId:'n155',key:'trigger.path',value:'cue.one'}]},{layer:0,startMs:200,lengthMs:40,label:'Two',settings:[{nodeId:'n155',key:'trigger.path',value:'cue.two'}]}],donor:{file:donorFile,sha256:(await inspectShow({file:donorFile})).sha256,name:'content/Donor.sktl',cueId:'c1'},set:{name:'content/Setlist.skls',setName:'Set 1'}};
  const result = await composeShowCopy(args);
  assert.equal(result.sha256,(await inspectShow({file:destination})).sha256);
  assert.equal(new Set(result.cues.map(c=>c.id)).size,2);
  const timeline = await inspectShowTimeline({file:destination,name:args.partName});
  assert.equal(timeline.cueElements.length,2);
  for (const cue of result.cues) {assert.equal(Object.keys(cue.idMap).length,3); assert.equal((await inspectCueGraph({file:destination,format:'skshow',name:args.partName,cueId:cue.id})).graph.connections.length,2);}
+ for (const [i,cue] of result.cues.entries()) {const graph = (await inspectCueGraph({file:destination,format:'skshow',name:args.partName,cueId:cue.id})).graph; assert.equal(graph.nodes.find(n=>n.id===cue.idMap.n155).settings.find(s=>s.key==='trigger.path').value,['cue.one','cue.two'][i]);}
+ for (const [settings,donorOverride] of [[[{nodeId:'n999',key:'trigger.path',value:'x'}],undefined],[[{nodeId:'n155',key:'missing',value:'x'}],undefined],[[{nodeId:'n155',key:'trigger.path',value:'x'}],null]]) {await assert.rejects(composeShowCopy({...args,destination:path.join(dir,'bad.skshow'),cues:[args.cues[0],{...args.cues[1],settings,donor:donorOverride}]}));}
  assert.deepEqual((await inspectShowSetlist({file:destination,name:args.set.name})).sets,[{name:'Set 1',tracks:['New Track']}]);
  assert.equal(await readFile(source,'utf8'),sourceText); assert.equal(await readFile(donorFile,'utf8'),donorText);
  await assert.rejects(composeShowCopy(args),/EEXIST/);

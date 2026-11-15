@@ -7,9 +7,16 @@ export async function copyPatchSettingToCueShowCopy({source,destination,sha256,n
  const donorRoot=parseXmlSpans(donorXml),donorNodePath=['showkontrol','graph',{name:'node',attributes:{id:templateNodeId}}],donorNodes=selectXmlSpans(donorRoot,donorNodePath),donorSettings=selectXmlSpans(donorRoot,[...donorNodePath,'settings',{name:'setting',attributes:{key}}]);if(donorRoot.name!=='showkontrol'||donorRoot.attributes.version!=='2'||donorNodes.length!==1||donorSettings.length!==1)throw Error('Template node and setting must each occur exactly once');
  const donorNode=donorNodes[0];if(!['trigger','action'].includes(donorNode.attributes.type))throw Error('Only action and trigger settings are supported');const selected=donorSettings[0],settingXml=donorXml.slice(selected.start,selected.end),value=scalarValue(settingXml);
  if(key==='route.router_target'){
-  if(donorNode.attributes.type!=='action'||!/^n\d+$/.test(value)||Object.keys(selected.attributes).length!==1)throw Error('Invalid router target setting');
-  const patchRoot=parseXmlSpans(readSnapshotPart({snapshot:target,name:'patch.skf'}).text),graphs=selectXmlSpans(patchRoot,['showkontrol','graph']),routers=selectXmlSpans(patchRoot,['showkontrol','graph',{name:'node',attributes:{id:value}}]);
-  if(patchRoot.name!=='showkontrol'||patchRoot.attributes.version!=='2'||graphs.length!==1||routers.length!==1||routers[0].attributes.type!=='router')throw Error('Router target must identify exactly one router in the destination patch');
+  if(donorNode.attributes.type!=='action'||!value||value.trim()!==value||Object.keys(selected.attributes).length!==1||(!/^n\d+$/.test(value)&&hasXmlReference(settingXml,/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/)))throw Error('Invalid router target setting');
+  const patchXml=readSnapshotPart({snapshot:target,name:'patch.skf'}).text,patchRoot=parseXmlSpans(patchXml),graphs=selectXmlSpans(patchRoot,['showkontrol','graph']);
+  if(patchRoot.name!=='showkontrol'||patchRoot.attributes.version!=='2'||graphs.length!==1)throw Error('Invalid destination patch for router target');
+  const nodes=graphs[0].children.filter(n=>n.name==='node'),routers=nodes.filter(n=>n.attributes.type==='router');let matches=0;
+  for(const router of routers){
+   const scopes=router.children.filter(n=>n.name==='settings'),names=scopes.flatMap(n=>n.children.filter(c=>c.name==='setting'&&c.attributes.key==='router.name'));
+   if(!/^n\d+$/.test(router.attributes.id||'')||nodes.filter(n=>n.attributes.id===router.attributes.id).length!==1||scopes.length!==1||names.length!==1||Object.keys(names[0].attributes).length!==1||names[0].children.length)throw Error('Invalid destination router structure for router target');
+   const routerName=scalarValue(patchXml.slice(names[0].start,names[0].end));if(!routerName||routerName.trim()!==routerName)throw Error('Invalid destination router name for router target');if(routerName===value)matches++;
+  }
+  if(matches!==1)throw Error('Router target must match exactly one router name in the destination patch');
  }else if(hasXmlReference(settingXml,/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/))throw Error('Setting contains unsupported node references');
  const xml=readSnapshotPart({snapshot:target,name}).text,root=parseXmlSpans(xml),cuePath=['sktimeline',{name:'cue',attributes:{id:cueId}}],nodePath=[...cuePath,'graph',{name:'node',attributes:{id:nodeId}}],nodes=selectXmlSpans(root,nodePath),scopes=selectXmlSpans(root,[...nodePath,'settings']),existing=selectXmlSpans(root,[...nodePath,'settings',{name:'setting',attributes:{key}}]);
  if(root.name!=='sktimeline'||root.attributes.version!=='1'||selectXmlSpans(root,cuePath).length!==1||nodes.length!==1||scopes.length!==1||existing.length>1)throw Error('Target cue, node and settings must be unique');if(nodes[0].attributes.type!==donorNode.attributes.type)throw Error('Template and target node types must match');

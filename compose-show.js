@@ -1,7 +1,7 @@
 import {mkdtemp, link, rm} from 'node:fs/promises';
 import path from 'node:path';
 import {inspectShow} from './xml-copy.js';
-import {createShowTrackCopy, addShowTimelineCueCopy, copyCueGraphInShow} from './timeline.js';
+import {createShowTrackCopy, addShowTimelineCueCopy, copyCueGraphInShow, editCueGraphSettingCopy} from './timeline.js';
 import {addShowSetlistTrackCopy} from './setlist.js';
 
 // Compose only structures supported by the existing offline writers.
@@ -10,6 +10,8 @@ export async function composeShowCopy({source, destination, sha256, templateName
  if (!Array.isArray(cues) || cues.length < 1 || cues.length > 100) throw Error('Provide between 1 and 100 cues');
  const validDonor = value => value === undefined || value === null || (typeof value === 'object' && path.isAbsolute(value.file || '') && value.sha256 && value.name && value.cueId);
  if (!validDonor(donor) || cues.some(cue => !validDonor(cue?.donor))) throw Error('Donor requires an absolute file path, SHA-256, timeline name and cue ID');
+ if (cues.some(cue => cue?.settings !== undefined && (!Array.isArray(cue.settings) || cue.settings.some(setting => !setting || typeof setting.nodeId !== 'string' || !setting.nodeId || typeof setting.key !== 'string' || !setting.key || typeof setting.value !== 'string')))) throw Error('Cue settings require a node ID, key and string value');
+ if (cues.some(cue => cue?.settings?.length && !(cue.donor === undefined ? donor : cue.donor))) throw Error('Cue settings require a donor graph');
  if (set && (!set.name || !set.setName)) throw Error('Set requires a set list part name and set name');
  const initial = await inspectShow({file: source});
  if (initial.sha256 !== sha256) throw Error('Source changed since inspection');
@@ -34,6 +36,10 @@ export async function composeShowCopy({source, destination, sha256, templateName
    if (selectedDonor) {
     const copied = await step(next => copyCueGraphInShow({source: current, destination: next, sha256: currentHash, name: partName, sourceName: selectedDonor.name, sourceCueId: selectedDonor.cueId, targetCueId: created.id, template: selectedDonor.file, templateSha256: selectedDonor.sha256}));
     item.idMap = copied.idMap;
+    for (const {nodeId, key, value} of cue.settings || []) {
+     if (!Object.hasOwn(copied.idMap, nodeId)) throw Error(`Donor graph has no node ID: ${nodeId}`);
+     await step(next => editCueGraphSettingCopy({source: current, destination: next, format: 'skshow', sha256: currentHash, name: partName, cueId: created.id, nodeId: copied.idMap[nodeId], key, value}));
+    }
    }
    added.push(item);
   }
