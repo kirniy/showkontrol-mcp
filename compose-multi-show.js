@@ -15,7 +15,7 @@ export async function composeMultiTrackShowCopy({source,destination,sha256,track
  if(setlistOperations!==undefined){
   if(!Array.isArray(setlistOperations)||setlistOperations.length<1||setlistOperations.length>100)throw Error('Provide between 1 and 100 set list operations');
   for(const op of setlistOperations){
-   const fields={create_setlist:['name','setName'],append_track:['name','setName','trackName'],create_set:['name','newSetName'],remove_set:['name','setName'],remove_track:['name','setName','index'],move_track:['name','setName','index','toIndex']}[op?.operation];
+   const fields={create_setlist:['name','setName'],append_track:['name','setName','trackName'],create_set:['name','newSetName'],remove_set:['name','setName'],move_set:['name','setName','toIndex'],remove_track:['name','setName','index'],move_track:['name','setName','index','toIndex']}[op?.operation];
    if(!fields||Object.keys(op).some(key=>key!=='operation'&&!fields.includes(key)&&!(op.operation==='create_setlist'&&key==='tracks')&&!(op.operation==='remove_set'&&key==='allowContentRemoval'))||fields.some(key=>key==='index'||key==='toIndex'?!Number.isInteger(op[key])||op[key]<0:typeof op[key]!=='string'||!op[key])||(op.operation==='remove_set'&&op.allowContentRemoval!==undefined&&typeof op.allowContentRemoval!=='boolean')||(op.operation==='create_setlist'&&op.tracks!==undefined&&(!Array.isArray(op.tracks)||op.tracks.some(track=>typeof track!=='string'||!track))))throw Error('Invalid set list operation');
   }
  }

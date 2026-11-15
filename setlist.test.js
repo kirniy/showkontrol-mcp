@@ -54,7 +54,7 @@ test('create a set and reorder or remove entries in offline copies',async t=>{
  await call('create_set',{newSetName:'Set & 2'});assert.deepEqual((await inspectShowSetlist({file:path.join(dir,'create_set'),name})).sets.map(s=>s.name),['Set 1','Set & 2']);
  await call('move_track',{setName:'Set 1',index:0,toIndex:2});assert.deepEqual((await inspectShowSetlist({file:path.join(dir,'move_track'),name})).sets[0].tracks,['B','C','A']);
  await call('remove_track',{setName:'Set 1',index:1});assert.deepEqual((await inspectShowSetlist({file:path.join(dir,'remove_track'),name})).sets[0].tracks,['A','C']);
- await assert.rejects(call('move_set',{setName:'Set 1',toIndex:0}),/active-set/);await assert.rejects(call('remove_set',{setName:'Set 1'}),/active-set/);
+ await assert.rejects(call('move_set',{setName:'Set 1',toIndex:0}),/already at the destination/);await assert.rejects(call('remove_set',{setName:'Set 1'}),/active-set/);
  await assert.rejects(call('move_track',{setName:'Set 1',index:0,toIndex:4}),/outside/);await assert.rejects(call('create_set',{newSetName:'Set 1'}),/already exists/);
  await assert.rejects(editShowSetlistCopy({source,destination:path.join(dir,'stale'),sha256:'0'.repeat(64),name,operation:'create_set',newSetName:'X'}),/changed/);assert.equal(await readFile(source,'utf8'),original);
 });
