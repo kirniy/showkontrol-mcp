@@ -71,3 +71,21 @@ test('show snapshots keep the inspected hash and node XML from the same file rea
  await assert.rejects(copyPatchNode({source:target,destination:out,format:'skf',sha256:targetInfo.sha256,template:file,templateFormat:'skshow',templateSha256:before.sha256,nodeId:'n1',newNodeId:'n2'}),/Template source changed/);
  await assert.rejects(readFile(out),{code:'ENOENT'});
 });
+
+test('node removal checks decoded references in the remaining patch and supported show parts',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-remove-ref-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source'),destination=path.join(dir,'out');
+ const node='<node id="a.b" type="action"><settings><setting key="self">a.b</setting></settings></node>';
+ const makePatch=other=>`<showkontrol version="2"><graph>${node}${other}</graph><appSettings/></showkontrol>`;
+ const attempt=async (format,xml)=>{await writeFile(source,xml);const {sha256}=await inspectPatch({file:source,format});return editPatchGraphCopy({source,destination,format,sha256,operation:'remove_node',nodeId:'a.b'});};
+ for(const reference of ['a&#46;b','a<![CDATA[.]]><!-- split -->b']){
+  const xml=makePatch(`<node id="other"><settings><setting key="ref">${reference}</setting></settings></node>`);
+  await assert.rejects(attempt('skf',xml),/reference/);await assert.rejects(readFile(destination),{code:'ENOENT'});
+ }
+ for(const name of ['other.skf','content/track.sktl','content/scene.sksc','sets.skls']){
+  const show=`<skshow>${part('patch.skf',makePatch(''))}${part(name,'<root><setting>a<![CDATA[.]]>b</setting></root>')}</skshow>`;
+  await assert.rejects(attempt('skshow',show),/reference/);await assert.rejects(readFile(destination),{code:'ENOENT'});
+ }
+ await attempt('skf',makePatch('<node id="axb"><settings/></node>'));
+ assert.deepEqual((await inspectPatch({file:destination,format:'skf'})).nodes.map(n=>n.id),['axb']);
+});

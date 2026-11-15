@@ -26,5 +26,8 @@ test('MCP composes patch and track together and rolls back later failures',async
  const output=await readShowSnapshot({file:destination}),original=await readShowSnapshot({file:source});assert.ok(output.parts.every(p=>p.valid));assert.deepEqual(output.parts.find(p=>p.name==='media/untouched.wav').bytes,original.parts.find(p=>p.name==='media/untouched.wav').bytes);
  const failed=path.join(dir,'failed.skshow');const late=await call({...args,destination:failed,tracks:[track,{...track,cues:[{...track.cues[0],layer:99}]}]});assert.equal(late.isError,true);await assert.rejects(readFile(failed),{code:'ENOENT'});
  const collision=await call({...args,destination:failed,patchOperations:[{kind:'graph',operation:'duplicate_node',nodeId:'n1',newNodeId:'n9'}]});assert.equal(collision.isError,true);await assert.rejects(readFile(failed),{code:'ENOENT'});
+ const referenced=path.join(dir,'referenced.skshow');const referencedInput=input.replace(part('content/Existing.sktl',timeline),part('content/Existing.sktl',timeline.replace('Original','n&#49;')));await writeFile(referenced,referencedInput);
+ const referencedSha=(await inspectShow({file:referenced})).sha256;
+ const removal=await call({...args,source:referenced,sha256:referencedSha,destination:failed,patchOperations:[{kind:'setting',nodeId:'n1',key:'level',value:'new'},{kind:'graph',operation:'remove_node',nodeId:'n1'}]});assert.equal(removal.isError,true);assert.match(removal.content[0].text,/reference/);await assert.rejects(readFile(failed),{code:'ENOENT'});assert.equal(await readFile(referenced,'utf8'),referencedInput);
  assert.equal(await readFile(source,'utf8'),input);assert.deepEqual((await readdir(dir)).filter(n=>n.startsWith('.showkontrol-')),[]);
 });

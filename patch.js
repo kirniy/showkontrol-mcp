@@ -1,6 +1,7 @@
 import {SaxesParser} from 'saxes';
 import {inspectXml,editXmlCopy,readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';
 import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';
+import {hasXmlReference} from './xml-references.js';
 
 export function parsePatch(xml) {
  const parser=new SaxesParser(); const stack=[]; let root, graphCount=0, appCount=0, currentNode, currentSetting, text='';
@@ -100,6 +101,14 @@ export async function editPatchGraphCopy({source,destination,format,sha256,opera
   if(operation==='remove_node'){
    if(parsed.connections.some(c=>c.fromNode===nodeId||c.toNode===nodeId))throw Error('Remove all connections referencing this node first');
    modified=loaded.xml.slice(0,node.start)+loaded.xml.slice(node.end);expectedNodes=parsed.nodes.filter(n=>n.id!==nodeId);
+   // Match substrings conservatively: IDs can appear inside arbitrary field values.
+   const pattern=new RegExp(escapeRegex(nodeId));
+   if(hasXmlReference(modified,pattern))throw Error('Node has a reference in the patch');
+   if(loaded.snapshot)for(const part of loaded.snapshot.parts.filter(p=>p.name!=='patch.skf'&&/\.(?:skf|sktl|sksc|skls)$/i.test(p.name))){
+    const xml=readSnapshotPart({snapshot:loaded.snapshot,name:part.name}).text;
+    if(/<!DOCTYPE/i.test(xml))throw Error('DOCTYPE is not supported');
+    if(hasXmlReference(xml,pattern))throw Error('Node has a reference in another show part');
+   }
   }else{
    if(!newNodeId||!idPattern.test(newNodeId)||ids.has(newNodeId)||format==='skshow'&&showNodeIdExists(loaded.snapshot,newNodeId))throw Error('New node ID must be valid and unused');
    const copy=copyNodeXml(loaded.xml,node,newNodeId);modified=loaded.xml.slice(0,node.end)+'\n    '+copy+loaded.xml.slice(node.end);
