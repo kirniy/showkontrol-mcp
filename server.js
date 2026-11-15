@@ -46,7 +46,8 @@ async function request(method, apiPath, body, accept = 'application/json', signa
   return res;
 }
 async function call(method, apiPath, body) {
-  const res = await request(method, apiPath, body);
+  const signal = AbortSignal.timeout(timeout);
+  const res = await request(method, apiPath, body, 'application/json', signal);
   const contentType = res.headers.get('content-type') || '';
   if (contentType.toLowerCase().startsWith('text/event-stream')) { await res.body?.cancel(); throw Error('Use showkontrol_sample_events for event streams'); }
   if (!contentType.includes('json') && !contentType.startsWith('text/') && res.status !== 204) throw Error(`HTTP ${res.status}: binary response is not supported by this tool`);
@@ -54,7 +55,7 @@ async function call(method, apiPath, body) {
   if (Number(res.headers.get('content-length')) > limit) { await res.body?.cancel(); throw Error('Response exceeds 5 MiB limit'); }
   const reader = res.body?.getReader(); const chunks = []; let size = 0;
   try { if (reader) while (true) { const {done,value} = await reader.read(); if(done) break; size += value.length; if(size > limit) throw Error('Response exceeds 5 MiB limit'); chunks.push(value); } }
-  catch(e) { await reader?.cancel().catch(()=>{}); throw e; }
+  catch(e) { await reader?.cancel().catch(()=>{}); if(signal.aborted&&signal.reason?.name==='TimeoutError')throw Error(`${method} ${apiPath}: response timed out${method==='GET'?'':'; the outcome of the write may be unknown'}; no automatic retry`); throw e; }
   const text = Buffer.concat(chunks).toString('utf8');
   let result = text;
   if (text) {try { result = JSON.parse(text); } catch { /* retain text */ }} else result = {};
@@ -86,7 +87,9 @@ async function sampleEvents({durationMs, maxEvents}) {
   const timer = setTimeout(() => controller.abort(), durationMs);
   let reader; const events = []; let buffer = '', size = 0, ended = false;
   try {
-    const res = await request('GET','/events',undefined,'text/event-stream',controller.signal);
+    let res;
+    try { res = await request('GET','/events',undefined,'text/event-stream',controller.signal); }
+    catch(e) { if (controller.signal.aborted) throw Error('Timed out before event stream headers'); throw e; }
     if (!res.ok) { await res.body?.cancel(); throw Error(`HTTP ${res.status}: ${res.statusText}`); }
     if (!(res.headers.get('content-type') || '').toLowerCase().startsWith('text/event-stream')) { await res.body?.cancel(); throw Error('Expected text/event-stream'); }
     reader = res.body?.getReader(); const decoder = new TextDecoder();
@@ -110,9 +113,6 @@ async function sampleEvents({durationMs, maxEvents}) {
       }
     }
     return {events,reason:events.length >= maxEvents ? 'maxEvents' : ended ? 'streamClosed' : 'duration'};
-  } catch(e) {
-    if (controller.signal.aborted) return {events,reason:'duration'};
-    throw e;
   } finally { clearTimeout(timer); controller.abort(); await reader?.cancel().catch(()=>{}); }
 }
 const server = new McpServer({name:'showkontrol',version:'0.1.0'},{instructions:'Use discovery tools to inspect the running show and available node types before live changes. For offline authoring, inspect the show or part first, use the returned SHA-256, and write each change to a new copy. Inspect each new copy before the next edit. Native show formats and some action bodies are not fully verified: report the actual validation level and check the result in ShowKontrol. Live writes are not retried; after a timeout, read the current state before deciding whether to repeat a write.'});

@@ -135,3 +135,27 @@ test('copies node templates between offline show wrappers and patches',async t=>
  await assert.rejects(copyPatchNode({...args,destination:path.join(dir,'bad'),nodeId:'missing'}),/does not exist/);
  await assert.rejects(copyPatchNode(args),/EEXIST/);
 });
+
+test('event sampling reports a timeout before headers but accepts an idle stream',async t=>{
+ let count=0;const mock=http.createServer((req,res)=>{
+  if(++count===1)return;
+  res.writeHead(200,{'Content-Type':'text/event-stream'});res.flushHeaders();
+ });
+ await new Promise(r=>mock.listen(0,'127.0.0.1',r));t.after(()=>{mock.closeAllConnections();mock.close()});
+ const client=new Client({name:'events-timeout-test',version:'1'});
+ await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:{...process.env,SHOWKONTROL_URL:`http://127.0.0.1:${mock.address().port}`}}));t.after(()=>client.close());
+ const args={durationMs:150,maxEvents:5};
+ const timeout=await client.callTool({name:'showkontrol_sample_events',arguments:args});
+ assert.equal(timeout.isError,true);assert.match(timeout.content[0].text,/timed out before event stream headers/i);
+ const idle=await client.callTool({name:'showkontrol_sample_events',arguments:args});
+ assert.equal(idle.isError,undefined);assert.deepEqual(JSON.parse(idle.content[0].text),{events:[],reason:'duration'});
+});
+
+test('write response body timeout reports unknown outcome and does not retry',async t=>{
+ let requests=0;const mock=http.createServer((req,res)=>{requests++;res.writeHead(200,{'Content-Type':'application/json'});res.write('{"ok":');});
+ await new Promise(r=>mock.listen(0,'127.0.0.1',r));t.after(()=>{mock.closeAllConnections();mock.close()});
+ const client=new Client({name:'write-timeout-test',version:'1'});
+ await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:{...process.env,SHOWKONTROL_URL:`http://127.0.0.1:${mock.address().port}`,SHOWKONTROL_TIMEOUT_MS:'150'}}));t.after(()=>client.close());
+ const result=await client.callTool({name:'showkontrol_write',arguments:{method:'POST',path:'/actions/test',body:{}}});
+ assert.equal(result.isError,true);assert.match(result.content[0].text,/response timed out/i);assert.match(result.content[0].text,/outcome of the write may be unknown/i);assert.match(result.content[0].text,/no automatic retry/i);assert.equal(requests,1);
+});
