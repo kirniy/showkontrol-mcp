@@ -105,7 +105,7 @@ test('staged graph reports sanitized validation and transport errors without fur
     assert.equal(seen.length,2);
     assert.match(report.outcomeUnknown,/may have taken effect/);
     if (mode === 'validation') assert.equal(report.error,'HTTP 422: Invalid pin: [redacted] and [redacted] invalid (POST /api/v1/connections)');
-    if (mode === 'connection') assert.match(report.error,/connection failed; no automatic retry/);
+    if (mode === 'connection') assert.match(report.error,/connection failed; the outcome of the write may be unknown; no automatic retry/);
     if (mode === 'timeout') assert.match(report.error,/timed out.*no automatic retry/);
     assert.doesNotMatch(JSON.stringify(report),/token-secret|pair-secret|do not expose/);
   }

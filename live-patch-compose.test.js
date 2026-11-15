@@ -69,3 +69,33 @@ test('redacts the credentials used for the request if pairing changes before the
  const result=await client.callTool({name:'showkontrol_validate_patch',arguments:{spec:{}}});
  assert.equal(result.isError,true);assert.match(result.content[0].text,/HTTP 422: \[redacted\]/);assert.match(result.content[0].text,/wire: \[redacted\]/);assert.doesNotMatch(result.content[0].text,/old-token|old-pair|Could not read/);assert.equal(calls,1);
 });
+
+test('live patch checks returned parameters in order and preserves the response', async t => {
+ const seen=[];
+ const replies=[
+  {ok:true,dryRun:false,nodes:[{id:'first',params:[{key:'x',value:false},{key:'nested',value:{a:[1,true]}},{key:'dup',value:1},{key:'dup',value:1}]},{id:'second',params:[{key:'x',value:2}]}],extra:'preserved'},
+  {ok:true,dryRun:true,nodes:[]},
+  {ok:true,dryRun:false,nodes:[]},
+  {ok:true,dryRun:false,nodes:[{id:'same',params:[]},{id:'same',params:[]}]},
+  'malformed',
+ ];
+ const mock=http.createServer(async (req,res)=>{let body='';for await(const chunk of req) body+=chunk;seen.push(JSON.parse(body));res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(replies[seen.length-1]));});
+ await new Promise(r=>mock.listen(0,'127.0.0.1',r));t.after(()=>mock.close());
+ const client=new Client({name:'readback-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:{...process.env,SHOWKONTROL_URL:`http://127.0.0.1:${mock.address().port}`}}));t.after(()=>client.close());
+ const nodes=[{request:'group',title:'a',params:{x:'not_boolean',nested:{a:[1,true]},missing:1,dup:1}},{request:'group',title:'b',params:{x:2}}];
+ const invoke=async dryRun=>JSON.parse((await client.callTool({name:'showkontrol_compose_live_patch',arguments:{nodes,connections:[],dryRun}})).content[0].text);
+ const live=await invoke(false);
+ assert.deepEqual(Object.fromEntries(Object.entries(live).filter(([key])=>key!=='parameterChecks')),replies[0]);
+ assert.deepEqual(live.parameterChecks,{complete:true,issueCount:3,issues:[{nodeIndex:0,returnedId:'first',key:'x',kind:'mismatch'},{nodeIndex:0,returnedId:'first',key:'missing',kind:'missing'},{nodeIndex:0,returnedId:'first',key:'dup',kind:'ambiguous'}],truncated:false});
+ assert.deepEqual(await invoke(true),replies[1]);
+ for(let i=2;i<5;i++) assert.deepEqual((await invoke(false)).parameterChecks,{complete:false,reason:'invalid_response_or_node_mapping'});
+ assert.equal(seen.length,5);
+});
+
+test('live patch parameter details are bounded and malformed params are ambiguous', async () => {
+ const {checkLivePatchParameters}=await import('./live-patch-checks.js');
+ const params=Object.fromEntries(Array.from({length:105},(_,i)=>[`key${i}`,i]));
+ const checks=checkLivePatchParameters([{params}],{ok:true,dryRun:false,nodes:[{id:'id',params:null}]});
+ assert.equal(checks.complete,true);assert.equal(checks.issueCount,105);assert.equal(checks.issues.length,100);assert.equal(checks.truncated,true);assert.ok(checks.issues.every(issue=>issue.kind==='ambiguous'));
+ for(const response of [{ok:false,dryRun:false,nodes:[{id:'x'}]},{ok:true,dryRun:true,nodes:[{id:'x'}]},{ok:true,dryRun:false,nodes:[{}]},{ok:true,dryRun:false,nodes:[null]}]) assert.equal(checkLivePatchParameters([{params:{}}],response).complete,false);
+});

@@ -159,3 +159,15 @@ test('write response body timeout reports unknown outcome and does not retry',as
  const result=await client.callTool({name:'showkontrol_write',arguments:{method:'POST',path:'/actions/test',body:{}}});
  assert.equal(result.isError,true);assert.match(result.content[0].text,/response timed out/i);assert.match(result.content[0].text,/outcome of the write may be unknown/i);assert.match(result.content[0].text,/no automatic retry/i);assert.equal(requests,1);
 });
+
+test('connection resets report uncertain writes without retrying or exposing query values',async t=>{
+ const requests=[];const mock=http.createServer(async(req,res)=>{for await(const chunk of req){} requests.push(req.method);if(req.url.includes('body')){res.writeHead(200,{'Content-Type':'application/json'});res.write('{');setTimeout(()=>res.destroy(),20);}else req.socket.destroy();});
+ await new Promise(r=>mock.listen(0,'127.0.0.1',r));t.after(()=>{mock.closeAllConnections();mock.close()});
+ const client=new Client({name:'reset-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:{...process.env,SHOWKONTROL_URL:`http://127.0.0.1:${mock.address().port}`}}));t.after(()=>client.close());
+ for(const phase of ['headers','body']){
+  const result=await client.callTool({name:'showkontrol_write',arguments:{method:'PUT',path:`/${phase}?secret=private`,body:{}}});
+  assert.equal(result.isError,true);assert.match(result.content[0].text,/connection failed/i);assert.match(result.content[0].text,/outcome of the write may be unknown/i);assert.match(result.content[0].text,/no automatic retry/i);assert.doesNotMatch(result.content[0].text,/private/);
+ }
+ const read=await client.callTool({name:'showkontrol_read',arguments:{path:'/body'}});assert.equal(read.isError,true);assert.doesNotMatch(read.content[0].text,/outcome of the write/i);
+ assert.deepEqual(requests,['PUT','PUT','GET']);
+});
