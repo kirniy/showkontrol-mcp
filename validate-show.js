@@ -13,6 +13,28 @@ export async function validateShow({file}){
  const snapshot=await readShowSnapshot({file});
  const diagnostics=[],coverage=[],timelines=[],setlists=[],routerTargets=[],nodeIds=new Map();
  const add=(code,scope,message,severity='error')=>diagnostics.push({code,severity,scope,message});
+ const validateTimelineCues=(root,baseScope,basePath,partCoverage)=>{
+  const containers=root.children.filter(n=>n.name==='layers');
+    const cues=root.children.filter(n=>n.name==='cue');
+    const number=/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+    for(const [index,cue] of cues.entries()){
+     const cueScope={...baseScope,path:`${basePath}/cue`,cueIndex:index,...(cue.attributes.id?{cueId:cue.attributes.id}:{})};
+     for(const field of ['layer','startMs','lenMs']){
+      const value=cue.attributes[field],fieldScope={...cueScope,field,value:value??null};
+      if(value===undefined){if(partCoverage.status==='checked')partCoverage.status='partial';add('missing_cue_field',fieldScope,'Cue field is missing; this variant is not checked','warning');continue;}
+      const n=Number(value);
+      if(!number.test(value)||!Number.isFinite(n)||(field==='layer'&&(!Number.isInteger(n)||n<0))||(field==='startMs'&&n<0)||(field==='lenMs'&&n<=0)){
+       add('invalid_cue_field',fieldScope,'Cue field does not meet the supported numeric constraints');continue;
+      }
+      if(field==='layer'){
+       if(containers.length!==1){if(partCoverage.status==='checked')partCoverage.status='partial';add('ambiguous_cue_layers',fieldScope,'A single direct layers element is required to check the cue layer','warning');}
+       else if(n>=containers[0].children.filter(child=>child.name==='layer').length)add('invalid_cue_field',fieldScope,'Cue layer is outside the direct layer count');
+      }
+     }
+    }
+    const visit=(node,path)=>{for(const child of node.children){const childPath=`${path}/${child.name}`;if(child.name==='cue'&&node!==root){if(partCoverage.status==='checked')partCoverage.status='partial';add('unsupported_cue', {...baseScope,path:childPath,...(child.attributes.id?{cueId:child.attributes.id}:{})},'Nested cue timing and layer are not checked','warning');}visit(child,childPath);}};
+    visit(root,basePath);
+ };
  const names=new Map();for(const part of snapshot.parts)names.set(part.name,(names.get(part.name)||0)+1);
  for(const [name,count] of names)if(count>1)add('duplicate_part',{part:name},`Part name occurs ${count} times`);
  const programParts=snapshot.parts.filter(p=>p.name.toLowerCase()==='content/program.skpr');
@@ -26,7 +48,7 @@ export async function validateShow({file}){
    if(part.name.toLowerCase()!=='content/program.skpr')add('unknown_program_part',scope,'Program part is at an unverified path','warning');
    try{
     const program=inspectProgramBytes(part.bytes);
-    add('unverified_program_semantics',scope,'Program outer structure is checked; application behavior, item order, cues and media are not validated','warning');
+    add('unverified_program_semantics',scope,'Program outer structure and selected timeline and graph fields are checked; application behavior, item order and media are not validated','warning');
     const xml=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(part.bytes),root=parseXmlSpans(xml);
     for(const item of program.items){
      if(item.hasGraph){
@@ -46,7 +68,39 @@ export async function validateShow({file}){
       const visit=node=>{for(const child of node.children){if(['graph','node','connection'].includes(child.name))add('unsupported_graph_structure',graphScope,`Nested ${child.name} is not checked`,'warning');visit(child);}};
       for(const child of graph.children){if(child.name==='graph')add('unsupported_graph_structure',graphScope,'Nested graph is not checked','warning');visit(child);}
      }
-     if(item.hasTimeline)add('unsupported_timeline',{...scope,path:'skprogram/item/sktimeline',itemIndex:item.index},'Program timeline contents are not checked','warning');
+     if(item.hasTimeline){
+      const timelineScope={...scope,itemIndex:item.index},basePath='skprogram/item/sktimeline';
+      const timeline=root.children[item.index].children.find(child=>child.name==='sktimeline');
+      add('unsupported_timeline',{...timelineScope,path:basePath},'Cue timing, layers, and direct cue graph IDs and wires are checked; other timeline contents and runtime behavior are not checked','warning');
+      try{parseTimeline(xml.slice(timeline.start,timeline.end));}
+      catch(error){add('invalid_native_xml',{...timelineScope,path:basePath},error.message);continue;}
+      validateTimelineCues(timeline,timelineScope,basePath,partCoverage);
+      const visitGraphs=(node,path,cue)=>{for(const child of node.children){
+       const childPath=`${path}/${child.name}`,directCue=node===timeline&&child.name==='cue';
+       const currentCue=directCue?child:cue;
+       if(child.name==='graph'){
+        const graphScope={...timelineScope,path:childPath,...(currentCue?.attributes.id?{cueId:currentCue.attributes.id}:{})};
+        const supported=node===currentCue&&timeline.children.includes(currentCue);
+        if(!supported)add('unsupported_graph',graphScope,'Graph path is unsupported; graph contents are not checked','warning');
+        else{
+         const local=new Set();
+         for(const graphNode of child.children.filter(n=>n.name==='node')){
+          const id=graphNode.attributes.id;
+          if(!id){add('missing_node_id',graphScope,'Graph node has no ID');continue;}
+          if(nodeIds.has(id))add('duplicate_node_id',{...graphScope,nodeId:id},`Node ID also occurs in ${nodeIds.get(id)}`);else nodeIds.set(id,part.name);
+          local.add(id);
+         }
+         for(const connection of child.children.filter(n=>n.name==='connection')){
+          for(const endpoint of ['fromNode','toNode'])if(!connection.attributes[endpoint]||!local.has(connection.attributes[endpoint]))add('unknown_wire_endpoint',{...graphScope,endpoint,nodeId:connection.attributes[endpoint]??null},'Connection endpoint is not a node in this graph');
+          for(const pin of ['fromPin','toPin'])if(!/^\d+$/.test(connection.attributes[pin]??''))add('invalid_wire_pin',{...graphScope,pin,value:connection.attributes[pin]??null},'Connection pin must contain digits');
+         }
+         const nested=n=>{for(const c of n.children){if(['graph','node','connection'].includes(c.name))add('unsupported_graph_structure',graphScope,`Nested ${c.name} is not checked`,'warning');nested(c);}};
+         for(const c of child.children){if(c.name==='graph')add('unsupported_graph_structure',graphScope,'Nested graph is not checked','warning');nested(c);}
+        }
+       }else visitGraphs(child,childPath,currentCue);
+      }};
+      visitGraphs(timeline,basePath,null);
+     }
     }
    }catch(error){partCoverage.status='invalid';add('invalid_native_xml',scope,error.message);}
    continue;
@@ -60,27 +114,9 @@ export async function validateShow({file}){
   try{
    if(/\.sktl$/i.test(part.name)){
     const timeline=parseTimeline(xml);timelines.push({part:part.name,name:timeline.attributes.name??''});
-    const root=parseXmlSpans(xml),containers=root.children.filter(n=>n.name==='layers');
-    const cues=root.children.filter(n=>n.name==='cue');
+    const root=parseXmlSpans(xml);
     diagnostics.push(...storedStoppedWarnings(xml,part.name,root));
-    const number=/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
-    for(const [index,cue] of cues.entries()){
-     const cueScope={part:part.name,path:'sktimeline/cue',cueIndex:index,...(cue.attributes.id?{cueId:cue.attributes.id}:{})};
-     for(const field of ['layer','startMs','lenMs']){
-      const value=cue.attributes[field],fieldScope={...cueScope,field,value:value??null};
-      if(value===undefined){if(partCoverage.status==='checked')partCoverage.status='partial';add('missing_cue_field',fieldScope,'Cue field is missing; this variant is not checked','warning');continue;}
-      const n=Number(value);
-      if(!number.test(value)||!Number.isFinite(n)||(field==='layer'&&(!Number.isInteger(n)||n<0))||(field==='startMs'&&n<0)||(field==='lenMs'&&n<=0)){
-       add('invalid_cue_field',fieldScope,'Cue field does not meet the supported numeric constraints');continue;
-      }
-      if(field==='layer'){
-       if(containers.length!==1){if(partCoverage.status==='checked')partCoverage.status='partial';add('ambiguous_cue_layers',fieldScope,'A single direct layers element is required to check the cue layer','warning');}
-       else if(n>=containers[0].children.filter(child=>child.name==='layer').length)add('invalid_cue_field',fieldScope,'Cue layer is outside the direct layer count');
-      }
-     }
-    }
-    const visit=(node,path)=>{for(const child of node.children){const childPath=`${path}/${child.name}`;if(child.name==='cue'&&node!==root){if(partCoverage.status==='checked')partCoverage.status='partial';add('unsupported_cue', {part:part.name,path:childPath,...(child.attributes.id?{cueId:child.attributes.id}:{})},'Nested cue timing and layer are not checked','warning');}visit(child,childPath);}};
-    visit(root,'sktimeline');
+    validateTimelineCues(root,scope,'sktimeline',partCoverage);
    }
    if(/\.skls$/i.test(part.name))setlists.push({part:part.name,sets:parseSetlist(xml)});
    if(!/\.(?:skf|sktl|sksc)$/i.test(part.name))continue;

@@ -175,7 +175,7 @@ export async function copyCueGraphInShow({source,destination,sha256,name,sourceN
  if(nodes.some(n=>!['groupin','trigger','action'].includes(n.type)))throw Error('Graph contains node types not present in the verified fixture');
  if(src.graph.connections.some(c=>!ids.includes(c.fromNode)||!ids.includes(c.toNode)))throw Error('Graph has external or invalid connections');
  let max=0;
- for(const entry of show.parts.filter(p=>/\.(?:skf|sktl|sksc)$/i.test(p.name))){
+ for(const entry of show.parts.filter(p=>/\.(?:skf|sktl|sksc|skpr)$/i.test(p.name))){
   const txt=(readSnapshotPart({snapshot:show,name:entry.name})).text;
   for(const id of xmlNodeIds(txt)){if(/^n\d+$/.test(id)){const n=Number(id.slice(1));if(!Number.isSafeInteger(n)||n>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,n)}}
  }

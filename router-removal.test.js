@@ -27,6 +27,7 @@ test('standalone patch checks its own router targets',async t=>{
 test('router removal rejects nested targets, ambiguous names and malformed supported parts',async t=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'router-edge-'));t.after(()=>rm(dir,{recursive:true,force:true}));
  const cases=[
+  {name:'program',router:router('n1','A'),partName:'content/Program.skpr',body:'<skprogram><item><sktimeline><cue><graph><setting key="route.router_target">&#65;</setting></graph></cue></sktimeline></item></skprogram>',error:/router target reference/},
   {name:'nested',router:router('n1','A'),partName:'content/test.sksc',body:'<scene><setting key="route.router_target"><value><![CDATA[A]]></value></setting></scene>',error:/router target reference/},
   {name:'missing',router:'<node id="n1" type="router"><settings/></node>',partName:'content/test.sktl',body:'<sktimeline/>',error:/name is missing or ambiguous/},
   {name:'duplicate',router:'<node id="n1" type="router"><settings><setting key="router.name">A</setting><setting key="router.name">B</setting></settings></node>',partName:'content/test.sktl',body:'<sktimeline/>',error:/name is missing or ambiguous/},

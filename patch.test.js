@@ -12,18 +12,18 @@ const patch='<showkontrol version="2"><graph><node id="n1" type="action"><settin
 test('patch node creation rejects IDs used in any native show part',async t=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'sk-patch-'));t.after(()=>rm(dir,{recursive:true,force:true}));
  const source=path.join(dir,'source.skshow'),template=path.join(dir,'template.skf');
- const show=`<skshow>${part('patch.skf',patch)}${part('one.sktl','<sktimeline><cue><graph><node id="n2"/></graph></cue></sktimeline>')}${part('two.SKSC','<scene><node id="n3"/></scene>')}</skshow>`;
+ const show=`<skshow>${part('patch.skf',patch)}${part('one.sktl','<sktimeline><cue><graph><node id="n2"/></graph></cue></sktimeline>')}${part('two.SKSC','<scene><node id="n3"/></scene>')}${part('content/Program.skpr','<skprogram><item><graph><node id="n4"/></graph><sktimeline><cue><graph><node id="n5"/></graph></cue></sktimeline></item></skprogram>')}</skshow>`;
  await writeFile(source,show);await writeFile(template,patch);
  const target=await inspectPatch({file:source,format:'skshow'}),donor=await inspectPatch({file:template,format:'skf'});
  const base={source,format:'skshow',sha256:target.sha256,nodeId:'n1'};
- for(const id of ['n2','n3']){
+ for(const id of ['n2','n3','n4','n5']){
   await assert.rejects(editPatchGraphCopy({...base,destination:path.join(dir,`duplicate-${id}`),operation:'duplicate_node',newNodeId:id}),/unused/);
   await assert.rejects(copyPatchNode({...base,destination:path.join(dir,`copy-${id}`),template,templateFormat:'skf',templateSha256:donor.sha256,newNodeId:id}),/unused/);
  }
  const duplicate=path.join(dir,'duplicate.skshow'),copy=path.join(dir,'copy.skshow');
- await editPatchGraphCopy({...base,destination:duplicate,operation:'duplicate_node',newNodeId:'n4'});
- await copyPatchNode({...base,destination:copy,template,templateFormat:'skf',templateSha256:donor.sha256,newNodeId:'n4'});
- for(const file of [duplicate,copy])assert.deepEqual((await inspectPatch({file,format:'skshow'})).nodes.map(n=>n.id),['n1','n4']);
+ await editPatchGraphCopy({...base,destination:duplicate,operation:'duplicate_node',newNodeId:'n6'});
+ await copyPatchNode({...base,destination:copy,template,templateFormat:'skf',templateSha256:donor.sha256,newNodeId:'n6'});
+ for(const file of [duplicate,copy])assert.deepEqual((await inspectPatch({file,format:'skshow'})).nodes.map(n=>n.id),['n1','n6']);
  assert.equal(await readFile(source,'utf8'),show);
 });
 
@@ -82,10 +82,20 @@ test('node removal checks decoded references in the remaining patch and supporte
   const xml=makePatch(`<node id="other"><settings><setting key="ref">${reference}</setting></settings></node>`);
   await assert.rejects(attempt('skf',xml),/reference/);await assert.rejects(readFile(destination),{code:'ENOENT'});
  }
- for(const name of ['other.skf','content/track.sktl','content/scene.sksc','sets.skls']){
+ for(const name of ['other.skf','content/track.sktl','content/scene.sksc','sets.skls','content/Program.skpr']){
   const show=`<skshow>${part('patch.skf',makePatch(''))}${part(name,'<root><setting>a<![CDATA[.]]>b</setting></root>')}</skshow>`;
   await assert.rejects(attempt('skshow',show),/reference/);await assert.rejects(readFile(destination),{code:'ENOENT'});
  }
  await attempt('skf',makePatch('<node id="axb"><settings/></node>'));
  assert.deepEqual((await inspectPatch({file:destination,format:'skf'})).nodes.map(n=>n.id),['axb']);
+});
+
+test('malformed or checksum-invalid Program prevents patch node changes',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-program-guard-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skshow'),destination=path.join(dir,'out.skshow');
+ for(const program of [part('content/Program.skpr','<skprogram><item>'),part('content/Program.skpr','<skprogram/>').replace(/md5="[a-f0-9]+"/,'md5="00000000000000000000000000000000"')]){
+  const show=`<skshow>${part('patch.skf',patch)}${program}</skshow>`;await writeFile(source,show);const sha256=createHash('sha256').update(show).digest('hex');
+  await assert.rejects(editPatchGraphCopy({source,destination,format:'skshow',sha256,operation:'duplicate_node',nodeId:'n1',newNodeId:'n2'}));
+  await assert.rejects(readFile(destination),{code:'ENOENT'});assert.equal(await readFile(source,'utf8'),show);
+ }
 });

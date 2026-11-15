@@ -14,3 +14,10 @@ test('reject references split across text, CDATA and comments in same and other 
   await writeFile(source,`<skshow>${part(name,timeline(local))}${part('patch.skf',patch)}</skshow>`);const {sha256}=await inspectShowTimeline({file:source,name});await assert.rejects(removeCueGraphNodeCopy({source,destination:destination+i,format:'skshow',sha256,name,cueId:'c1',nodeId:'n2'}),/reference/);await assert.rejects(readFile(destination+i),/ENOENT/);
  }
 });
+
+test('reject a cue node reference in a Program embedded timeline',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-program-ref-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'in.skshow'),destination=path.join(dir,'out.skshow'),name='content/Track.sktl',part=(n,text)=>`<part name="${n}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const timeline='<sktimeline version="1"><cue id="c"><graph><node id="n2" type="trigger"><settings/></node></graph></cue></sktimeline>',program='<skprogram><item><sktimeline><cue><graph><setting key="ref">n<![CDATA[2]]></setting></graph></cue></sktimeline></item></skprogram>',input=`<skshow>${part(name,timeline)}${part('content/Program.skpr',program)}</skshow>`;
+ await writeFile(source,input);const {sha256}=await inspectShowTimeline({file:source,name});await assert.rejects(removeCueGraphNodeCopy({source,destination,format:'skshow',sha256,name,cueId:'c',nodeId:'n2'}),/reference/);await assert.rejects(readFile(destination),{code:'ENOENT'});assert.equal(await readFile(source,'utf8'),input);
+});

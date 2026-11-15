@@ -12,7 +12,7 @@ export async function removeCueGraphNodeCopy({source,destination,format,sha256,n
  if(graphs.length!==1||selected.length!==1)throw Error('Graph and selected node must each occur exactly once');
  const node=selected[0],modified=xml.slice(0,node.start)+xml.slice(node.end);
  if(hasReference(modified,nodeId))throw Error('Node has a connection or other explicit reference');
- if(show)for(const part of show.parts.filter(p=>p.name!==name&&/\.(?:skf|sktl|sksc|skls)$/i.test(p.name)))if(hasReference(readSnapshotPart({snapshot:show,name:part.name}).text,nodeId))throw Error('Node has a reference in another show part');
+ if(show)for(const part of show.parts.filter(p=>p.name!==name&&/\.(?:skf|sktl|sksc|skls|skpr)$/i.test(p.name)))if(hasReference(readSnapshotPart({snapshot:show,name:part.name}).text,nodeId))throw Error('Node has a reference in another show part');
  const afterRoot=parseXmlSpans(modified),after=selectXmlSpans(afterRoot,[...path,'node']);if(after.length!==nodes.length-1||after.some(n=>n.attributes.id===nodeId))throw Error('Node removal could not be verified');
  const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
  return {...result,cueId,nodeId,note:'Removed an unreferenced cue graph node from an offline copy. External references and ShowKontrol acceptance are not validated.'};
