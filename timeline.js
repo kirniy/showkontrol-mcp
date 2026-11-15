@@ -1,5 +1,6 @@
 import {storedStoppedWarnings} from './stored-stopped-warnings.js';
 import {hasXmlReference} from './xml-references.js';
+import {scanCueReferences} from './cue-reference-scan.js';
 import {validateRouterTarget} from './patch-setting-to-cue.js';
 import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';
 import {SaxesParser} from 'saxes';
@@ -291,9 +292,19 @@ export async function deleteTimelineCueCopy({source,destination,format,sha256,na
  });
  if(candidates.length!==1)throw Error('Unsupported or ambiguous cue serialization');
  const m=candidates[0],modified=xml.slice(0,m.index)+xml.slice(m.index+m[0].length);parseTimeline(modified);
+ if(format==='skshow'){
+  const scan=await scanCueReferences({file:source,name,cueId,sha256});
+  if(scan.diagnosticsTruncated||scan.diagnostics.some(d=>/\.(?:skf|sktl|sksc|skls|skpr|skcp)$/i.test(d.part)))throw Error('A supported XML part could not be scanned for references');
+  if(scan.referencesTotal)throw Error('Cue or graph node has surviving XML references');
+ }else{
+  const ids=[cueId,...(graph?.nodes.map(node=>node.id).filter(id=>typeof id==='string'&&id.length)||[])];
+  if(ids.length>1001||ids.some(id=>id.length>1024))throw Error('Cue or graph node exceeds reference scan limit');
+  const alternatives=[...new Set(ids)].sort((a,b)=>b.length-a.length).map(id=>id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|');
+  if(hasXmlReference(modified,new RegExp(`(?<![A-Za-z0-9_])(?:${alternatives})(?![A-Za-z0-9_])`)))throw Error('Cue or graph node has surviving XML references');
+ }
  const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};
  const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
- return {...result,cueId,deletedGraph:!!graph,note:'Deleted a cue from an offline copy. Validate in ShowKontrol.'};
+ return {...result,cueId,deletedGraph:!!graph,note:format==='sktl'?'Deleted a cue from an offline timeline copy. Other show parts cannot be checked; validate in ShowKontrol.':'Deleted a cue from an offline show copy. Literal XML references were checked; binary, encoded and external references may be missed. Validate in ShowKontrol.'};
 }
 
 export async function setCueGraphNodeStoppedCopy({source,destination,format,sha256,name,cueId,nodeId,stopped}){
