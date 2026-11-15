@@ -120,6 +120,36 @@ export async function addShowPart({source,destination,sha256,name,text}) {
  await writeFile(destination,output,{encoding:'utf8',flag:'wx'});return {destination,name,md5};
 }
 
+function replacePartChecksum(attrs,md5,name){
+ const md5Attr=/(\smd5\s*=\s*["'])[a-fA-F0-9]{32}(["'])/g;
+ if([...attrs.matchAll(md5Attr)].length!==1)throw Error('Unsupported part checksum serialization');
+ const changed=attrs.replace(md5Attr,(_,a,b)=>a+md5+b);
+ let parsedAttrs;const parser=new SaxesParser();parser.on('opentag',tag=>{parsedAttrs=tag.attributes});parser.write(`<part${changed}/>`).close();
+ if(parsedAttrs.md5!==md5||parsedAttrs.name!==name)throw Error('Unsupported part checksum serialization');
+ return changed;
+}
+
+// Replace or add the media.map part. Every other part must stay byte-identical.
+export async function writeShowMediaMapCopy({source,destination,sha256,text}) {
+ if(!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Destination must be a different absolute path');
+ const {xml,sha256:actual}=await load(source);if(actual!==sha256)throw Error('Source changed since inspection');
+ const entries=parts(xml),root=parseXmlSpans(xml),name='media.map';
+ if(!entries.length||!entries.every(p=>p.valid))throw Error('Missing parts or a part MD5 does not match');
+ if(entries.some(p=>p.name!==name&&p.name.toLowerCase()===name))throw Error('media.map part name is not canonical');
+ const found=entries.filter(p=>p.name===name);if(found.length>1)throw Error('Duplicate media.map parts');
+ const existing=found[0],bytes=Buffer.from(text,'utf8'),md5=createHash('md5').update(bytes).digest('hex');
+ if(root.selfClosing)throw Error('Unsupported show wrapper');
+ const entry=`<part${existing?replacePartChecksum(existing.attrs,md5,name):` name="${name}" md5="${md5}"`}>${bytes.toString('base64')}</part>`;
+ const output=existing?xml.slice(0,existing.start)+entry+xml.slice(existing.end):xml.slice(0,root.closeStart)+entry+xml.slice(root.closeStart);
+ validate(output);checkSize(Buffer.byteLength(output),maxBytes(),'XML output');
+ const roundtrip=parts(output),written=roundtrip.filter(p=>p.name===name);
+ if(!roundtrip.every(p=>p.valid)||roundtrip.length!==entries.length+(existing?0:1)||written.length!==1||!written[0].bytes.equals(bytes))throw Error('media.map roundtrip verification failed');
+ const before=entries.filter(p=>p!==existing),after=roundtrip.filter(p=>p.name!==name);
+ if(before.length!==after.length||before.some((p,i)=>p.name!==after[i].name||!p.bytes.equals(after[i].bytes)))throw Error('Unrelated part changed');
+ await writeFile(destination,output,{encoding:'utf8',flag:'wx'});
+ return {destination,sha256:createHash('sha256').update(output).digest('hex'),md5,added:!existing};
+}
+
 // Build a Program replacement while retaining the original wrapper and unrelated parts.
 export async function prepareShowProgram({file,bytes,replaceExisting=false}) {
  const {xml,sha256}=await load(file), entries=parts(xml), root=parseXmlSpans(xml);
@@ -130,14 +160,7 @@ export async function prepareShowProgram({file,bytes,replaceExisting=false}) {
  if(bytes===undefined)return {sha256,bytes:existing?.bytes};
  if(existing&&!replaceExisting)throw Error('Program part already exists; set replaceExisting to true');
  const md5=createHash('md5').update(bytes).digest('hex');
- let attrs=` name="${name}" md5="${md5}"`;
- if(existing){
-  const md5Attr=/(\smd5\s*=\s*["'])[a-fA-F0-9]{32}(["'])/g;
-  if([...existing.attrs.matchAll(md5Attr)].length!==1)throw Error('Unsupported part checksum serialization');
-  attrs=existing.attrs.replace(md5Attr,(_,a,b)=>a+md5+b);
-  let parsedAttrs;const parser=new SaxesParser();parser.on('opentag',tag=>{parsedAttrs=tag.attributes});parser.write(`<part${attrs}/>`).close();
-  if(parsedAttrs.md5!==md5||parsedAttrs.name!==name)throw Error('Unsupported part checksum serialization');
- }
+ const attrs=existing?replacePartChecksum(existing.attrs,md5,name):` name="${name}" md5="${md5}"`;
  const entry=`<part${attrs}>${bytes.toString('base64')}</part>`;
  if(root.selfClosing)throw Error('Unsupported show wrapper');
  const output=existing?xml.slice(0,existing.start)+entry+xml.slice(existing.end):xml.slice(0,root.closeStart)+entry+xml.slice(root.closeStart);
