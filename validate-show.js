@@ -31,6 +31,14 @@ export async function validateShow({file}){
     const number=/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
     for(const [index,cue] of cues.entries()){
      const cueScope={part:part.name,path:'sktimeline/cue',cueIndex:index,...(cue.attributes.id?{cueId:cue.attributes.id}:{})};
+     for(const graph of cue.children.filter(n=>n.name==='graph'))for(const node of graph.children.filter(n=>n.name==='node')){
+      const settings=node.children.filter(n=>n.name==='settings').flatMap(n=>n.children.filter(s=>s.name==='setting'&&s.attributes.key==='node.stopped'));
+      const stoppedSetting=settings.some(setting=>{
+       if(setting.children.length||Object.keys(setting.attributes).length!==1)return false;
+       let value='';const parser=new SaxesParser();parser.on('text',v=>value+=v);parser.on('cdata',v=>value+=v);parser.write(xml.slice(setting.start,setting.end)).close();return value==='true';
+      });
+      if(node.attributes.stopped==='1'||stoppedSetting)add('stored_stopped_cue_node',{part:part.name,path:'sktimeline/cue/graph',cueIndex:index,...(cue.attributes.id?{cueId:cue.attributes.id}:{}),nodeId:node.attributes.id??null},'A cue graph node explicitly stores a stopped value; other stored values may conflict. Its active state and effect on cue execution are not established','warning');
+     }
      for(const field of ['layer','startMs','lenMs']){
       const value=cue.attributes[field],fieldScope={...cueScope,field,value:value??null};
       if(value===undefined){if(partCoverage.status==='checked')partCoverage.status='partial';add('missing_cue_field',fieldScope,'Cue field is missing; this variant is not checked','warning');continue;}

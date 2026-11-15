@@ -111,3 +111,12 @@ test('cue numeric forms and empty layers are checked',async t=>{
   const result=await validateShow({file});assert.deepEqual(result.diagnostics.map(d=>d.code),expected);assert.equal(await readFile(file,'utf8'),xml);
  }
 });
+test('warns once per direct cue node with an explicitly stored stopped value',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-stopped-'));t.after(()=>rm(dir,{recursive:true,force:true}));const file=path.join(dir,'show.skshow');
+ const patch='<showkontrol version="2"><graph><node id="patch" stopped="1"><settings><setting key="node.stopped">true</setting></settings></node></graph><appSettings/></showkontrol>';
+ const timeline='<sktimeline version="1"><layers><layer/></layers><cue id="c" layer="0" startMs="0" lenMs="40"><graph><node id="both" stopped="1"><settings><setting key="node.stopped">true</setting></settings></node><node id="setting"><settings><setting key="node.stopped">true</setting></settings></node><node id="conflict" stopped="1"><settings><setting key="node.stopped">false</setting></settings></node><node id="normal" stopped="0"><settings><setting key="node.stopped">false</setting><setting key="other">true</setting></settings></node><node id="malformed" stopped="true"><settings><setting key="node.stopped"> true </setting></settings></node></graph><extension><graph><node id="nested" stopped="1"/></graph></extension></cue></sktimeline>';
+ await writeFile(file,`<skshow>${part('patch.skf',patch)}${part('song.sktl',timeline)}</skshow>`);
+ const warnings=(await validateShow({file})).diagnostics.filter(d=>d.code==='stored_stopped_cue_node');
+ assert.deepEqual(warnings.map(d=>d.scope.nodeId),['both','setting','conflict']);
+ assert.ok(warnings.every(d=>d.severity==='warning'&&d.scope.part==='song.sktl'&&d.scope.cueId==='c'));
+});

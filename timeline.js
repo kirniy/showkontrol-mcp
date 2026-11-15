@@ -294,6 +294,44 @@ export async function deleteTimelineCueCopy({source,destination,format,sha256,na
  return {...result,cueId,deletedGraph:!!graph,note:'Deleted a cue from an offline copy. Validate in ShowKontrol.'};
 }
 
+export async function setCueGraphNodeStoppedCopy({source,destination,format,sha256,name,cueId,nodeId,stopped}){
+ if(!['sktl','skshow'].includes(format))throw Error('Format must be sktl or skshow');
+ if(typeof cueId!=='string'||!cueId||!/^[A-Za-z0-9_.:-]+$/.test(nodeId||'')||typeof stopped!=='boolean')throw Error('Invalid cue ID, node ID or stopped state');
+ let xml,actual;
+ if(format==='skshow'){
+  if(!name||!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
+  const show=await readShowSnapshot({file:source});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');actual=show.sha256;xml=readSnapshotPart({snapshot:show,name}).text;
+ }else ({xml,sha256:actual}=await inspectXml({file:source}));
+ if(actual!==sha256)throw Error('Source changed since inspection');
+ const graph=cueGraph(xml,cueId).graph;if(!graph)throw Error('Cue has no action graph');
+ if(graph.nodes.filter(n=>n.id===nodeId).length!==1)throw Error('Node ID must occur exactly once in cue graph');
+ const root=parseXmlSpans(xml),nodes=selectXmlSpans(root,['sktimeline',{name:'cue',attributes:{id:cueId}},'graph',{name:'node',attributes:{id:nodeId}}]);
+ if(nodes.length!==1)throw Error('Unsupported or ambiguous node serialization');
+ const node=nodes[0],containers=node.children.filter(c=>c.name==='settings');
+ if(containers.length>1)throw Error('Ambiguous node settings');
+ const allSettings=[];const visit=n=>{for(const c of n.children){if(c.name==='setting'&&c.attributes.key==='node.stopped')allSettings.push(c);visit(c)}};visit(node);
+ if(allSettings.length>1||allSettings.some(s=>!containers[0]?.children.includes(s)))throw Error('Unsupported or ambiguous stopped setting');
+ const setting=allSettings[0],hasAttr=Object.hasOwn(node.attributes,'stopped');
+ if(!hasAttr&&!setting)throw Error('Node has no explicit stopped state');
+ const edits=[];
+ if(hasAttr){
+  if(!['0','1'].includes(node.attributes.stopped))throw Error('Unsupported stopped attribute value');
+  const opening=xml.slice(node.start,node.openEnd),matches=[...opening.matchAll(/(?:^|\s)stopped\s*=\s*(["'])([01])\1/g)];
+  if(matches.length!==1)throw Error('Unsupported stopped attribute serialization');
+  const m=matches[0],offset=m.index+m[0].lastIndexOf(m[2]);edits.push({start:node.start+offset,end:node.start+offset+1,value:stopped?'1':'0'});
+ }
+ if(setting){
+  const content=xml.slice(setting.openEnd,setting.closeStart);
+  if(setting.selfClosing||setting.children.length||!['true','false'].includes(content))throw Error('Unsupported stopped setting value or serialization');
+  edits.push({start:setting.openEnd,end:setting.closeStart,value:stopped?'true':'false'});
+ }
+ let modified=xml;for(const e of edits.sort((a,b)=>b.start-a.start))modified=modified.slice(0,e.start)+e.value+modified.slice(e.end);
+ const checked=cueGraph(modified,cueId).graph.nodes.filter(n=>n.id===nodeId);
+ if(checked.length!==1||(hasAttr&&checked[0].stopped!==(stopped?'1':'0'))||(setting&&checked[0].settings.filter(s=>s.key==='node.stopped'&&s.value===(stopped?'true':'false')).length!==1))throw Error('Stopped state edit could not be verified');
+ const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
+ return {...result,cueId,nodeId,stopped,note:'Changed explicit stopped state in an offline copy. ShowKontrol acceptance is unverified.'};
+}
+
 export async function editCueGraphSettingCopy({source,destination,format,sha256,name,cueId,nodeId,key,value}){
  if(!['sktl','skshow'].includes(format))throw Error('Format must be sktl or skshow');
  if(!/^[A-Za-z0-9_.:-]+$/.test(nodeId||'')||!/^[A-Za-z0-9_.:-]+$/.test(key||''))throw Error('Unsupported node ID or setting key');
