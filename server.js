@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {setNodeBypass} from './node-bypass.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -199,6 +200,7 @@ add('showkontrol_diagnose_live_node','Read a live node and compare its requested
  if(requested!=='unknown' && effective!=='unknown' && requested!==effective) warnings.push('Requested and effective stopped states differ; the cause is unknown.');
  return {id:object.id ?? null,title:object.title ?? null,type:object.type ?? null,requestedStopped:requested,effectiveStopped:effective,raw:{params:Object.hasOwn(object,'params') ? object.params : null,requestedMatches:matches,effectiveStopped:effectiveRaw},warnings};
 },readOnly);
+add('showkontrol_set_node_bypass','Set a node bypass state by ID. Resolves one exact, unique title, sends one action, and reads node.bypassed by ID. Title resolution can race or differ from app matching; readback does not prove which node the action affected. Changes the running show. No automatic retry.',{id:z.string().min(1),bypassed:z.boolean()},args=>setNodeBypass(args,call),write);
 add('showkontrol_get_parameter','Read a node parameter by node ID or name and parameter key.',{node:z.string(),key:z.string()},({node,key})=>call('GET',`/nodes/${segment(node)}/params/${segment(key)}`),readOnly);
 add('showkontrol_set_parameter','Set a node parameter. This changes the running show.',{node:z.string(),key:z.string(),value:z.unknown()},({node,key,value})=>call('PUT',`/nodes/${segment(node)}/params/${segment(key)}`,{value}),write);
 add('showkontrol_set_setting','Set an application setting. This changes the running application.',{key:z.string(),value:z.unknown()},({key,value})=>call('PUT',`/settings/${segment(key)}`,{value}),write);
