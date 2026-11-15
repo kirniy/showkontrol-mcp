@@ -30,15 +30,21 @@ async function snapshot(file){
   while(total<=limit){const buffer=Buffer.allocUnsafe(Math.min(65536,limit-total+1));const {bytesRead}=await handle.read(buffer,0,buffer.length,null);if(!bytesRead)break;total+=bytesRead;if(total>limit)throw Error('Program exceeds 10 MiB');chunks.push(buffer.subarray(0,bytesRead));}
   bytes=Buffer.concat(chunks,total);
  }finally{await handle.close();}
- const xml=new TextDecoder('utf-8',{fatal:true}).decode(bytes);return {xml,bytes,sha256:hash(bytes),...parse(xml)};
+ const xml=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(bytes);return {xml,bytes,sha256:hash(bytes),...parse(xml)};
 }
 const publicItems=items=>items.map(({node,...item})=>item);
 export async function inspectProgram({file}){const s=await snapshot(file);return {file,sha256:s.sha256,items:publicItems(s.items),note:'Static format evidence only; application acceptance, item sorting, cues and media are not verified.'};}
 function attr(xml,node,key,value){const opening=xml.slice(node.start,node.openEnd),re=/\s+([^\s=/>]+)\s*=\s*("[^"]*"|'[^']*')/g,matches=[...opening.matchAll(re)].filter(m=>m[1]===key);if(matches.length!==1)throw Error('Unsupported attribute serialization');const m=matches[0],at=node.start+m.index+m[0].indexOf(m[2])+1;return {start:at,end:at+m[2].length-2,value:escape(String(value))};}
-export async function createProgramCopy({destination,source,sha256,operation}){
+export async function createProgramCopy({destination,source,sha256,operation,items}){
  if(!path.isAbsolute(destination)||path.extname(destination).toLowerCase()!=='.skpr')throw Error('Destination must be an absolute .skpr path');
  let xml,sourceSnapshot;
- if(source===undefined){if(sha256!==undefined||operation!==undefined)throw Error('New Program must not specify sha256 or operation');xml='<?xml version="1.0" encoding="utf-8"?>\n<skprogram version="1"></skprogram>\n';}
+ if(items!==undefined&&(source!==undefined||operation!==undefined))throw Error('Items cannot be combined with source or operation');
+ if(source===undefined){
+  if(sha256!==undefined||operation!==undefined)throw Error('New Program must not specify sha256 or operation');
+  if(items!==undefined&&(!Array.isArray(items)||items.length>1000))throw Error('Items must be an array of at most 1000 items');
+  const serialized=(items??[]).map(item=>{if(!item||typeof item!=='object'||Array.isArray(item)||Object.keys(item).sort().join(',')!=='name,notes,start')throw Error('Invalid item');const {start,name,notes}=item;time(start);text(name,'name');text(notes,'notes');return `<item start="${start}" name="${escape(name)}" notes="${escape(notes)}" />`;}).join('');
+  xml=`<?xml version="1.0" encoding="utf-8"?>\n<skprogram version="1">${serialized}</skprogram>\n`;
+ }
  else{
   if(path.resolve(source)===path.resolve(destination))throw Error('Source and destination must differ');if(!/^[a-f0-9]{64}$/.test(sha256||''))throw Error('A source SHA-256 is required');sourceSnapshot=await snapshot(source);if(sourceSnapshot.sha256!==sha256)throw Error('Source changed since inspection');
   if(!operation||!['add','edit','remove'].includes(operation.action))throw Error('Invalid operation');
@@ -64,7 +70,7 @@ const note='Static format evidence only; application acceptance, item sorting, c
 export async function inspectShowProgram({file}){
  const show=await prepareShowProgram({file});if(!show.bytes)return {file,sha256:show.sha256,present:false,note};
  if(show.bytes.length>10*1024*1024)throw Error('Program exceeds 10 MiB');
- const xml=new TextDecoder('utf-8',{fatal:true}).decode(show.bytes);
+ const xml=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(show.bytes);
  return {file,sha256:show.sha256,present:true,programSha256:hash(show.bytes),items:publicItems(parse(xml).items),note};
 }
 export async function attachShowProgramCopy({source,destination,sha256,program,programSha256,replaceExisting=false}){

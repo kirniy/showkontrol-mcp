@@ -22,7 +22,7 @@ export async function inspectShowMedia({file}){
    let text;
    try{text=readSnapshotPart({snapshot,name:'media.map'}).text;}catch{diagnostics.push({code:'invalid_media_map_utf8'});}
    if(text!==undefined){
-    const lines=text.split(/\r?\n/);if(lines.length>MAX_ITEMS+1)throw Error('media.map exceeds inventory item limit');
+    const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/);if(lines.length>MAX_ITEMS+1)throw Error('media.map exceeds inventory item limit');
     for(let i=0;i<lines.length;i++){
      const line=lines[i];if(i===lines.length-1&&line==='')continue;
      const fields=line.split('\t');

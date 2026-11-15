@@ -30,16 +30,16 @@ async function load(file) {
   }
   data=Buffer.concat(chunks,total);
  }finally{await handle.close();}
- const xml=new TextDecoder('utf-8',{fatal:true}).decode(data);validate(xml);return xml;
+ const xml=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(data);validate(xml);return {xml,sha256:createHash('sha256').update(data).digest('hex')};
 }
 export async function inspectXml({file}) {
- const xml=await load(file);
- return {file,sha256:createHash('sha256').update(xml).digest('hex'),xml};
+ const {xml,sha256}=await load(file);
+ return {file,sha256,xml};
 }
 export async function editXmlCopy({source,destination,sha256,edits}) {
  if(!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Destination must be a different absolute path');
- let xml=await load(source);
- if(createHash('sha256').update(xml).digest('hex')!==sha256)throw Error('Source changed since inspection');
+ let {xml,sha256:actualSha256}=await load(source);
+ if(actualSha256!==sha256)throw Error('Source changed since inspection');
  for(const {find,replace} of edits){
   if(!find)throw Error('Search text cannot be empty');
   const pos=xml.indexOf(find);if(pos<0||xml.indexOf(find,pos+1)>=0)throw Error('Each search text must occur exactly once');
@@ -65,9 +65,9 @@ function parts(xml) {
  return out;
 }
 export async function readShowSnapshot({file}) {
- const xml=await load(file);const entries=parts(xml);
+ const {xml,sha256}=await load(file);const entries=parts(xml);
  if(!entries.length)throw Error('Not a supported skshow wrapper');
- return {file,sha256:createHash('sha256').update(xml).digest('hex'),parts:entries.map(({name,md5,valid,bytes})=>({name,md5,valid,bytes}))};
+ return {file,sha256,parts:entries.map(({name,md5,valid,bytes})=>({name,md5,valid,bytes}))};
 }
 export async function inspectShow({file}) {
  const snapshot=await readShowSnapshot({file});
@@ -77,7 +77,7 @@ export function readSnapshotPart({snapshot,name}) {
  const found=snapshot.parts.filter(p=>p.name===name);
  if(found.length!==1)throw Error('Part name must match exactly one part');
  if(!found[0].valid)throw Error('Part MD5 mismatch');
- let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(found[0].bytes)}catch{throw Error('Part is not UTF-8 text')}
+ let text;try{text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(found[0].bytes)}catch{throw Error('Part is not UTF-8 text')}
  return {name,md5:found[0].md5,text};
 }
 export async function readShowPart({file,name}) {
@@ -85,11 +85,11 @@ export async function readShowPart({file,name}) {
 }
 export async function editShowPart({source,destination,sha256,name,edits}) {
  if(!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Destination must be a different absolute path');
- const xml=await load(source);
- if(createHash('sha256').update(xml).digest('hex')!==sha256)throw Error('Source changed since inspection');
+ const {xml,sha256:actualSha256}=await load(source);
+ if(actualSha256!==sha256)throw Error('Source changed since inspection');
  const all=parts(xml);if(!all.every(p=>p.valid))throw Error('A part MD5 does not match');
  const found=all.filter(p=>p.name===name);if(found.length!==1)throw Error('Part name must match exactly one part');const part=found[0];
- let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(part.bytes)}catch{throw Error('Part is not UTF-8 text')}
+ let text;try{text=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(part.bytes)}catch{throw Error('Part is not UTF-8 text')}
  validate(text);
  for(const {find,replace} of edits){if(!find)throw Error('Search text cannot be empty');let at=text.indexOf(find);if(at<0||text.indexOf(find,at+1)>=0)throw Error('Each search text must occur exactly once');text=text.slice(0,at)+replace+text.slice(at+find.length)}
  validate(text);const bytes=Buffer.from(text,'utf8');const md5=createHash('md5').update(bytes).digest('hex');
@@ -107,7 +107,7 @@ export async function editShowPart({source,destination,sha256,name,edits}) {
 export async function addShowPart({source,destination,sha256,name,text}) {
  if(!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Destination must be a different absolute path');
  if(!/^content\/[A-Za-z0-9_-]+\.sktl$/.test(name))throw Error('Unsupported timeline part name');
- const xml=await load(source);if(createHash('sha256').update(xml).digest('hex')!==sha256)throw Error('Source changed since inspection');
+ const {xml,sha256:actualSha256}=await load(source);if(actualSha256!==sha256)throw Error('Source changed since inspection');
  const entries=parts(xml);if(!entries.length||!entries.every(p=>p.valid))throw Error('Missing parts or a part MD5 does not match');
  if(entries.some(p=>p.name.toLowerCase()===name.toLowerCase()))throw Error('Part name already exists');
  validate(text);const bytes=Buffer.from(text,'utf8');const md5=createHash('md5').update(bytes).digest('hex');
@@ -122,12 +122,12 @@ export async function addShowPart({source,destination,sha256,name,text}) {
 
 // Build a Program replacement while retaining the original wrapper and unrelated parts.
 export async function prepareShowProgram({file,bytes,replaceExisting=false}) {
- const xml=await load(file), entries=parts(xml), root=parseXmlSpans(xml);
+ const {xml,sha256}=await load(file), entries=parts(xml), root=parseXmlSpans(xml);
  if(!entries.length||!entries.every(p=>p.valid))throw Error('Missing parts or a part MD5 does not match');
  const names=new Set();for(const entry of entries){const key=entry.name.toLowerCase();if(names.has(key))throw Error('Duplicate part name');names.add(key);}
  const name='content/Program.skpr', existing=entries.find(p=>p.name.toLowerCase()===name.toLowerCase());
  if(existing&&existing.name!==name)throw Error('Program part name is not canonical');
- if(bytes===undefined)return {sha256:createHash('sha256').update(xml).digest('hex'),bytes:existing?.bytes};
+ if(bytes===undefined)return {sha256,bytes:existing?.bytes};
  if(existing&&!replaceExisting)throw Error('Program part already exists; set replaceExisting to true');
  const md5=createHash('md5').update(bytes).digest('hex');
  let attrs=` name="${name}" md5="${md5}"`;
@@ -145,5 +145,5 @@ export async function prepareShowProgram({file,bytes,replaceExisting=false}) {
  const roundtrip=parts(output);if(!roundtrip.every(p=>p.valid)||roundtrip.length!==entries.length+(existing?0:1))throw Error('Program roundtrip verification failed');
  const actual=roundtrip.find(p=>p.name===name);if(!actual||!actual.bytes.equals(bytes))throw Error('Program roundtrip verification failed');
  for(const old of entries.filter(p=>p!==existing)){const next=roundtrip.find(p=>p.name===old.name);if(!next||next.md5!==old.md5||!next.bytes.equals(old.bytes))throw Error('Unrelated part changed');}
- return {sha256:createHash('sha256').update(xml).digest('hex'),output,md5};
+ return {sha256,output,md5};
 }

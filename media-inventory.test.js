@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,rm,writeFile} from 'node:fs/promises';
+import {mkdtemp,rm,writeFile,readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,4 +27,18 @@ test('MCP inventories exact mappings, clip attributes and archive checksums',asy
  await writeFile(file,`<skshow>${part('media.map',rows.map(r=>r.sourcePath+'\t'+r.archivePath).join('\n'))}</skshow>`);
  const outputBounded=await client.callTool({name:'showkontrol_inspect_show_media',arguments:{file}});assert.equal(outputBounded.isError,true);assert.match(outputBounded.content[0].text,/inventory exceeds output limit/);
  await writeFile(file,`<skshow>${part('media.map','x'.repeat(2*1024*1024+1))}</skshow>`);const bounded=await client.callTool({name:'showkontrol_inspect_show_media',arguments:{file}});assert.equal(bounded.isError,true);assert.match(bounded.content[0].text,/inventory text limit/);
+});
+
+
+test('media map BOM does not change the first clip source path',async t=>{
+ const {inspectShowMedia}=await import('./media-inventory.js');
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-media-bom-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'show.skshow'), source='/music/Track.wav';
+ const map=`\ufeff${source}\tMEDIA/Track.wav\n/other/\ufeffTrack.wav\tMEDIA/Other.wav\n`;
+ const timeline=`<sktimeline version="1"><audio><clip file="${source}"/></audio></sktimeline>`;
+ const show=Buffer.from(`<skshow>${part('media.map',map)}${part('MEDIA/Track.wav','audio')}${part('content/A.sktl',timeline)}</skshow>`);
+ await writeFile(file,show);const result=await inspectShowMedia({file});
+ assert.equal(result.mappings[0].sourcePath,source);assert.equal(result.mappings[1].sourcePath,'/other/\ufeffTrack.wav');
+ assert.deepEqual(result.clips[0].mappingLines,[1]);assert.equal(result.mappings[0].archiveMatches.length,1);
+ assert.deepEqual(await readFile(file),show);
 });

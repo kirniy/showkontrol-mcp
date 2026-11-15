@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtemp,readFile,writeFile,rm} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import {inspectProgram,createProgramCopy} from './program.js';
 
 test('standalone Program creation, ordered edits and guarded content removal',async()=>{
@@ -21,6 +22,20 @@ test('standalone Program creation, ordered edits and guarded content removal',as
   await assert.rejects(createProgramCopy({source:file('edit'),destination:file('bad'),sha256:'0'.repeat(64),operation:{action:'remove',index:1}}),/changed/);
   await assert.rejects(createProgramCopy({source:file('a'),destination:file('bad'),sha256:(await inspectProgram({file:file('a')})).sha256,operation:{action:'add',start:86400000,name:'',notes:''}}),/start/);
   await writeFile(file('unknown'),'<skprogram version="1"><item start="0" name="x" notes=""><unknown/></item></skprogram>');await assert.rejects(inspectProgram({file:file('unknown')}),/Unsupported/);
+ }finally{await rm(dir,{recursive:true,force:true});}
+});
+
+test('Program inspection hashes raw bytes and edits preserve the UTF-8 BOM',async()=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'program-bom-'));try{
+  const source=path.join(dir,'source.skpr'),copy=path.join(dir,'copy.skpr'),stale=path.join(dir,'stale.skpr');
+  const body='<skprogram version="1"><item start="1" name="old" notes="" /></skprogram>';
+  const bytes=Buffer.concat([Buffer.from([0xef,0xbb,0xbf]),Buffer.from(body)]);await writeFile(source,bytes);
+  const info=await inspectProgram({file:source});assert.equal(info.sha256,createHash('sha256').update(bytes).digest('hex'));
+  const result=await createProgramCopy({source,destination:copy,sha256:info.sha256,operation:{action:'edit',index:0,name:'new'}});
+  const output=await readFile(copy);assert.deepEqual(output,Buffer.concat([Buffer.from([0xef,0xbb,0xbf]),Buffer.from(body.replace('name="old"','name="new"'))]));
+  assert.equal(result.sha256,createHash('sha256').update(output).digest('hex'));
+  await writeFile(source,body);await assert.rejects(createProgramCopy({source,destination:stale,sha256:info.sha256,operation:{action:'edit',index:0,name:'new'}}),/changed/);
+  await assert.rejects(readFile(stale),{code:'ENOENT'});
  }finally{await rm(dir,{recursive:true,force:true});}
 });
 
