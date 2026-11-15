@@ -5,6 +5,7 @@ import {extractShowProgramCopy,createProgramCopy,attachShowProgramCopy,inspectSh
 import {addTimelineCueCopy,deleteTimelineCueCopy,editTimelineCueCopy,editCueGraphSettingCopy,copyCueGraphBetweenTimelinesWithShow,removeCueGraphCopy} from './timeline.js';
 import {inspectXml,readShowSnapshot,readSnapshotPart,addShowPart} from './xml-copy.js';
 import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
+import {copyProgramItemGraphRemappedCopy} from './program-graph-copy-remap.js';
 import {validateShow} from './validate-show.js';
 import {parseXmlSpans} from './xml-spans.js';
 import {hasXmlReference} from './xml-references.js';
@@ -215,6 +216,37 @@ async function assembleProgramCueGraph({timeline,edited,program,source,sha256,cu
  return {...result,sha256:digest(final)};
 }
 
+async function checkItemGraphReplacement(program,index,source,sha256){
+ const xml=await readFile(program,'utf8'),root=parseXmlSpans(xml),item=root.children[index];
+ if(!Number.isInteger(index)||index<0||!item)throw Error('Item index out of range');
+ const graphs=item.children.filter(n=>n.name==='graph');if(graphs.length>1)throw Error('Item has ambiguous graphs');if(!graphs.length)return;
+ const graph=graphs[0],ids=[],counts=new Map();
+ const visit=(n,inGraph)=>{if(inGraph&&n!==graph&&(n.name==='graph'||(n.name==='node'&&!graph.children.includes(n))))throw Error('Nested graph or node structure is unsupported');if(n.name==='node'){const id=n.attributes.id;if(inGraph&&(!id||id.length>1024))throw Error('Existing graph has unsupported node ID');if(id){counts.set(id,(counts.get(id)??0)+1);if(inGraph)ids.push(id);}}for(const c of n.children)visit(c,inGraph||c===graph);};visit(root,false);
+ if(ids.length>1000||ids.some(id=>counts.get(id)!==1))throw Error('Existing graph has ambiguous node IDs');
+ const show=await readShowSnapshot({file:source});if(show.sha256!==sha256)throw Error('Source changed since inspection');if(show.parts.some(p=>!p.valid))throw Error('A part MD5 does not match');
+ const names=new Set(),parts=[xml.slice(0,graph.start)+xml.slice(graph.end)];
+ for(const part of show.parts){if(!/\.(?:skf|sktl|sksc|skls|skpr|skcp)$/i.test(part.name))continue;const name=part.name.toLowerCase();if(names.has(name))throw Error('Duplicate supported XML part name');names.add(name);if(name==='content/program.skpr')continue;const text=readSnapshotPart({snapshot:show,name:part.name}).text;parseXmlSpans(text);parts.push(text);}
+ for(const id of ids){const escaped=id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),pattern=new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`);if(parts.some(text=>hasXmlReference(text,pattern)))throw Error('Existing graph node ID is referenced outside the graph');}
+}
+
+async function assembleProgramItemGraph({program,destination,source,sha256,currentSha,index,operation,dir,step}){
+ const staged=path.join(dir,`item-stage-${step}.skshow`),withTimeline=path.join(dir,`item-timeline-${step}.skshow`),assembled=path.join(dir,`item-assembled-${step}.skshow`);
+ const attached=await attachShowProgramCopy({source,destination:staged,sha256,program,programSha256:currentSha,replaceExisting:true});
+ const snapshot=await readShowSnapshot({file:staged});let name='content/CompositionTimeline.sktl',suffix=0;
+ while(snapshot.parts.some(p=>p.name.toLowerCase()===name.toLowerCase()))name=`content/CompositionTimeline${++suffix}.sktl`;
+ const cueId='__composition_item_graph__';
+ await addShowPart({source:staged,destination:withTimeline,sha256:attached.sha256,name,text:`<sktimeline version="1"><layers/><cue id="${cueId}"/></sktimeline>`});
+ const mixed=await assembleMixedCueGraphShowCopy({source:withTimeline,destination:assembled,sha256:(await inspectXml({file:withTimeline})).sha256,name,cueId,nodes:operation.nodes,wires:operation.wires});
+ const copied=await copyProgramItemGraphRemappedCopy({source:program,destination,sha256:currentSha,index,donor:assembled,donorSha256:mixed.sha256,donorName:name,donorCueId:cueId,target:staged,targetSha256:attached.sha256,replaceExisting:operation.replaceExisting});
+ return {...copied,nodeIds:mixed.nodeIds.map(id=>copied.mapping[id]),warnings:[...mixed.warnings,...copied.warnings],note:mixed.note};
+}
+function itemGraphContains(xml,index,nodeIds){
+ const root=parseXmlSpans(xml),item=root.children[index];
+ if(!Number.isInteger(index)||index<0||!item)throw Error('Item index out of range');
+ const graphs=item.children.filter(n=>n.name==='graph');
+ return graphs.length===1&&nodeIds.every(id=>graphs[0].children.filter(n=>n.name==='node'&&n.attributes.id===id).length===1);
+}
+
 async function copyProgramNode({timeline,edited,program,source,sha256,currentSha,cueId,operation,dir,step}){
  const {max}=await graphAllocationMaximum(program,source,sha256);
  const xml=await readFile(timeline,'utf8'),root=parseXmlSpans(xml);
@@ -261,6 +293,8 @@ export async function composeProgramEditsCopy(args){
   else if(op.action==='edit')keys(op,['action','index'],['start','name','notes']);
   else if(op.action==='remove'){keys(op,['action','index'],['allowContentRemoval']);if(op.allowContentRemoval!==undefined&&typeof op.allowContentRemoval!=='boolean')throw Error('allowContentRemoval must be a boolean');}
   else if(op.action==='edit_graph_setting')keys(op,['action','index','nodeId','key','value']);
+  else if(op.action==='assemble_item_graph'){keys(op,['action','index','nodes'],['wires','replaceExisting']);if(op.replaceExisting!==undefined&&typeof op.replaceExisting!=='boolean')throw Error('replaceExisting must be a boolean');}
+  else if(op.action==='edit_assembled_item_graph_setting')keys(op,['action','index','graphFromOperation','nodeIndex','key','value']);
   else if(op.action==='edit_timeline_graph_setting')keys(op,['action','index','cueId','nodeId','key','value']);
   else if(op.action==='edit_timeline_graph_wire')keys(op,['action','index','cueId','operation','fromNode','toNode']);
   else if(op.action==='edit_timeline_graph_wire_mapped'){
@@ -319,18 +353,32 @@ export async function composeProgramEditsCopy(args){
  try{
   let step=0;const next=()=>path.join(dir,`${step++}.skpr`);
   const warnings=new Set();
-  const createdCues=[],copiedCueGraphs=[],assembledCueGraphs=[],copiedCueNodes=[],donors=[],invalidatedGraphs=new Set();
+  const createdCues=[],copiedCueGraphs=[],assembledCueGraphs=[],assembledItemGraphs=[],copiedCueNodes=[],donors=[],invalidatedGraphs=new Set();
   const collect=result=>{for(const warning of [...(result.warnings??[]),result.note])if(typeof warning==='string'&&warning)warnings.add(warning);};
   let program=next(),current=await extractShowProgramCopy({source,destination:program,sha256});collect(current);
   for(const [operationIndex,operation] of operations.entries()){
    if(operation.action==='remove'){
     await checkRemovalReferences(program,operation.index);
     const item=parseXmlSpans(await readFile(program,'utf8')).children[operation.index];
+    for(const receipt of assembledItemGraphs)if(itemGraphContains(await readFile(program,'utf8'),operation.index,receipt.nodeIds))invalidatedGraphs.add(receipt.operationIndex);
     const ids=new Set();const visit=n=>{if(n.name==='cue')ids.add(n.attributes.id);for(const c of n.children)visit(c);};visit(item);
     for(const receipt of [...copiedCueNodes,...copiedCueGraphs,...assembledCueGraphs])if(ids.has(receipt.cueId))invalidatedGraphs.add(receipt.operationIndex);
    }
    const destination=next();
-   if(operation.action==='edit_graph_setting'){
+   if(operation.action==='assemble_item_graph'){
+    if(operation.replaceExisting)await checkItemGraphReplacement(program,operation.index,source,sha256);
+    const xml=await readFile(program,'utf8');
+    const prior=assembledItemGraphs.filter(r=>!invalidatedGraphs.has(r.operationIndex)&&itemGraphContains(xml,operation.index,r.nodeIds));
+    current=await assembleProgramItemGraph({program,destination,source,sha256,currentSha:current.sha256,index:operation.index,operation,dir,step});
+    for(const r of prior)invalidatedGraphs.add(r.operationIndex);
+    assembledItemGraphs.push({operationIndex,nodeIds:current.nodeIds});
+    for(const node of operation.nodes)donors.push({file:node.template,sha256:node.templateSha256});
+   }else if(operation.action==='edit_assembled_item_graph_setting'){
+    const ref=operation.graphFromOperation,graph=Number.isInteger(ref)&&ref>=0&&ref<operationIndex?assembledItemGraphs.find(g=>g.operationIndex===ref):undefined;
+    if(!graph||invalidatedGraphs.has(ref)||!itemGraphContains(await readFile(program,'utf8'),operation.index,graph.nodeIds))throw Error('graphFromOperation must identify an active prior assemble_item_graph in the selected item');
+    if(!Number.isInteger(operation.nodeIndex)||operation.nodeIndex<0||operation.nodeIndex>=graph.nodeIds.length)throw Error('nodeIndex must identify a node in the assembled graph');
+    current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index:operation.index,nodeId:graph.nodeIds[operation.nodeIndex],key:operation.key,value:operation.value});
+   }else if(operation.action==='edit_graph_setting'){
     const {index,nodeId,key,value}=operation;
     current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index,nodeId,key,value});
    }else if(['edit_timeline_cue','edit_timeline_graph_setting','edit_timeline_graph_wire','edit_timeline_graph_wire_mapped','edit_copied_timeline_graph_setting','edit_assembled_timeline_graph_setting','add_timeline_cue','delete_timeline_cue','copy_timeline_cue_graph','assemble_timeline_cue_graph','remove_timeline_cue_graph','copy_timeline_cue_node','remove_timeline_cue_node','edit_copied_timeline_node_setting','copy_patch_setting_to_timeline_cue'].includes(operation.action)){
@@ -450,6 +498,6 @@ export async function composeProgramEditsCopy(args){
   if((await inspectShowProgram({file:source})).sha256!==sha256)throw Error('Source changed since inspection');
   for(const donor of donors)if((await inspectXml({file:donor.file})).sha256!==donor.sha256)throw Error('Donor changed since inspection');
   await link(candidate,destination);
-  return {destination,sha256:attached.sha256,programSha256:current.sha256,items:final.items,createdCues,copiedCueGraphs,assembledCueGraphs,copiedCueNodes,warnings:[...warnings],validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
+  return {destination,sha256:attached.sha256,programSha256:current.sha256,items:final.items,createdCues,copiedCueGraphs,assembledCueGraphs,assembledItemGraphs,copiedCueNodes,warnings:[...warnings],validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
  }finally{await rm(dir,{recursive:true,force:true});}
 }
