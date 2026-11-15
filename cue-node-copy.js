@@ -2,6 +2,8 @@ import {storedStoppedWarnings} from './stored-stopped-warnings.js';
 import {readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';
 import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';
 import {hasXmlReference} from './xml-references.js';
+export function supportedCueCopyNode(node){return ['groupin','trigger','action'].includes(node.type)||(node.type==='processor'&&node.kind==='')||(node.type==='generator'&&node.kind==='OSC');}
+export const cuePrototypeNote='Processor kind empty and generator kind OSC are patch prototypes only; cue acceptance and execution are unverified. External dependencies are not validated.';
 function walk(node,fn){fn(node);for(const child of node.children)walk(child,fn);}
 function graphParts(xml,cueId){
  const root=parseXmlSpans(xml),path=['sktimeline',{name:'cue',attributes:{id:cueId}}];if(root.name!=='sktimeline'||root.attributes.version!=='1')throw Error('Expected a version 1 timeline');
@@ -20,7 +22,7 @@ export async function copyCueGraphNodeShowCopy({source,destination,sha256,name,c
  if(target.sha256!==sha256)throw Error('Source changed since inspection');if(donor.sha256!==templateSha256)throw Error('Template changed since inspection');
  if(!target.parts.every(p=>p.valid)||!donor.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
  const xml=readSnapshotPart({snapshot:target,name}).text,donorXml=readSnapshotPart({snapshot:donor,name:templateName}).text,targetGraph=graphParts(xml,cueId),donorGraph=graphParts(donorXml,templateCueId);
- const nodes=donorGraph.nodes.filter(n=>n.attributes.id===nodeId);if(nodes.length!==1)throw Error('Template node ID must occur exactly once');const node=nodes[0];if(!['groupin','trigger','action'].includes(node.attributes.type))throw Error('Node type is not supported by the fixture');
+ const nodes=donorGraph.nodes.filter(n=>n.attributes.id===nodeId);if(nodes.length!==1)throw Error('Template node ID must occur exactly once');const node=nodes[0];if(!supportedCueCopyNode(node.attributes))throw Error('Node type is not supported by the fixture');
  let max=0;for(const part of target.parts.filter(p=>/\.(?:skf|sktl|sksc|skpr)$/i.test(p.name))){const root=parseXmlSpans(readSnapshotPart({snapshot:target,name:part.name}).text);walk(root,n=>{if(n.name==='node'&&/^n\d+$/.test(n.attributes.id||'')){const num=Number(n.attributes.id.slice(1));if(!Number.isSafeInteger(num)||num>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,num);}});}
  const donorId=Number(nodeId.slice(1));if(!Number.isSafeInteger(donorId)||donorId>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,donorId);if(max>=1000000000)throw Error('No node IDs remain in the supported range');const newNodeId=`n${max+1}`;
  const {copy}=replaceId(donorXml,node,newNodeId);
@@ -32,5 +34,5 @@ export async function copyCueGraphNodeShowCopy({source,destination,sha256,name,c
  if(JSON.stringify(after.graph.attributes)!==JSON.stringify(graph.attributes))throw Error('Graph attributes changed unexpectedly');
  if(copied.length!==1||after.nodes.length!==targetGraph.nodes.length+1||modified.slice(copied[0].start,copied[0].end)!==copy||JSON.stringify({...copied[0].attributes,id:nodeId})!==JSON.stringify(node.attributes))throw Error('Copied node did not match template');
  const warnings=storedStoppedWarnings(modified,name).filter(w=>w.scope.cueId===cueId&&w.scope.nodeId===newNodeId);
- const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});return {...result,nodeId,newNodeId,warnings,note:'Copied an unconnected fixture-supported node. Internal references, hardware dependencies and ShowKontrol acceptance require validation.'};
+ const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});return {...result,nodeId,newNodeId,warnings,note:['processor','generator'].includes(node.attributes.type)?cuePrototypeNote:'Copied an unconnected fixture-supported node. Internal references, hardware dependencies and ShowKontrol acceptance require validation.'};
 }

@@ -215,7 +215,7 @@ async function copyCreatedCueGraph({timeline,edited,program,source,sha256,index,
  const result=await copyCueGraphBetweenTimelinesWithShow({source:augmentedFile,destination:copiedFile,sha256:digest(augmented),template,templateSha256,sourceCueId:donorCueId,targetCueId:cueId},show);
  const output=await readFile(copiedFile,'utf8');if(output.split(marker).length!==2)throw Error('Allocation sentinel was not preserved');
  const final=output.replace(marker,'');parseXmlSpans(final);await writeFile(edited,final,{flag:'wx'});
- return {...result,sha256:digest(final),note:'Copied a fixture-supported graph. Router targets were checked against the destination show; application acceptance is unverified.'};
+ return {...result,sha256:digest(final),note:'Copied a fixture-supported graph. Router targets were checked against the destination show; application acceptance is unverified.'+(result.note.includes('patch prototypes only')?' '+result.note:'')};
 }
 
 async function assembleProgramCueGraph({timeline,edited,program,source,sha256,currentSha,index,cueId,nodes,wires,dir,step}){

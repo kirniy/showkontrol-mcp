@@ -14,7 +14,7 @@ export async function assembleMixedCueGraphShowCopy({source,destination,sha256,n
   for(const [i,n] of nodes.entries()){
    const next=path.join(dir,`node-${i}.skshow`),common={source:current,destination:next,sha256:currentSha,name,cueId,template:n.template,templateSha256:n.templateSha256,nodeId:n.nodeId};
    const copied=n.kind==='cue'?await copyCueGraphNodeShowCopy({...common,templateName:n.templateName,templateCueId:n.templateCueId}):await copyPatchNodeToCueShowCopy({...common,templateFormat:n.templateFormat});
-   const nextSha=(await inspectShow({file:next})).sha256;added.push(copied.newNodeId);warnings.push(...copied.warnings);if(n.kind==='patch'&&copied.note.includes('patch prototypes only'))prototypeNotes.add(copied.note);if(current!==source)await rm(current);current=next;currentSha=nextSha;
+   const nextSha=(await inspectShow({file:next})).sha256;added.push(copied.newNodeId);warnings.push(...copied.warnings);if(copied.note.includes('patch prototypes only'))prototypeNotes.add(copied.note);if(current!==source)await rm(current);current=next;currentSha=nextSha;
   }
   for(const [i,w] of wires.entries()){
    const next=path.join(dir,`wire-${i}.skshow`);await editCueGraphWireCopy({source:current,destination:next,format:'skshow',sha256:currentSha,name,cueId,operation:'add',fromNode:added[w.from],toNode:added[w.to]});const nextSha=(await inspectShow({file:next})).sha256;if(current!==source)await rm(current);current=next;currentSha=nextSha;
