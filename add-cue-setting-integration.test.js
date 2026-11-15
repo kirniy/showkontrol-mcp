@@ -1,0 +1,11 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';import path from 'node:path';import os from 'node:os';
+import {Client} from '@modelcontextprotocol/sdk/client/index.js';import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
+test('MCP adds an absent fixture setting and rejects duplicates',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-add-setting-mcp-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.sktl'),destination=path.join(dir,'out.sktl');
+ const xml='<sktimeline version="1"><layers><layer name="L"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Cue"><graph><node id="n1" type="trigger"><settings/></node></graph></cue></sktimeline>';await writeFile(source,xml);
+ const client=new Client({name:'add-setting-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());assert.ok((await client.listTools()).tools.some(t=>t.name==='showkontrol_add_cue_graph_setting_copy'));
+ const call=(name,args)=>client.callTool({name,arguments:args}),parse=r=>JSON.parse(r.content[0].text),common={format:'sktl',cueId:'c1'};const before=await call('showkontrol_inspect_cue_graph',{file:source,...common});assert.equal(before.isError,undefined);
+ const args={source,destination,sha256:parse(before).sha256,...common,nodeId:'n1',key:'trigger.path',value:'cue.active'};const added=await call('showkontrol_add_cue_graph_setting_copy',args);assert.equal(added.isError,undefined);
+ const after=await call('showkontrol_inspect_cue_graph',{file:destination,...common});assert.deepEqual(parse(after).graph.nodes[0].settings,[{key:'trigger.path',value:'cue.active'}]);
+ const duplicate=await call('showkontrol_add_cue_graph_setting_copy',{...args,source:destination,destination:path.join(dir,'duplicate.sktl'),sha256:parse(after).sha256});assert.equal(duplicate.isError,true);assert.match(duplicate.content[0].text,/already exists/);assert.equal(await readFile(source,'utf8'),xml);await assert.rejects(readFile(path.join(dir,'duplicate.sktl')),/ENOENT/);
+});

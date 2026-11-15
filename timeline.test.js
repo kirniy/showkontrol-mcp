@@ -251,3 +251,11 @@ test('cue creation preserves tab, newline and carriage return in label',async t=
  const dir=await mkdtemp(path.join(os.tmpdir(),'sk-cue-label-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.sktl'),destination=path.join(dir,'out.sktl');await writeFile(source,'<sktimeline version="1"><layers><layer name="L"/></layers></sktimeline>');const {sha256}=await inspectTimeline({file:source});
  const label='A\tB\nC\rD';await addTimelineCueCopy({source,destination,sha256,layer:0,startMs:0,lengthMs:40,label});const result=await inspectTimeline({file:destination});assert.equal(result.cueElements[0].attributes.label,label);const xml=await readFile(destination,'utf8');assert.match(xml,/&#x9;/);assert.match(xml,/&#xA;/);assert.match(xml,/&#xD;/);
 });
+import {addCueGraphSettingCopy} from './timeline.js';
+test('add a fixture-supported setting to an empty cue node settings element',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-add-setting-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.sktl'),destination=path.join(dir,'out.sktl');
+ const xml='<sktimeline version="1"><layers><layer name="L"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Cue"><graph><node id="n1" type="trigger"><settings/></node></graph></cue></sktimeline>';await writeFile(source,xml);const {sha256}=await inspectTimeline({file:source});const args={source,destination,format:'sktl',sha256,cueId:'c1',nodeId:'n1',key:'trigger.path',value:'cue.active'};
+ await addCueGraphSettingCopy(args);assert.equal((await inspectCueGraph({file:destination,format:'sktl',cueId:'c1'})).graph.nodes[0].settings[0].value,'cue.active');assert.equal(await readFile(source,'utf8'),xml);await assert.rejects(addCueGraphSettingCopy(args),/EEXIST/);
+ await assert.rejects(addCueGraphSettingCopy({...args,destination:path.join(dir,'wrong'),key:'action.category'}),/fixture/);await assert.rejects(addCueGraphSettingCopy({...args,destination:path.join(dir,'stale'),sha256:'0'.repeat(64)}),/changed/);
+ const info=await inspectTimeline({file:destination});await assert.rejects(addCueGraphSettingCopy({...args,source:destination,destination:path.join(dir,'duplicate'),sha256:info.sha256}),/already exists/);
+});

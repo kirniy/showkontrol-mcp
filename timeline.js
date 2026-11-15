@@ -305,3 +305,22 @@ export async function removeCueGraphCopy({source,destination,format,sha256,name,
  const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
  return {...result,cueId,removedNodeCount:before.graph.nodes.length,removedConnectionCount:before.graph.connections.length,note:'Removed a cue action graph from an offline copy. Cue attributes were preserved; external references and ShowKontrol acceptance are not validated.'};
 }
+
+// Only settings and node types seen together in the app-saved cue graph are supported.
+export async function addCueGraphSettingCopy({source,destination,format,sha256,name,cueId,nodeId,key,value}){
+ if(!['sktl','skshow'].includes(format))throw Error('Format must be sktl or skshow');
+ if(typeof cueId!=='string'||!cueId||!/^[A-Za-z0-9_.:-]+$/.test(nodeId||'')||typeof value!=='string'||/[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]/u.test(value))throw Error('Invalid cue ID, node ID or setting value');
+ let xml,actual;if(format==='skshow'){
+  if(!name||!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');const show=await readShowSnapshot({file:source});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');actual=show.sha256;xml=readSnapshotPart({snapshot:show,name}).text;
+ }else ({xml,sha256:actual}=await inspectXml({file:source}));
+ if(actual!==sha256)throw Error('Source changed since inspection');
+ const graph=cueGraph(xml,cueId).graph;if(!graph)throw Error('Cue has no action graph');const nodes=graph.nodes.filter(n=>n.id===nodeId);if(nodes.length!==1)throw Error('Node ID must occur exactly once in cue graph');
+ const node=nodes[0],allowed={trigger:['trigger.path','trigger.on'],action:['action.category']};if(!Object.hasOwn(allowed,node.type)||!allowed[node.type].includes(key))throw Error('Setting and node type are not supported by the fixture');
+ if(node.settings.some(s=>s.key===key))throw Error('Setting already exists');
+ const root=parseXmlSpans(xml),settings=selectXmlSpans(root,['sktimeline',{name:'cue',attributes:{id:cueId}},'graph',{name:'node',attributes:{id:nodeId}},'settings']);if(settings.length!==1)throw Error('Node settings element must occur exactly once');
+ const scope=settings[0],encoded=value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('\r','&#xD;'),entry=`<setting key="${key}">${encoded}</setting>`;
+ let modified;if(scope.selfClosing){const open=xml.slice(scope.start,scope.openEnd).replace(/\s*\/>$/,'>');modified=xml.slice(0,scope.start)+open+entry+'</settings>'+xml.slice(scope.end);}else modified=xml.slice(0,scope.closeStart)+entry+xml.slice(scope.closeStart);
+ const checked=cueGraph(modified,cueId).graph?.nodes.filter(n=>n.id===nodeId);if(checked?.length!==1||checked[0].settings.filter(s=>s.key===key&&s.value===value).length!==1)throw Error('Cue graph setting could not be preserved in XML');
+ const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
+ return {...result,cueId,nodeId,key,value,note:'Added a fixture-supported setting to an offline cue graph. Values and ShowKontrol acceptance are not validated.'};
+}
