@@ -1,6 +1,7 @@
 import {mkdtemp,rm,link,readFile} from 'node:fs/promises';
 import path from 'node:path';
-import {extractShowProgramCopy,createProgramCopy,attachShowProgramCopy,inspectShowProgram} from './program.js';
+import {extractShowProgramCopy,createProgramCopy,attachShowProgramCopy,inspectShowProgram,editProgramItemGraphSettingCopy,extractProgramTimelineCopy,embedProgramTimelineCopy} from './program.js';
+import {editTimelineCueCopy} from './timeline.js';
 import {validateShow} from './validate-show.js';
 import {parseXmlSpans} from './xml-spans.js';
 import {hasXmlReference} from './xml-references.js';
@@ -43,13 +44,36 @@ export async function composeProgramEditsCopy(args){
   if(op.action==='add')keys(op,['action','start','name','notes']);
   else if(op.action==='edit')keys(op,['action','index'],['start','name','notes']);
   else if(op.action==='remove'){keys(op,['action','index'],['allowContentRemoval']);if(op.allowContentRemoval!==undefined&&typeof op.allowContentRemoval!=='boolean')throw Error('allowContentRemoval must be a boolean');}
+  else if(op.action==='edit_graph_setting')keys(op,['action','index','nodeId','key','value']);
+  else if(op.action==='edit_timeline_cue'){
+   keys(op,['action','index','cueId'],['layer','startMs','lengthMs','label']);
+   if(['layer','startMs','lengthMs','label'].every(k=>op[k]===undefined))throw Error('Provide at least one cue field');
+  }
   else throw Error('Invalid operation');
  }
  const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-program-edit-'));
  try{
   let step=0;const next=()=>path.join(dir,`${step++}.skpr`);
-  let program=next(),current=await extractShowProgramCopy({source,destination:program,sha256});
-  for(const operation of operations){if(operation.action==='remove')await checkRemovalReferences(program,operation.index);const destination=next();current=await createProgramCopy({source:program,destination,sha256:current.sha256,operation});program=destination;}
+  const warnings=new Set();
+  const collect=result=>{for(const warning of [...(result.warnings??[]),result.note])if(typeof warning==='string'&&warning)warnings.add(warning);};
+  let program=next(),current=await extractShowProgramCopy({source,destination:program,sha256});collect(current);
+  for(const operation of operations){
+   if(operation.action==='remove')await checkRemovalReferences(program,operation.index);
+   const destination=next();
+   if(operation.action==='edit_graph_setting'){
+    const {index,nodeId,key,value}=operation;
+    current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index,nodeId,key,value});
+   }else if(operation.action==='edit_timeline_cue'){
+    const {index,cueId,layer,startMs,lengthMs,label}=operation;
+    const timeline=path.join(dir,`${step++}.sktl`),edited=path.join(dir,`${step++}.sktl`);
+    const extracted=await extractProgramTimelineCopy({source:program,destination:timeline,sha256:current.sha256,index});
+    collect(extracted);
+    const changed=await editTimelineCueCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,layer,startMs,lengthMs,label});
+    collect(changed);
+    current=await embedProgramTimelineCopy({source:program,destination,sha256:current.sha256,index,donor:edited,donorSha256:changed.sha256,replaceExisting:true});
+   }else current=await createProgramCopy({source:program,destination,sha256:current.sha256,operation});
+   collect(current);program=destination;
+  }
   const candidate=path.join(dir,'candidate.skshow');
   const attached=await attachShowProgramCopy({source,destination:candidate,sha256,program,programSha256:current.sha256,replaceExisting:true});
   const validation=await validateShow({file:candidate});
@@ -58,6 +82,6 @@ export async function composeProgramEditsCopy(args){
   if(final.sha256!==attached.sha256||final.programSha256!==current.sha256)throw Error('Final show checksum mismatch');
   if((await inspectShowProgram({file:source})).sha256!==sha256)throw Error('Source changed since inspection');
   await link(candidate,destination);
-  return {destination,sha256:attached.sha256,programSha256:current.sha256,items:final.items,warnings:[current.note],validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
+  return {destination,sha256:attached.sha256,programSha256:current.sha256,items:final.items,warnings:[...warnings],validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
  }finally{await rm(dir,{recursive:true,force:true});}
 }
