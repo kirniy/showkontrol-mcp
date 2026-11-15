@@ -1,5 +1,8 @@
 import path from 'node:path';
-import {link,unlink} from 'node:fs/promises';
+import {link,unlink,mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';
+import os from 'node:os';
+import {createHash} from 'node:crypto';
+import {embedProgramTimelineRemappedCopy} from './program-timeline-copy-remap.js';
 import {randomUUID} from 'node:crypto';
 import {inspectXml,readShowSnapshot,readSnapshotPart,addShowPart} from './xml-copy.js';
 import {parseXmlSpans} from './xml-spans.js';
@@ -8,7 +11,8 @@ import {hasXmlReference} from './xml-references.js';
 
 const descendants=n=>[n,...n.children.flatMap(descendants)];
 const escapeRegex=s=>s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-export async function cloneMediaTrackCopy({source,destination,sha256,templateName,trackName,partName}) {
+export async function cloneMediaTrackCopy({source,destination,sha256,templateName,trackName,partName,cueMode="remove"}) {
+ if(!["remove","copy"].includes(cueMode))throw Error("cueMode must be remove or copy");
  if(!path.isAbsolute(source||'')||!path.isAbsolute(destination||'')||path.extname(source).toLowerCase()!=='.skshow'||path.extname(destination).toLowerCase()!=='.skshow'||path.resolve(source)===path.resolve(destination))throw Error('Source and destination must be different absolute .skshow paths');
  if(!/^[a-f0-9]{64}$/.test(sha256||''))throw Error('A source SHA-256 is required');
  if(!/^[A-Za-z0-9 _-]*[A-Za-z0-9_-][A-Za-z0-9 _-]*$/.test(trackName||'')||!/^content\/[A-Za-z0-9_-]+\.sktl$/.test(partName||''))throw Error('Invalid track or part name');
@@ -34,12 +38,22 @@ export async function cloneMediaTrackCopy({source,destination,sha256,templateNam
  if(ids.length>1001||new Set(ids).size!==ids.length)throw Error('Duplicate or excessive cue or node identifiers');
  // Unknown identity-bearing attributes are unsafe to duplicate, even when their semantics are unknown.
  for(const n of all.filter(n=>!removed.has(n)))for(const key of Object.keys(n.attributes))if((/(?:id|uuid|guid|ref|reference)$/i.test(key)&&!['mediaGrid','grid'].includes(key)))throw Error('Unsupported identity or reference attribute in preserved XML');
- let changed=xml;for(const cue of [...direct].reverse())changed=changed.slice(0,cue.start)+changed.slice(cue.end);
- for(const id of ids)if(hasXmlReference(changed,new RegExp(`(?<![A-Za-z0-9_])${escapeRegex(id)}(?![A-Za-z0-9_])`)))throw Error('Preserved XML references a removed cue or node');
- const opening=changed.slice(root.start,root.openEnd);const matches=[...opening.matchAll(/\sname\s*=\s*(["'])(.*?)\1/g)];if(matches.length!==1)throw Error('Unsupported timeline name serialization');
- const m=matches[0],at=root.start+m.index+m[0].indexOf(m[1])+1;changed=changed.slice(0,at)+trackName+changed.slice(at+m[2].length);
- const parsed=parseTimeline(changed);if(parsed.attributes.name!==trackName||parsed.cueElements.length)throw Error('Clone verification failed');
+ let changed=xml,cueMapping={},nodeMapping={};
+ if(cueMode==='remove'){
+  for(const cue of [...direct].reverse())changed=changed.slice(0,cue.start)+changed.slice(cue.end);
+  for(const id of ids)if(hasXmlReference(changed,new RegExp(`(?<![A-Za-z0-9_])${escapeRegex(id)}(?![A-Za-z0-9_])`)))throw Error('Preserved XML references a removed cue or node');
+ }else{
+  // Only known identity fields can be copied. The remapper validates graph paths and endpoints.
+  for(const n of all)for(const key of Object.keys(n.attributes))if(/(?:id|uuid|guid|ref|reference)$/i.test(key)&&!(['cue','node'].includes(n.name)&&key==='id')&&!['mediaGrid','grid'].includes(key))throw Error('Unsupported identity or reference attribute');
+  const nodes=[...removed].filter(n=>n.name==='node').map(n=>n.attributes.id);
+  for(const part of show.parts.filter(p=>p.name!==templateName&&/\.(?:skf|sktl|sksc|skls|skpr|skcp)$/i.test(p.name))){const text=readSnapshotPart({snapshot:show,name:part.name}).text;for(const id of nodes)if(hasXmlReference(text,new RegExp(`(?<![A-Za-z0-9_])${escapeRegex(id)}(?![A-Za-z0-9_])`)))throw Error('Node ID occurs outside the template');}
+  const dir=await mkdtemp(path.join(os.tmpdir(),'showkontrol-clone-'));
+  try{const program='<skprogram version="1"><item start="0" name="Clone" notes=""/></skprogram>',input=path.join(dir,'in.skpr'),output=path.join(dir,'out.skpr');await writeFile(input,program);const result=await embedProgramTimelineRemappedCopy({source:input,destination:output,sha256:createHash('sha256').update(program).digest('hex'),index:0,donor:source,donorName:templateName,donorSha256:sha256,target:source,targetSha256:sha256,remapCueIds:true});const staged=await readFile(output,'utf8'),stagedRoot=parseXmlSpans(staged),timeline=stagedRoot.children[0].children.find(n=>n.name==='sktimeline');if(!timeline)throw Error('Clone verification failed');changed=xml.slice(0,root.start)+staged.slice(timeline.start,timeline.end)+xml.slice(root.end);cueMapping=result.cueMapping;nodeMapping=result.mapping;}finally{await rm(dir,{recursive:true,force:true});}
+ }
+ const changedRoot=parseXmlSpans(changed);const opening=changed.slice(changedRoot.start,changedRoot.openEnd);const matches=[...opening.matchAll(/\sname\s*=\s*(["'])(.*?)\1/g)];if(matches.length!==1)throw Error('Unsupported timeline name serialization');
+ const m=matches[0],at=changedRoot.start+m.index+m[0].indexOf(m[1])+1;changed=changed.slice(0,at)+trackName+changed.slice(at+m[2].length);
+ const parsed=parseTimeline(changed);if(parsed.attributes.name!==trackName||(cueMode==='remove'&&parsed.cueElements.length)|| (cueMode==='copy'&&parsed.cueElements.length!==direct.length))throw Error('Clone verification failed');
  const temp=path.join(path.dirname(destination),`.showkontrol-clone-${randomUUID()}.tmp`);let made=false;
  try{await addShowPart({source,destination:temp,sha256,name:partName,text:changed});made=true;const check=await readShowSnapshot({file:temp});if(check.parts.length!==show.parts.length+1||check.parts.some(p=>!p.valid)||show.parts.some(p=>!check.parts.some(q=>q.name===p.name&&q.md5===p.md5&&q.bytes.equals(p.bytes)))||!check.parts.find(p=>p.name===partName)?.bytes.equals(Buffer.from(changed)))throw Error('Clone verification failed');if((await inspectXml({file:source})).sha256!==sha256)throw Error('Source changed since inspection');await link(temp,destination);}finally{if(made)await unlink(temp);}
- return {destination,templateName,trackName,partName,removedCues:direct.length,note:'Offline clone only. Media fields and audio are copied, not validated. Encoded, computed, external and binary references may be missed. ShowKontrol acceptance and playback are not verified; the set list is unchanged.'};
+ return {destination,templateName,trackName,partName,removedCues:cueMode==='remove'?direct.length:0,cueMode,cueMapping,nodeMapping,note:'Offline clone only. Media fields and audio are copied, not validated. Encoded, computed, external and binary references may be missed. ShowKontrol acceptance and playback are not verified; the set list is unchanged.'};
 }
