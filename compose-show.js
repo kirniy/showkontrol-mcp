@@ -14,7 +14,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
  if (!path.isAbsolute(source) || !path.isAbsolute(destination) || path.resolve(source) === path.resolve(destination)) throw Error('Source and destination must be different absolute paths');
  const existing = existingPartName !== undefined;
  const cloning = mediaClone !== undefined;
- if (cloning && (!mediaClone || typeof mediaClone !== 'object' || Array.isArray(mediaClone) || Object.keys(mediaClone).some(k => !['templateName','cueMode'].includes(k)) || typeof mediaClone.templateName !== 'string' || !mediaClone.templateName || (mediaClone.cueMode !== undefined && !['copy','remove'].includes(mediaClone.cueMode)))) throw Error('Invalid mediaClone');
+ if (cloning && (!mediaClone || typeof mediaClone !== 'object' || Array.isArray(mediaClone) || Object.keys(mediaClone).some(k => !['templateName','cueMode','allowOpaqueNodeText'].includes(k)) || typeof mediaClone.templateName !== 'string' || !mediaClone.templateName || (mediaClone.cueMode !== undefined && !['copy','remove'].includes(mediaClone.cueMode)) || (mediaClone.allowOpaqueNodeText !== undefined && typeof mediaClone.allowOpaqueNodeText !== 'boolean'))) throw Error('Invalid mediaClone');
  if (existing ? typeof existingPartName !== 'string' || !existingPartName || templateName !== undefined || templateDonor !== undefined || cloning || trackName !== undefined || partName !== undefined || set !== undefined : ([templateName !== undefined, templateDonor !== undefined, cloning].filter(Boolean).length !== 1) || (templateName !== undefined && (typeof templateName !== 'string' || !templateName)) || typeof trackName !== 'string' || !trackName || typeof partName !== 'string' || !partName) throw Error('Choose existingPartName alone or one track template mode with trackName and partName');
  if (existing) partName = existingPartName;
  if (layerOperations !== undefined && (!Array.isArray(layerOperations) || layerOperations.some(op => !op || typeof op !== 'object' || Array.isArray(op) || !['append', 'rename', 'move', 'remove'].includes(op.operation) || typeof op.layerName !== 'string' || !op.layerName || (['append', 'rename'].includes(op.operation) ? typeof op.newName !== 'string' || !op.newName.trim() || op.targetIndex !== undefined : op.newName !== undefined || (op.operation === 'move' ? !Number.isSafeInteger(op.targetIndex) || op.targetIndex < 0 : op.targetIndex !== undefined))))) throw Error('Layer operations require a valid operation, layer name and operation-specific fields');
@@ -55,6 +55,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
   if (existing) await inspectShowTimeline({file: current, name: partName});
   else if (cloning) cloneReceipt = await step(next => cloneMediaTrackCopy({source: current, destination: next, sha256: currentHash, ...mediaClone, trackName, partName}));
   else await step(next => createShowTrackCopy({source: current, destination: next, sha256: currentHash, templateName, templateDonor, trackName, partName}));
+  if (cloneReceipt) opaqueWarnings.push(...cloneReceipt.warnings);
   for (const operation of layerOperations || []) await step(next => editTimelineLayerCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, operation: operation.operation, layerName: operation.layerName, newName: operation.newName, targetIndex: operation.targetIndex}));
   for (const edit of audioClipEdits || []) await step(next => editTimelineAudioClipCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, audioIndex: edit?.audioIndex, clipIndex: edit?.clipIndex, attributes: edit?.attributes}));
   const resolveId = (item, field, sourceField, mapping) => {
@@ -67,7 +68,10 @@ export async function composeShowCopy({source, destination, sha256, templateName
   };
   for (const removal of cueRemovals || []) await step(next => deleteTimelineCueCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, cueId: resolveId(removal, 'cueId', 'sourceCueId', cloneReceipt?.cueMapping), deleteGraph: removal.deleteGraph}));
   for (const edit of cueEdits || []) await step(next => editTimelineCueCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, cueId: resolveId(edit, 'cueId', 'sourceCueId', cloneReceipt?.cueMapping), layer: edit?.layer, startMs: edit?.startMs, lengthMs: edit?.lengthMs, label: edit?.label}));
-  for (const edit of graphSettingEdits || []) await step(next => editCueGraphSettingCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, cueId: resolveId(edit, 'cueId', 'sourceCueId', cloneReceipt?.cueMapping), nodeId: resolveId(edit, 'nodeId', 'sourceNodeId', cloneReceipt?.nodeMapping), key: edit?.key, value: edit?.value}));
+  for (const edit of graphSettingEdits || []) {
+   const cueId = resolveId(edit, 'cueId', 'sourceCueId', cloneReceipt?.cueMapping), nodeId = resolveId(edit, 'nodeId', 'sourceNodeId', cloneReceipt?.nodeMapping);
+   await step(next => editCueGraphSettingCopy({source: current, destination: next, sha256: currentHash, format: 'skshow', name: partName, cueId, nodeId, key: edit?.key, value: edit?.value}));
+  }
   for (const cue of cues) {
    const {layer, startMs, lengthMs, label} = cue || {};
    const created = await step(next => addShowTimelineCueCopy({source: current, destination: next, sha256: currentHash, name: partName, layer, startMs, lengthMs, label}));
@@ -128,6 +132,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
   const warnings = [...await compositionWarnings(current, currentHash, [partName]), ...await survivingOpaqueWarnings(current, currentHash, opaqueWarnings)];
   if (templateDonor !== undefined) await readTrackTemplateDonor(templateDonor);
   await link(current, destination); published = true;
+  if (cloneReceipt) { const {warnings: ignored, ...receipt} = cloneReceipt; cloneReceipt = receipt; }
   result = {destination, sha256: currentHash, ...(existing ? {existingPartName} : {trackName, partName}), cues: added, ...(cloneReceipt ? {mediaClone: {...cloneReceipt, destination}} : {}), warnings, ...(set ? {set} : {}), note: 'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};
  } finally {
   try { await rm(dir, {recursive: true, force: true}); }
