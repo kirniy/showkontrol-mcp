@@ -1,3 +1,4 @@
+import {storedStoppedWarnings} from './stored-stopped-warnings.js';
 import {readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';
 import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';
 import {hasXmlReference} from './xml-references.js';
@@ -30,5 +31,6 @@ export async function copyCueGraphNodeShowCopy({source,destination,sha256,name,c
  const after=graphParts(modified,cueId),copied=after.nodes.filter(n=>n.attributes.id===newNodeId);
  if(JSON.stringify(after.graph.attributes)!==JSON.stringify(graph.attributes))throw Error('Graph attributes changed unexpectedly');
  if(copied.length!==1||after.nodes.length!==targetGraph.nodes.length+1||modified.slice(copied[0].start,copied[0].end)!==copy||JSON.stringify({...copied[0].attributes,id:nodeId})!==JSON.stringify(node.attributes))throw Error('Copied node did not match template');
- const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});return {...result,nodeId,newNodeId,note:'Copied an unconnected fixture-supported node. Internal references, hardware dependencies and ShowKontrol acceptance require validation.'};
+ const warnings=storedStoppedWarnings(modified,name).filter(w=>w.scope.cueId===cueId&&w.scope.nodeId===newNodeId);
+ const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});return {...result,nodeId,newNodeId,warnings,note:'Copied an unconnected fixture-supported node. Internal references, hardware dependencies and ShowKontrol acceptance require validation.'};
 }

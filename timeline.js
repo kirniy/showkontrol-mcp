@@ -1,3 +1,4 @@
+import {storedStoppedWarnings} from './stored-stopped-warnings.js';
 import {hasXmlReference} from './xml-references.js';
 import {validateRouterTarget} from './patch-setting-to-cue.js';
 import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';
@@ -192,8 +193,9 @@ export async function copyCueGraphInShow({source,destination,sha256,name,sourceN
  const changed=insertCueGraph(xml,tm[0],graph);
  const expected={nodes:src.graph.nodes.map(node=>({...node,id:idMap[node.id]})),connections:src.graph.connections.map(connection=>({...connection,fromNode:idMap[connection.fromNode],toNode:idMap[connection.toNode]}))};
  if(JSON.stringify(cueGraph(changed,targetCueId).graph)!==JSON.stringify(expected))throw Error('Copied graph did not match the selected source and target cues');
+ const warnings=storedStoppedWarnings(changed,name).filter(w=>w.scope.cueId===targetCueId&&Object.values(idMap).includes(w.scope.nodeId));
  const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:changed}]});
- return {...result,sourceName,sourceCueId,targetCueId,idMap,note:'Copied a fixture-supported cue graph into an offline show copy; validate the result in ShowKontrol.'};
+ return {...result,sourceName,sourceCueId,targetCueId,idMap,warnings,note:'Copied a fixture-supported cue graph into an offline show copy; validate the result in ShowKontrol.'};
 }
 
 // Edit only the cue's opening tag, leaving any action graph intact.
@@ -379,7 +381,8 @@ export async function copyCueGraphBetweenTimelines({source,destination,sha256,te
  const modified=insertCueGraph(target.xml,cues[0],graph);
  const expected={nodes:src.graph.nodes.map(node=>({...node,id:idMap[node.id]})),connections:src.graph.connections.map(c=>({...c,fromNode:idMap[c.fromNode],toNode:idMap[c.toNode]}))};
  if(JSON.stringify(cueGraph(modified,targetCueId).graph)!==JSON.stringify(expected))throw Error('Copied graph did not match selected source and target cues');
- const result=await editXmlCopy({source,destination,sha256,edits:[{find:target.xml,replace:modified}]});return {...result,sourceCueId,targetCueId,idMap,note:'Copied a fixture-supported cue graph into an offline timeline copy. Node IDs are checked within this timeline only; validate in ShowKontrol before combining with a show.'};
+ const warnings=storedStoppedWarnings(modified,destination).filter(w=>w.scope.cueId===targetCueId&&Object.values(idMap).includes(w.scope.nodeId));
+ const result=await editXmlCopy({source,destination,sha256,edits:[{find:target.xml,replace:modified}]});return {...result,sourceCueId,targetCueId,idMap,warnings,note:'Copied a fixture-supported cue graph into an offline timeline copy. Node IDs are checked within this timeline only; validate in ShowKontrol before combining with a show.'};
 }
 
 export async function removeCueGraphCopy({source,destination,format,sha256,name,cueId}){

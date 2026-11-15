@@ -9,7 +9,7 @@ export async function assembleCueGraphShowCopy({source,destination,sha256,name,c
  for(const node of nodes)if(!node||typeof node.template!=='string'||typeof node.templateSha256!=='string'||typeof node.templateName!=='string'||typeof node.templateCueId!=='string'||typeof node.nodeId!=='string')throw Error('Each node requires a template show, hash, timeline, cue ID and node ID');
  for(const wire of wires)if(!wire||!Number.isInteger(wire.from)||!Number.isInteger(wire.to)||wire.from<0||wire.to<0||wire.from>=nodes.length||wire.to>=nodes.length)throw Error('Wire indices must identify supplied nodes');
  const original=await inspectShow({file:source});if(original.sha256!==sha256)throw Error('Source changed since inspection');
- const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-graph-'));let current=source,currentSha=sha256,published=false,result;const added=[];
+ const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-graph-'));let current=source,currentSha=sha256,published=false,result;const added=[],warnings=[];
  try{
   const snapshot=await readShowSnapshot({file:source});if(snapshot.sha256!==sha256)throw Error('Source changed since inspection');if(!snapshot.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
   const xml=readSnapshotPart({snapshot,name}).text,root=parseXmlSpans(xml),cuePath=['sktimeline',{name:'cue',attributes:{id:cueId}}],cues=selectXmlSpans(root,cuePath),graphs=selectXmlSpans(root,[...cuePath,'graph']);
@@ -23,13 +23,13 @@ export async function assembleCueGraphShowCopy({source,destination,sha256,name,c
   }
   for(const [i,node] of nodes.entries()){
    const next=path.join(dir,`node-${i}.skshow`),result=await copyCueGraphNodeShowCopy({source:current,destination:next,sha256:currentSha,name,cueId,template:node.template,templateSha256:node.templateSha256,templateName:node.templateName,templateCueId:node.templateCueId,nodeId:node.nodeId});
-   const nextSha=(await inspectShow({file:next})).sha256;added.push(result.newNodeId);if(current!==source)await rm(current);current=next;currentSha=nextSha;
+   const nextSha=(await inspectShow({file:next})).sha256;added.push(result.newNodeId);warnings.push(...result.warnings);if(current!==source)await rm(current);current=next;currentSha=nextSha;
   }
   for(const [i,wire] of wires.entries()){
    const next=path.join(dir,`wire-${i}.skshow`);await editCueGraphWireCopy({source:current,destination:next,format:'skshow',sha256:currentSha,name,cueId,operation:'add',fromNode:added[wire.from],toNode:added[wire.to]});
    const nextSha=(await inspectShow({file:next})).sha256;if(current!==source)await rm(current);current=next;currentSha=nextSha;
   }
-  await link(current,destination);published=true;result={destination,sha256:currentSha,nodeIds:added,wires:wires.map(w=>({fromNode:added[w.from],toNode:added[w.to]})),note:'Assembled an offline fixture-supported cue graph. Pin compatibility, external dependencies and ShowKontrol acceptance are not validated.'};
+  await link(current,destination);published=true;result={destination,sha256:currentSha,nodeIds:added,warnings,wires:wires.map(w=>({fromNode:added[w.from],toNode:added[w.to]})),note:'Assembled an offline fixture-supported cue graph. Pin compatibility, external dependencies and ShowKontrol acceptance are not validated.'};
  }finally{try{await rm(dir,{recursive:true,force:true});}catch(error){if(!published)throw error;result.cleanupWarning=`Published copy is valid, but temporary directory cleanup failed: ${dir}: ${error.message}`;}}
  return result;
 }

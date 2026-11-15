@@ -1,3 +1,4 @@
+import {storedStoppedWarnings} from './stored-stopped-warnings.js';
 import {inspectXml,readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';import {hasXmlReference} from './xml-references.js';
 function walk(node,fn){fn(node);for(const child of node.children)walk(child,fn);}
 function withNewId(xml,node,id){
@@ -18,5 +19,6 @@ export async function copyPatchNodeToCueShowCopy({source,destination,sha256,name
  if(hasXmlReference(copy,/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/,{ignoreRootId:true}))throw Error('Node contains unsupported internal references');
  const graph=graphs[0];let modified;if(graph.selfClosing){const opening=xml.slice(graph.start,graph.openEnd).replace(/\s*\/>$/,'>');modified=xml.slice(0,graph.start)+opening+copy+'</graph>'+xml.slice(graph.end);}else modified=xml.slice(0,graph.closeStart)+copy+xml.slice(graph.closeStart);
  const after=parseXmlSpans(modified),newGraph=selectXmlSpans(after,[...cuePath,'graph']),nodes=selectXmlSpans(after,[...cuePath,'graph','node']),copied=nodes.filter(n=>n.attributes.id===newNodeId);if(newGraph.length!==1||JSON.stringify(newGraph[0].attributes)!==JSON.stringify(graph.attributes)||nodes.length!==oldNodes.length+1||copied.length!==1||modified.slice(copied[0].start,copied[0].end)!==copy||JSON.stringify({...copied[0].attributes,id:nodeId})!==JSON.stringify(node.attributes))throw Error('Copied node could not be verified');
- const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});return {...result,nodeId,newNodeId,note:'Copied an unconnected action or trigger node from a patch into an offline cue graph. ShowKontrol acceptance and external dependencies are not validated.'};
+ const warnings=storedStoppedWarnings(modified,name).filter(w=>w.scope.cueId===cueId&&w.scope.nodeId===newNodeId);
+ const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});return {...result,nodeId,newNodeId,warnings,note:'Copied an unconnected action or trigger node from a patch into an offline cue graph. ShowKontrol acceptance and external dependencies are not validated.'};
 }
