@@ -143,3 +143,26 @@ test('MCP accepts edit-only composition and rolls back later failures',async t=>
  assert.equal(failed.isError,true);await assert.rejects(readFile(destination),/ENOENT/);assert.equal(await readFile(source,'utf8'),input);
  assert.deepEqual((await readdir(dir)).filter(name=>name.startsWith('.showkontrol-')),[]);
 });
+
+test('MCP composes ordered existing graph setting edits atomically',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-compose-graph-edits-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skshow');
+ const timeline='<sktimeline version="1" name="Existing"><layers><layer name="Layer 1"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Original"><graph><node id="n1" type="trigger"><settings><setting key="trigger.path">original</setting><setting key="other">keep</setting></settings></node></graph></cue></sktimeline>';
+ const input=`<skshow><!-- keep -->${part('content/Existing.sktl',timeline)}${part('media/file.wav','media bytes')}${part('patch.skf','<showkontrol version="2"><graph/></showkontrol>')}</skshow>`;
+ await writeFile(source,input);const sha256=(await inspectShow({file:source})).sha256;
+ const client=new Client({name:'compose-graph-edits-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const call=(name,args)=>client.callTool({name,arguments:{source,sha256,...args}});
+ const edit={existingPartName:'content/Existing.sktl',graphSettingEdits:[{cueId:'c1',nodeId:'n1',key:'trigger.path',value:'first'},{cueId:'c1',nodeId:'n1',key:'trigger.path',value:'final & value'}]};
+ for(const multi of [false,true]){
+  const name=multi?'showkontrol_compose_multi_track_show_copy':'showkontrol_compose_show_copy',destination=path.join(dir,`result-${multi}.skshow`);
+  const result=await call(name,{destination,...(multi?{tracks:[edit]}:edit)});assert.equal(result.isError,undefined,JSON.stringify(result));
+  const snapshot=await readShowSnapshot({file:destination});assert.ok(snapshot.parts.every(p=>p.valid));
+  const target=snapshot.parts.find(p=>p.name===edit.existingPartName).bytes.toString();assert.ok(target.includes('<setting key="trigger.path">final &amp; value</setting>'));assert.ok(target.includes('<setting key="other">keep</setting>'));assert.ok(target.includes('label="Original"'));
+  assert.equal(snapshot.parts.find(p=>p.name==='media/file.wav').bytes.toString(),'media bytes');
+  const failedPath=path.join(dir,`failed-${multi}.skshow`),bad={...edit,graphSettingEdits:[...edit.graphSettingEdits,{cueId:'c1',nodeId:'n1',key:'missing',value:'bad'}]};
+  const failed=await call(name,{destination:failedPath,...(multi?{tracks:[edit,bad]}:bad)});assert.equal(failed.isError,true);await assert.rejects(readFile(failedPath),/ENOENT/);
+  const limitPath=path.join(dir,`limit-${multi}.skshow`),limit={...edit,graphSettingEdits:Array(101).fill(edit.graphSettingEdits[0])};
+  assert.equal((await call(name,{destination:limitPath,...(multi?{tracks:[limit]}:limit)})).isError,true);await assert.rejects(readFile(limitPath),/ENOENT/);
+ }
+ assert.equal(await readFile(source,'utf8'),input);assert.deepEqual((await readdir(dir)).filter(name=>name.startsWith('.showkontrol-')),[]);
+});
