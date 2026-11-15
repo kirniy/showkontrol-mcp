@@ -2,6 +2,7 @@ import {mkdtemp,link,rm} from 'node:fs/promises';
 import path from 'node:path';
 import {inspectShow} from './xml-copy.js';
 import {composeShowCopy} from './compose-show.js';
+import {readTrackTemplateDonor} from './timeline.js';
 import {editPatchBatchCopy} from './batch-patch.js';
 import {addShowSetlistTrackCopy,editShowSetlistCopy} from './setlist.js';
 import {compositionWarnings} from './composition-warnings.js';
@@ -29,8 +30,8 @@ export async function composeMultiTrackShowCopy({source,destination,sha256,track
    current=next;currentHash=patch.sha256;
   }
   for(let i=0;i<tracks.length;i++){
-   const {templateName,trackName,partName,existingPartName,cues,donor,set,layerOperations,audioClipEdits,cueRemovals,cueEdits,graphSettingEdits}=tracks[i],next=path.join(dir,`${i}.skshow`);
-   const track=await composeShowCopy({source:current,destination:next,sha256:currentHash,templateName,trackName,partName,existingPartName,cues,donor,set,layerOperations,audioClipEdits,cueRemovals,cueEdits,graphSettingEdits});
+   const {templateName,templateDonor,trackName,partName,existingPartName,cues,donor,set,layerOperations,audioClipEdits,cueRemovals,cueEdits,graphSettingEdits}=tracks[i],next=path.join(dir,`${i}.skshow`);
+   const track=await composeShowCopy({source:current,destination:next,sha256:currentHash,templateName,templateDonor,trackName,partName,existingPartName,cues,donor,set,layerOperations,audioClipEdits,cueRemovals,cueEdits,graphSettingEdits});
    composed.push({... (existingPartName !== undefined ? {existingPartName} : {trackName,partName}),cues:track.cues,...(set?{set}:{})});
    if(track.cleanupWarning)warnings.push(track.cleanupWarning);
    if(current!==source)await rm(current);
@@ -46,6 +47,7 @@ export async function composeMultiTrackShowCopy({source,destination,sha256,track
   }
   if(!tracks.length&&currentHash===sha256)throw Error('Composition must make a change');
   const storedWarnings=await compositionWarnings(current,currentHash,tracks.map(track=>track.existingPartName ?? track.partName));
+  for(const track of tracks)if(track.templateDonor!==undefined)await readTrackTemplateDonor(track.templateDonor);
   await link(current,destination);published=true;
   result={destination,sha256:currentHash,tracks:composed,setlistOperations:setlistOperations??[],warnings:storedWarnings,note:'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};
  }finally{

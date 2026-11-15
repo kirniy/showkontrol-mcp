@@ -6,6 +6,7 @@ import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';
 import {SaxesParser} from 'saxes';
 import {inspectXml,editXmlCopy,readShowSnapshot,readSnapshotPart,editShowPart,addShowPart} from './xml-copy.js';
 import {randomInt} from 'node:crypto';
+import path from 'node:path';
 export function parseTimeline(xml) {
  const parser=new SaxesParser();const stack=[];const result={attributes:{},layers:[],audio:[],audioClips:[],cueElements:[]};
  parser.on('opentag',tag=>{
@@ -241,20 +242,32 @@ export async function editTimelineCueCopy({source,destination,format,sha256,name
  return {...result,cueId,note:'Cue fields changed in an offline copy; existing graph was preserved. Validate in ShowKontrol.'};
 }
 
+// Read an inspected external template again whenever it is used or published.
+export async function readTrackTemplateDonor(donor) {
+ if(!donor || typeof donor!=='object' || Array.isArray(donor) || !path.isAbsolute(donor.file||'') || !['sktl','skshow'].includes(donor.format) || typeof donor.sha256!=='string' || !/^[a-fA-F0-9]{64}$/.test(donor.sha256) || Object.keys(donor).some(k=>!['file','format','sha256','name'].includes(k)) || (donor.format==='skshow' ? typeof donor.name!=='string'||!donor.name.toLowerCase().endsWith('.sktl') : donor.name!==undefined)) throw Error('Template donor requires an absolute file, format, SHA-256 and, for a show, a timeline part name');
+ let xml,actual;
+ if(donor.format==='skshow'){
+  const show=await readShowSnapshot({file:donor.file});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
+  actual=show.sha256;xml=readSnapshotPart({snapshot:show,name:donor.name}).text;
+ }else ({xml,sha256:actual}=await inspectXml({file:donor.file}));
+ if(actual.toLowerCase()!==donor.sha256.toLowerCase())throw Error('Template donor changed since inspection');
+ return xml;
+}
 // New tracks use an empty app-saved timeline as a template.
-export async function createShowTrackCopy({source,destination,sha256,templateName,trackName,partName}) {
+export async function createShowTrackCopy({source,destination,sha256,templateName,templateDonor,trackName,partName}) {
  if(!/^[A-Za-z0-9 _-]+$/.test(trackName||'')||!trackName.trim())throw Error('Track name must use letters, digits, spaces, underscores or hyphens');
  if(!/^content\/[A-Za-z0-9_-]+\.sktl$/.test(partName||''))throw Error('Part name must be a content/ timeline filename with letters, digits, underscores or hyphens');
  const show=await readShowSnapshot({file:source});if(show.sha256!==sha256)throw Error('Source changed since inspection');
  if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
- if(!templateName||!templateName.toLowerCase().endsWith('.sktl'))throw Error('Select an empty timeline template');
- let template;
+ if((templateName===undefined)===(templateDonor===undefined) || (templateName!==undefined && (typeof templateName!=='string'||!templateName.toLowerCase().endsWith('.sktl'))))throw Error('Select exactly one empty timeline template or template donor');
+ let template=templateDonor===undefined?undefined:await readTrackTemplateDonor(templateDonor);
  for(const part of show.parts.filter(p=>p.name.toLowerCase().endsWith('.sktl'))){
   const xml=(readSnapshotPart({snapshot:show,name:part.name})).text, info=parseTimeline(xml);
   if(info.attributes.name?.toLowerCase()===trackName.toLowerCase())throw Error('Track name already exists');
-  if(part.name===templateName){if(info.cueElements.length||info.attributes.media||info.attributes.mediaWave||info.attributes.mediaGrid||info.attributes.mediaStructS||info.attributes.mediaStructE||info.attributes.mediaStructL)throw Error('Template must be empty and have no media');template=xml;}
+  if(part.name===templateName)template=xml;
  }
  if(!template)throw Error('Timeline template was not found');
+ const info=parseTimeline(template);if(info.cueElements.length||info.attributes.media||info.attributes.mediaWave||info.attributes.mediaGrid||info.attributes.mediaStructS||info.attributes.mediaStructE||info.attributes.mediaStructL)throw Error('Template must be empty and have no media');
  // Only clone the structure observed in the app-saved empty track fixture.
  const stack=[];const allowed=new Set(['sktimeline','sktimeline/titles','sktimeline/layers','sktimeline/layers/layer','sktimeline/audio']);
  const p=new SaxesParser();p.on('opentag',tag=>{stack.push(tag.name);if(!allowed.has(stack.join('/')))throw Error('Template contains unsupported content');});
@@ -270,8 +283,9 @@ export async function createShowTrackCopy({source,destination,sha256,templateNam
  const changed=opening.slice(0,selected.start)+xmlAttr(trackName)+opening.slice(selected.end);
  const text=template.slice(0,root.start)+changed+template.slice(root.openEnd);
  if(parseTimeline(text).attributes.name!==trackName)throw Error('Track name could not be preserved in XML');
+ if(templateDonor!==undefined)await readTrackTemplateDonor(templateDonor);
  const result=await addShowPart({source,destination,sha256,name:partName,text});
- return {...result,trackName,templateName,note:'Added an empty timeline part to an offline show copy. The set list is unchanged. Validate in ShowKontrol.'};
+ return {...result,trackName,...(templateDonor===undefined?{templateName}:{templateDonor}),note:'Added an empty timeline part to an offline show copy. The set list is unchanged. Validate in ShowKontrol.'};
 }
 
 export async function deleteTimelineCueCopy({source,destination,format,sha256,name,cueId,deleteGraph=false}) {
@@ -408,10 +422,28 @@ export async function removeCueGraphCopy({source,destination,format,sha256,name,
  const before=cueGraph(xml,cueId);if(!before.graph)throw Error('Cue has no action graph');
  const root=parseXmlSpans(xml),cues=selectXmlSpans(root,['sktimeline',{name:'cue',attributes:{id:cueId}}]),graphs=selectXmlSpans(root,['sktimeline',{name:'cue',attributes:{id:cueId}},'graph']);
  if(cues.length!==1||graphs.length!==1)throw Error('Cue and graph must each occur exactly once');
- const graph=graphs[0],modified=xml.slice(0,graph.start)+xml.slice(graph.end),after=cueGraph(modified,cueId);
+ const graph=graphs[0];
+ const checkStructure=(element,parent)=>{
+  if(element!==graph&&(element.name==='graph'||(element.name==='node'&&parent!==graph)))throw Error('Nested graph or node structure is unsupported');
+  for(const child of element.children)checkStructure(child,element);
+ };
+ checkStructure(graph,null);
+ const modified=xml.slice(0,graph.start)+xml.slice(graph.end),after=cueGraph(modified,cueId);
  if(after.graph!==null)throw Error('Cue graph removal could not be verified');
  const beforeCue=parseTimeline(xml).cueElements.filter(c=>c.path==='sktimeline/cue'&&c.attributes.id===cueId),afterCue=parseTimeline(modified).cueElements.filter(c=>c.path==='sktimeline/cue'&&c.attributes.id===cueId);
  if(beforeCue.length!==1||afterCue.length!==1||JSON.stringify(beforeCue[0])!==JSON.stringify(afterCue[0]))throw Error('Cue attributes changed unexpectedly');
+ const ids=before.graph.nodes.map(node=>node.id);
+ if(ids.length>1000||ids.some(id=>typeof id!=='string'||!id||id.length>1024))throw Error('Graph node ID exceeds reference scan limits or is missing');
+ if(ids.length){
+  const alternatives=[...new Set(ids)].sort((a,b)=>b.length-a.length).map(id=>id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|');
+  if(hasXmlReference(modified,new RegExp(`(?<![A-Za-z0-9_])(?:${alternatives})(?![A-Za-z0-9_])`)))throw Error('Graph node has surviving XML references');
+ }
+ if(format==='skshow'){
+  const scan=await scanCueReferences({file:source,name,cueId,sha256});
+  if(scan.diagnosticsTruncated||scan.diagnostics.some(d=>/\.(?:skf|sktl|sksc|skls|skpr|skcp)$/i.test(d.part)))throw Error('A supported XML part could not be scanned for references');
+  if(scan.referencesTruncated)throw Error('Reference scan results were truncated');
+  if(scan.references.some(ref=>ref.type==='node'))throw Error('Graph node has surviving XML references');
+ }
  const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
  return {...result,cueId,removedNodeCount:before.graph.nodes.length,removedConnectionCount:before.graph.connections.length,note:'Removed a cue action graph from an offline copy. Cue attributes were preserved; external references and ShowKontrol acceptance are not validated.'};
 }
