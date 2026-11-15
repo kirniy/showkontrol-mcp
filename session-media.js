@@ -1,5 +1,5 @@
 import path from 'node:path';
-import {lstat,realpath} from 'node:fs/promises';
+import {lstat,readdir,realpath} from 'node:fs/promises';
 import {inspectShowMedia} from './media-inventory.js';
 
 export function sidecarSegments(archivePath){
@@ -19,6 +19,23 @@ export async function sidecarStatus(root,archivePath){
    if(i===segments.length-1)return info.isFile()?{status:'regular_file',size:info.size,file:current,dev:info.dev,ino:info.ino}:{status:'not_regular_file'};
   }
  }catch(error){return {status:error.code==='ENOENT'||error.code==='ENOTDIR'?'missing':'unreadable'};}
+}
+
+const MAX_MEDIA_ENTRIES=10000,MAX_MEDIA_DEPTH=32;
+// List MEDIA/ entries that no media.map row names, without following symlinks.
+async function unmappedMediaEntries(root,mapped){
+ const out=[];let count=0;
+ async function visit(dir,rel,depth){
+  for(const name of (await readdir(dir)).sort()){
+   if(++count>MAX_MEDIA_ENTRIES)throw Error(`MEDIA/ has more than ${MAX_MEDIA_ENTRIES} entries`);
+   const childRel=`${rel}/${name}`,file=path.join(dir,name),info=await lstat(file);
+   if(info.isDirectory()){if(depth>=MAX_MEDIA_DEPTH)throw Error(`MEDIA/ is nested deeper than ${MAX_MEDIA_DEPTH} directories`);await visit(file,childRel,depth+1);}
+   else if(!mapped.has(childRel))out.push({path:childRel,kind:info.isFile()?'regular_file':info.isSymbolicLink()?'symlink':'special_file',...(info.isFile()?{size:info.size}:{})});
+  }
+ }
+ let info;try{info=await lstat(path.join(root,'MEDIA'));}catch(error){if(error.code==='ENOENT')return out;throw error;}
+ if(info.isDirectory())await visit(path.join(root,'MEDIA'),'MEDIA',1);
+ return out;
 }
 
 // Inspect only regular sidecar files below the selected session, without following symlinks.
@@ -41,5 +58,6 @@ export async function inspectSessionMedia({directory}) {
   const mapping=list.length===1?{line:list[0].m.line,archivePath:list[0].m.archivePath,sidecar:list[0].finding.status}:list.length?{ambiguousLines:list.map(r=>r.m.line)}:null;
   return {...scope(c),audioIndex:c.audioIndex,clipIndex:c.clipIndex,attributes:c.attributes,mapping};
  });
- return {directory:root,showSha256:show.sha256,findings,lanes,clips,diagnostics:show.diagnostics,limitations:['Checks sidecar file metadata only; does not open media, compare contents, resolve original source paths, or test playback.','A matching path does not prove that ShowKontrol uses the sidecar or that the session is portable.','A clip mapping is an exact match of the clip file attribute to a media.map source path. Whether ShowKontrol resolves the clip through that row is unverified.']};
+ const unmapped=await unmappedMediaEntries(root,new Set(show.mappings.map(m=>m.archivePath)));
+ return {directory:root,showSha256:show.sha256,findings,lanes,clips,unmappedMediaEntries:unmapped,diagnostics:show.diagnostics,limitations:['Checks sidecar file metadata only; does not open media, compare contents, resolve original source paths, or test playback.','A matching path does not prove that ShowKontrol uses the sidecar or that the session is portable.','A clip mapping is an exact match of the clip file attribute to a media.map source path. Whether ShowKontrol resolves the clip through that row is unverified.','unmappedMediaEntries lists files below MEDIA/ that no media.map row names exactly; whether ShowKontrol uses or needs them is unknown.']};
 }

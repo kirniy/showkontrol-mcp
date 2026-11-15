@@ -3,6 +3,7 @@ import {mkdtemp,link,rm} from 'node:fs/promises';
 import {readShowSnapshot,readSnapshotPart,writeShowMediaMapCopy} from './xml-copy.js';
 import {inspectShowMedia} from './media-inventory.js';
 import {MAP_DIAGNOSTICS,nameKey,checkSourcePath,checkSidecarName,appendMappingRows} from './session-media-copy.js';
+import {planMappingOperations,editMappingText,vanishingValues,findReferences,assertUnreferenced,mappingReceipts} from './media-map-rows.js';
 
 const MAX_MAPPINGS=100;
 
@@ -44,6 +45,40 @@ export async function addMediaMappingsCopy({source,destination,sha256,mappings})
    archiveParts:m.archiveMatches.map(({name,valid,size})=>({name,valid,size})),
    clips:after.clips.filter(c=>c.attributes.file===m.sourcePath).map(c=>({part:c.part,...(c.itemIndex===undefined?{}:{itemIndex:c.itemIndex}),audioIndex:c.audioIndex,clipIndex:c.clipIndex}))}));
   result={destination,sha256:written.sha256,md5:written.md5,mappings:added,note:'Only literal media.map rows were appended; every other part is byte-identical. No media file is read or copied, and no MEDIA/ sidecar or archive part is created. Whether ShowKontrol loads, relinks or plays the mapped media is unverified.'};
+ }finally{
+  try{await rm(dir,{recursive:true,force:true});}catch(error){if(!published)throw error;result.cleanupWarning=`Published copy is valid, but temporary directory cleanup failed: ${dir}: ${error.message}`;}
+ }
+ return result;
+}
+
+// Remove or re-point existing media.map rows of a show copy. A value that leaves the map must not be referenced by any other part.
+export async function editMediaMappingsCopy({source,destination,sha256,operations}){
+ if(typeof source!=='string'||!path.isAbsolute(source)||typeof destination!=='string'||!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Source and destination must be different absolute paths');
+ if(typeof sha256!=='string')throw Error('Supply the inspected show SHA-256');
+ if(!Array.isArray(operations)||!operations.length)throw Error('Provide at least one mapping operation');
+ const inventory=await inspectShowMedia({file:source});
+ if(inventory.sha256!==sha256)throw Error('Source changed since inspection');
+ if(inventory.mapParts.length!==1)throw Error('The show must contain exactly one media.map part');
+ const problems=[...new Set(inventory.diagnostics.filter(d=>MAP_DIAGNOSTICS.includes(d.code)).map(d=>d.code))];
+ if(problems.length)throw Error(`media.map rows cannot be selected unambiguously: ${problems.join(', ')}`);
+ const plan=planMappingOperations(inventory,operations);
+ const snapshot=await readShowSnapshot({file:source});if(snapshot.sha256!==sha256)throw Error('Source changed since inspection');
+ // Only media.map changes, so references are checked in the source parts.
+ assertUnreferenced(findReferences({snapshot,inventory,targets:vanishingValues(plan,plan.rows)}));
+ const text=editMappingText(readSnapshotPart({snapshot,name:'media.map'}).text,plan.edits);
+ const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-media-map-'));let published=false,result;
+ try{
+  const staged=path.join(dir,'mapped.skshow'),written=await writeShowMediaMapCopy({source,destination:staged,sha256,text});
+  const after=await inspectShowMedia({file:staged});
+  if(after.sha256!==written.sha256)throw Error('Staged show changed during verification');
+  if(after.diagnostics.some(d=>MAP_DIAGNOSTICS.includes(d.code))||after.mappings.length!==plan.rows.length||after.mappings.some((m,i)=>m.line!==plan.rows[i].line||m.sourcePath!==plan.rows[i].sourcePath||m.archivePath!==plan.rows[i].archivePath))throw Error('Staged media.map rows do not match the plan');
+  await link(staged,destination);published=true;
+  // MEDIA/ archive parts are never removed. Report those no row names any more.
+  const mapped=new Set(after.mappings.map(m=>m.archivePath)),released=new Set(plan.changes.map(c=>c.row.archivePath));
+  const unmappedArchiveParts=after.archiveParts.filter(p=>!mapped.has(p.name)).map(({name,valid,size})=>({name,valid,size,reason:released.has(name)?'mapping_changed':'unmapped_in_source'}));
+  const warnings=plan.rows.length?[]:[{code:'media_map_empty',message:'Every row was removed. The media.map part is kept with no rows; whether ShowKontrol accepts an empty media.map is unverified.'}];
+  result={destination,sha256:written.sha256,md5:written.md5,operations:mappingReceipts(plan),mediaMap:{rowsBefore:inventory.mappings.length,rowsAfter:plan.rows.length},unmappedArchiveParts,warnings,
+   note:'Only the selected media.map rows were removed or rewritten; other rows, every other part and the wrapper are byte-identical. No media file or MEDIA/ archive part is read, created or removed. Whether ShowKontrol loads, relinks or plays media through the changed rows, or needs a removed row, is unverified.'};
  }finally{
   try{await rm(dir,{recursive:true,force:true});}catch(error){if(!published)throw error;result.cleanupWarning=`Published copy is valid, but temporary directory cleanup failed: ${dir}: ${error.message}`;}
  }

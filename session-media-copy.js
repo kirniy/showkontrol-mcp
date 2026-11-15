@@ -8,6 +8,7 @@ import {inspectSessionMedia,sidecarStatus,sidecarSegments} from './session-media
 import {parseXmlSpans} from './xml-spans.js';
 import {composeFullShowCopy} from './compose-full-show.js';
 import {validateShow} from './validate-show.js';
+import {planMappingOperations,editMappingText,vanishingValues,findReferences,assertUnreferenced,mappingReceipts} from './media-map-rows.js';
 
 const MAX_MEDIA=100, MAX_REPORTED=100, CHUNK=1024*1024, DEFAULT_MAX_COPY_BYTES=4*1024**3, MAX_WORKING_ENTRIES=10000, MAX_WORKING_DEPTH=32, MAX_COMPARE_BYTES=128*1024*1024;
 export const MAP_DIAGNOSTICS=['duplicate_media_map','invalid_media_map_checksum','invalid_media_map_utf8','malformed_mapping','duplicate_source'];
@@ -222,15 +223,17 @@ function planWorkingFiles({walk,before,after,sourceName,omit}){
 }
 
 // Create a new session directory: composed session.skshow, extended media.map and verified MEDIA sidecar copies.
-export async function composeSessionMediaCopy({source,destination,sha256,media=[],tracks,patchOperations,setlistOperations,program,allowMissingSidecars=false,omitUnverifiedWorkingFiles=false}){
+export async function composeSessionMediaCopy({source,destination,sha256,media=[],tracks,patchOperations,setlistOperations,program,mediaMapOperations=[],removedSidecars,allowMissingSidecars=false,omitUnverifiedWorkingFiles=false}){
  if(typeof source!=='string'||!path.isAbsolute(source)||typeof destination!=='string'||!path.isAbsolute(destination))throw Error('Source and destination session directories must be absolute paths');
  if(typeof sha256!=='string')throw Error('Supply the inspected session.skshow SHA-256');
  if(!Array.isArray(media)||media.length>MAX_MEDIA)throw Error(`Media must be an array of at most ${MAX_MEDIA} entries`);
  if(typeof allowMissingSidecars!=='boolean')throw Error('allowMissingSidecars must be a boolean');
  if(typeof omitUnverifiedWorkingFiles!=='boolean')throw Error('omitUnverifiedWorkingFiles must be a boolean');
+ if(!Array.isArray(mediaMapOperations))throw Error('mediaMapOperations must be an array');
+ if(removedSidecars!==undefined&&!['keep','omit'].includes(removedSidecars))throw Error('removedSidecars must be "keep" or "omit"');
  if(tracks!==undefined&&!Array.isArray(tracks))throw Error('Tracks must be an array');
  const composing=Boolean(tracks?.length)||patchOperations!==undefined||setlistOperations!==undefined||program!==undefined;
- if(!media.length&&!composing)throw Error('Add media, tracks, operations or a Program');
+ if(!media.length&&!composing&&!mediaMapOperations.length)throw Error('Add media, tracks, operations or a Program');
  const root=await realpath(source),show=path.join(root,'session.skshow');
  if(!(await lstat(show)).isFile())throw Error('session.skshow must be a regular file, not a symlink');
  const name=path.basename(destination);
@@ -242,19 +245,21 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
  if(inventory.sha256!==sha256)throw Error('Source changed since inspection');
  const mapProblems=[...new Set(inventory.diagnostics.filter(d=>MAP_DIAGNOSTICS.includes(d.code)).map(d=>d.code))];
  if(mapProblems.length)throw Error(`media.map cannot be extended safely: ${mapProblems.join(', ')}`);
+ // Rows kept, removed or re-pointed by mediaMapOperations; a re-pointed sidecar is copied from its old name.
+ const mapPlan=planMappingOperations(inventory,mediaMapOperations),oldArchive=new Map(inventory.mappings.map(m=>[m.line,m.archivePath]));
  const warnings=[],keys=new Map(),existing=new Map();
- for(const mapping of inventory.mappings){
-  const entry=existing.get(mapping.archivePath);if(entry){entry.lines.push(mapping.line);continue;}
-  const key=nameKey(mapping.archivePath);
-  if(keys.has(key))warnings.push({code:'case_insensitive_sidecar_collision',archivePaths:[keys.get(key),mapping.archivePath],message:'These sidecars can collide on a case-insensitive volume.'});
-  else keys.set(key,mapping.archivePath);
-  existing.set(mapping.archivePath,{archivePath:mapping.archivePath,lines:[mapping.line]});
+ for(const row of mapPlan.rows){
+  const entry=existing.get(row.archivePath);if(entry){entry.lines.push(row.line);continue;}
+  const key=nameKey(row.archivePath);
+  if(keys.has(key))warnings.push({code:'case_insensitive_sidecar_collision',archivePaths:[keys.get(key),row.archivePath],message:'These sidecars can collide on a case-insensitive volume.'});
+  else keys.set(key,row.archivePath);
+  existing.set(row.archivePath,{archivePath:row.archivePath,fromPath:oldArchive.get(row.sourceLine),lines:[row.line]});
  }
- const mappedSources=new Map(inventory.mappings.map(m=>[m.sourcePath,m.line])),added=[];
+ const mappedSources=new Map(mapPlan.rows.map(m=>[m.sourcePath,m.line])),added=[];
  for(const [index,item] of media.entries()){
   if(!item||typeof item!=='object'||Array.isArray(item)||Object.keys(item).some(k=>!['source','sidecarName'].includes(k)))throw Error(`Invalid media entry at index ${index}`);
   checkSourcePath(item.source);
-  if(mappedSources.has(item.source))throw Error(`Media source is already mapped on media.map line ${mappedSources.get(item.source)}; use it as clip.file instead: ${item.source}`);
+  if(mappedSources.has(item.source))throw Error(`Media source is already mapped on media.map line ${mappedSources.get(item.source)}${mediaMapOperations.length?' after the mapping operations':''}; use it as clip.file instead: ${item.source}`);
   if(added.some(a=>a.sourcePath===item.source))throw Error(`Duplicate media source: ${item.source}`);
   const sidecarName=item.sidecarName??path.basename(item.source);checkSidecarName(sidecarName);
   const archivePath=`MEDIA/${sidecarName}`,key=nameKey(archivePath);
@@ -284,11 +289,23 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
   ...(Array.isArray(track.audioClipEdits)?{audioClipEdits:withMedia(track.audioClipEdits,'audio clip edit','attributes',trackIndex)}:{})});
  const copies=[],missing=[];let total=0;
  for(const entry of existing.values()){
-  const status=await sidecarStatus(root,entry.archivePath);
+  const status=await sidecarStatus(root,entry.fromPath);
   if(status.status==='missing'&&allowMissingSidecars){missing.push(entry);continue;}
-  if(status.status!=='regular_file')throw Error(`Mapped sidecar ${entry.archivePath} is ${status.status}${status.status==='missing'?'; set allowMissingSidecars to keep its mapping without a file':''}`);
+  if(status.status!=='regular_file')throw Error(`Mapped sidecar ${entry.fromPath} is ${status.status}${status.status==='missing'?'; set allowMissingSidecars to keep its mapping without a file':''}`);
   copies.push({...entry,origin:'existing',from:status.file,planned:status,segments:sidecarSegments(entry.archivePath),label:'Session sidecar'});total+=status.size;
  }
+ // A sidecar whose rows were all removed or re-pointed is no longer mapped. It is kept as an unmapped file or left out, as requested.
+ const finalArchives=new Set(mapPlan.rows.map(r=>r.archivePath)),released=new Map();
+ for(const {row,operationIndex} of mapPlan.changes){
+  if(finalArchives.has(row.archivePath))continue;
+  const entry=released.get(row.archivePath);if(entry){entry.lines.push(row.line);entry.operationIndices.push(operationIndex);continue;}
+  const status=await sidecarStatus(root,row.archivePath);
+  if(!['regular_file','missing'].includes(status.status))throw Error(`Sidecar ${row.archivePath} of media.map line ${row.line} is ${status.status}; only a regular or missing sidecar can be released`);
+  released.set(row.archivePath,{archivePath:row.archivePath,lines:[row.line],operationIndices:[operationIndex],status});
+ }
+ const orphans=[...released.values()].filter(r=>r.status.status==='regular_file');
+ if(orphans.length&&!removedSidecars)throw Error(`Mapping operations leave ${orphans.map(o=>o.archivePath).join(', ')} without a media.map row; set removedSidecars to "keep" to copy ${orphans.length>1?'them':'it'} as unmapped files or "omit" to leave ${orphans.length>1?'them':'it'} out of the new session`);
+ const omitted=removedSidecars==='omit'?orphans:[];
  for(const entry of added){
   await checkSourceParents(entry.sourcePath);
   let info;try{info=await lstat(entry.sourcePath);}catch(error){throw Error(`Media source ${error.code==='ENOENT'?'not found':'cannot be checked'}: ${entry.sourcePath}`);}
@@ -298,13 +315,18 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
   copies.push({...entry,origin:'added',from:entry.sourcePath,planned:info,segments:sidecarSegments(entry.archivePath),label:'Media source'});total+=info.size;
  }
  // Every other session entry is working state; mapped sidecars are matched by name and file identity.
- const copiedSidecars=new Map(copies.filter(c=>c.origin==='existing').map(c=>[nameKey(c.archivePath),c.planned]));
+ const copiedSidecars=new Map([...copies.filter(c=>c.origin==='existing').map(c=>[nameKey(c.fromPath),c.planned]),...omitted.map(o=>[nameKey(o.archivePath),o.status])]);
  const isSidecar=(rel,info)=>{const p=copiedSidecars.get(nameKey(rel));return Boolean(p&&info&&p.dev===info.dev&&p.ino===info.ino);};
  const walk=await walkSession(root);
  walk.files=walk.files.filter(f=>!isSidecar(f.rel,f.planned));
- for(const row of added){
+ // MEDIA/ files no row of the new media.map names: released sidecars kept or omitted, and files already unmapped in the source.
+ const releasedByKey=new Map(orphans.map(o=>[nameKey(o.archivePath),o]));
+ const unmappedSidecars=[...walk.files.filter(f=>f.rel.startsWith('MEDIA/')).map(f=>{const o=releasedByKey.get(nameKey(f.rel));return {path:f.rel,size:f.planned.size,action:'kept',...(o?{reason:'mapping_released',lines:o.lines}:{reason:'unmapped_in_source'})};}),
+  ...omitted.map(o=>({path:o.archivePath,size:o.status.size,action:'omitted',reason:'mapping_released',lines:o.lines}))];
+ const introduced=mapPlan.rows.filter(r=>r.archivePath!==oldArchive.get(r.sourceLine));
+ for(const row of [...introduced,...added]){
   const key=nameKey(row.archivePath),clash=[...walk.files,...walk.dirs,...walk.rejected].find(e=>nameKey(e.rel)===key||nameKey(e.rel).startsWith(key+'/'));
-  if(clash)throw Error(`Sidecar ${row.archivePath} collides with existing session entry ${clash.rel}; names are compared without case after Unicode normalization. Choose another sidecarName`);
+  if(clash)throw Error(`Sidecar ${row.archivePath} collides with existing session entry ${clash.rel}; names are compared without case after Unicode normalization. Choose another ${row.mediaIndex===undefined?'newArchivePath':'sidecarName'}`);
  }
  const sourceSnapshot=await readShowSnapshot({file:show});if(sourceSnapshot.sha256!==sha256)throw Error('Source changed since inspection');
  const before=partsByName(sourceSnapshot),partSizes=new Set(sourceSnapshot.parts.map(p=>p.bytes.length));
@@ -314,6 +336,7 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
  }
  const limit=copyLimit(),checkLimit=bytes=>{if(bytes>limit)throw Error(`Session copies total ${bytes} bytes, above the ${limit}-byte limit (SHOWKONTROL_SESSION_MEDIA_MAX_BYTES)`);};checkLimit(total);
  const space=await statfs(parent);if(total+2*(await lstat(show)).size>space.bavail*space.bsize)throw Error('Destination volume does not have enough free space for the session copy');
+ const mapChanged=added.length>0||mediaMapOperations.length>0;
  const work=await mkdtemp(path.join(parent,'.showkontrol-session-work-'));
  let stage,published=false,result;const cleanupWarnings=[];
  try{
@@ -325,15 +348,15 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
    composition=await composeFullShowCopy({source:show,destination:next,sha256,tracks:resolvedTracks,patchOperations,setlistOperations,program:resolvedProgram});
    current=next;currentHash=composition.sha256;
   }
-  if(added.length){
+  if(mapChanged){
    const snapshot=await readShowSnapshot({file:current});if(snapshot.sha256!==currentHash)throw Error('Staged show changed during composition');
    const text=snapshot.parts.some(p=>p.name==='media.map')?readSnapshotPart({snapshot,name:'media.map'}).text:'';
-   const next=path.join(work,'mapped.skshow'),written=await writeShowMediaMapCopy({source:current,destination:next,sha256:currentHash,text:appendMappingRows(text,added)});
+   const next=path.join(work,'mapped.skshow'),written=await writeShowMediaMapCopy({source:current,destination:next,sha256:currentHash,text:appendMappingRows(editMappingText(text,mapPlan.edits),added)});
    current=next;currentHash=written.sha256;
   }
   const finalSnapshot=await readShowSnapshot({file:current});if(finalSnapshot.sha256!==currentHash)throw Error('Staged show changed during composition');
   // Validate the archive that will be published; appended media.map rows follow the composer's validation.
-  const validation=composition&&!added.length?composition.validation:composition&&await validateShow({file:current});
+  const validation=composition&&!mapChanged?composition.validation:composition&&await validateShow({file:current});
   if(validation){
    if(validation.sha256!==currentHash)throw Error('Staged show changed during validation');
    const errors=validation.diagnostics.filter(d=>d.severity==='error');
@@ -341,6 +364,19 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
   }
   const working=planWorkingFiles({walk,before,after:partsByName(finalSnapshot),sourceName:path.basename(root),omit:omitUnverifiedWorkingFiles});
   if(working.problems.length)throw Error(`Working files cannot be kept consistent with the composed session.skshow; set omitUnverifiedWorkingFiles to leave them out and let ShowKontrol regenerate them, which is unverified: ${working.problems.slice(0,5).join('; ')}${working.problems.length>5?`; and ${working.problems.length-5} more`:''}`);
+  // A value that leaves media.map must not be named by the final archive or by a working file carried into the new session.
+  const vanishing=vanishingValues(mapPlan,[...mapPlan.rows,...added]);
+  if(vanishing.length){
+   const files=[];
+   for(const item of working.plan){
+    // MEDIA/ files are media payloads; an extraction of media.map is the edited map itself.
+    if(item.action==='omitted'||item.rel.startsWith('MEDIA/')||item.parts?.includes('media.map'))continue;
+    if(item.bytes){files.push({rel:item.rel,bytes:item.bytes});continue;}
+    if(item.entry.planned.size>MAX_COMPARE_BYTES)throw Error(`Working file ${item.rel} is too large to check for references to changed media.map values`);
+    files.push({rel:item.rel,bytes:item.entry.bytes??await readPlanned(item.entry.file,item.entry.planned,'Session working file')});
+   }
+   assertUnreferenced(findReferences({snapshot:finalSnapshot,inventory:await inspectShowMedia({file:current}),targets:vanishing,files}));
+  }
   checkLimit(copies.reduce((sum,c)=>sum+c.planned.size,0)+working.plan.reduce((sum,w)=>sum+(w.bytes?.length??(w.action==='copied'?w.entry.planned.size:0)),0));
   for(const dir of walk.dirs)await mkdir(path.join(stage,...dir.rel.split('/')),{recursive:true});
   const sidecars=[];
@@ -351,7 +387,7 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
     await checkSourceParents(copy.from);const now=await lstat(copy.from);
     if(now.isSymbolicLink()||now.dev!==copy.planned.dev||now.ino!==copy.planned.ino)throw Error(`Media source path changed during copy: ${copy.from}`);
    }
-   sidecars.push({archivePath:copy.archivePath,origin:copy.origin,from:copy.from,size,sha256:digest,...(copy.lines?{lines:copy.lines}:{mediaIndex:copy.mediaIndex})});
+   sidecars.push({archivePath:copy.archivePath,origin:copy.origin,from:copy.from,size,sha256:digest,...(copy.lines?{lines:copy.lines}:{mediaIndex:copy.mediaIndex}),...(copy.fromPath&&copy.fromPath!==copy.archivePath?{renamedFrom:copy.fromPath}:{})});
   }
   const workingFiles=[];
   for(const item of working.plan){
@@ -370,11 +406,16 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
   const staged=await inspectShowMedia({file:path.join(stage,'session.skshow')}),statuses=await inspectSessionMedia({directory:stage});
   if(staged.sha256!==currentHash||statuses.showSha256!==currentHash)throw Error('Staged session verification failed');
   if(staged.diagnostics.some(d=>MAP_DIAGNOSTICS.includes(d.code)))throw Error('Staged media.map verification failed');
-  const expected=[...inventory.mappings.map(m=>[m.sourcePath,m.archivePath]),...added.map(a=>[a.sourcePath,a.archivePath])];
+  const expected=[...mapPlan.rows.map(m=>[m.sourcePath,m.archivePath]),...added.map(a=>[a.sourcePath,a.archivePath])];
   if(staged.mappings.length!==expected.length||staged.mappings.some((m,i)=>m.sourcePath!==expected[i][0]||m.archivePath!==expected[i][1]))throw Error('Staged media.map rows do not match the plan');
   const sizes=new Map(sidecars.map(s=>[s.archivePath,s.size])),allowedMissing=new Set(missing.map(m=>m.archivePath));
   for(const finding of statuses.findings){
    if(finding.status==='regular_file'?finding.size!==sizes.get(finding.archivePath):!(finding.status==='missing'&&allowedMissing.has(finding.archivePath)))throw Error(`Staged sidecar verification failed: ${finding.archivePath} is ${finding.status}`);
+  }
+  // A released name may be reused by new media when its old sidecar is omitted.
+  for(const orphan of orphans.filter(o=>!keys.has(nameKey(o.archivePath)))){
+   let info;try{info=await lstat(path.join(stage,...orphan.archivePath.split('/')));}catch(error){if(error.code!=='ENOENT')throw error;}
+   if(removedSidecars==='omit'?info:!info?.isFile()||info.size!==orphan.status.size)throw Error(`Staged sidecar verification failed: released ${orphan.archivePath} is ${info?'present':'absent'}`);
   }
   for(const row of added)row.line=staged.mappings.find(m=>m.sourcePath===row.sourcePath).line;
   const sidecarState=row=>allowedMissing.has(row.archivePath)?'missing':'copied';
@@ -393,10 +434,11 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
    if(!row)warnings.push({code:'clip_file_unmapped',trackIndex,clipEditIndex,file,message:'The edited clip file is not a media.map source path in the new session.'});
    else if(allowedMissing.has(row.archivePath))warnings.push({code:'clip_sidecar_missing',trackIndex,clipEditIndex,file,archivePath:row.archivePath});
   }
-  // Rows are never removed. Report rows that a clip named before the composition and none names now.
+  // Rows are removed only by mediaMapOperations. Report kept rows that a clip named before the composition and none names now.
   const named=clips=>new Set(clips.map(c=>c.attributes.file).filter(f=>typeof f==='string'));
   const namedBefore=named(inventory.clips),namedAfter=named(staged.clips);
-  for(const row of inventory.mappings)if(namedBefore.has(row.sourcePath)&&!namedAfter.has(row.sourcePath))warnings.push({code:'mapping_no_longer_referenced',line:row.line,sourcePath:row.sourcePath,archivePath:row.archivePath,message:'No track or Program clip in the new session.skshow names this source path. The media.map row and its sidecar are kept.'});
+  for(const row of mapPlan.rows)if(namedBefore.has(row.sourcePath)&&!namedAfter.has(row.sourcePath))warnings.push({code:'mapping_no_longer_referenced',line:row.line,sourcePath:row.sourcePath,archivePath:row.archivePath,message:'No track or Program clip in the new session.skshow names this source path. The media.map row and its sidecar are kept; remove the row with mediaMapOperations if it is obsolete.'});
+  if(mapPlan.changes.length&&!staged.mappings.length)warnings.push({code:'media_map_empty',message:'Every row was removed. The media.map part is kept with no rows; whether ShowKontrol accepts an empty media.map is unverified.'});
   // Program item clips come from the staged inventory, including clips embedded from staged tracks.
   const programClipLinks=program===undefined?undefined:staged.clips.filter(c=>c.itemIndex!==undefined).map(c=>{
    const file=c.attributes.file??null,row=typeof file==='string'?rowsBySource.get(file):undefined,scope={itemIndex:c.itemIndex,audioIndex:c.audioIndex,clipIndex:c.clipIndex};
@@ -411,7 +453,9 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
   await publishDirectory(stage,target);published=true;
   const sessionFile=path.join(target,'session.skshow');
   result={source:root,destination:target,sessionFile,sourceSha256:sha256,sha256:currentHash,
-   mediaMap:{created:added.length>0&&!inventory.mapParts.length,preservedRows:inventory.mappings.length,addedRows:added.map(({mediaIndex,sourcePath,archivePath,line})=>({mediaIndex,line,sourcePath,archivePath}))},
+   mediaMap:{created:added.length>0&&!inventory.mapParts.length,preservedRows:inventory.mappings.length-mapPlan.changes.length,addedRows:added.map(({mediaIndex,sourcePath,archivePath,line})=>({mediaIndex,line,sourcePath,archivePath})),
+    ...(mediaMapOperations.length?{operations:mappingReceipts(mapPlan).map(r=>({...r,oldSidecar:finalArchives.has(r.before.archivePath)?'still_mapped':released.get(r.before.archivePath).status.status==='missing'?'missing':removedSidecars==='omit'?'omitted':'kept'}))}:{}),
+    unmappedSidecars:unmappedSidecars.slice(0,MAX_REPORTED),...(unmappedSidecars.length>MAX_REPORTED?{unmappedSidecarsTruncated:true}:{})},
    sidecars,missingSidecars:missing.map(({archivePath,lines})=>({archivePath,lines})),
    ...(composition?{tracks:composition.tracks.map(t=>t.mediaClone?{...t,mediaClone:{...t.mediaClone,destination:sessionFile}}:t),setlistOperations:composition.setlistOperations}:{}),
    ...(composition?.program?{program:composition.program}:{}),
