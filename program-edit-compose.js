@@ -297,6 +297,25 @@ async function copyItemPatchSetting({program,destination,source,sha256,currentSh
  return {...result,sha256:digest(modified),note:'Copied a setting from a patch node into an offline Program item graph. Values, external dependencies and ShowKontrol acceptance are not validated.'};
 }
 
+async function editItemGraphWire({program,destination,currentSha,index,operation,fromNode,toNode,dir,step}){
+ const xml=await readFile(program,'utf8');
+ if(digest(xml)!==currentSha)throw Error('Program changed since inspection');
+ const root=parseXmlSpans(xml),item=root.children[index];
+ if(root.name!=='skprogram'||!Number.isInteger(index)||index<0||!item||item.name!=='item')throw Error('Item index out of range');
+ const graphs=item.children.filter(n=>n.name==='graph');
+ if(graphs.length!==1)throw Error('Target item must contain exactly one graph');
+ const graph=graphs[0],cueId='__composition_item_wire__';
+ const timeline=path.join(dir,`item-wire-${step}.sktl`),edited=path.join(dir,`item-wire-edited-${step}.sktl`);
+ const proxy=`<sktimeline version="1"><cue id="${cueId}">${xml.slice(graph.start,graph.end)}</cue></sktimeline>`;
+ await writeFile(timeline,proxy,{flag:'wx'});
+ const result=await editCueGraphWireCopy({source:timeline,destination:edited,format:'sktl',sha256:digest(proxy),cueId,operation,fromNode,toNode});
+ const output=await readFile(edited,'utf8'),parsed=parseXmlSpans(output),cues=parsed.children.filter(n=>n.name==='cue'&&n.attributes.id===cueId),outGraphs=cues.length===1?cues[0].children.filter(n=>n.name==='graph'):[];
+ if(outGraphs.length!==1)throw Error('Edited item graph could not be verified');
+ const modified=xml.slice(0,graph.start)+output.slice(outGraphs[0].start,outGraphs[0].end)+xml.slice(graph.end);
+ parseXmlSpans(modified);await writeFile(destination,modified,{flag:'wx'});
+ return {...result,sha256:digest(modified),note:'Changed a fixture-supported pin 0 connection in an offline Program item graph. Validate operation in ShowKontrol.'};
+}
+
 // Each index addresses the current Program file order after all preceding operations.
 export async function composeProgramEditsCopy(args){
  keys(args,['source','destination','sha256','operations']);
@@ -311,6 +330,16 @@ export async function composeProgramEditsCopy(args){
   else if(op.action==='edit_graph_setting')keys(op,['action','index','nodeId','key','value']);
   else if(op.action==='assemble_item_graph'){keys(op,['action','index','nodes'],['wires','replaceExisting']);if(op.replaceExisting!==undefined&&typeof op.replaceExisting!=='boolean')throw Error('replaceExisting must be a boolean');}
   else if(op.action==='edit_assembled_item_graph_setting')keys(op,['action','index','graphFromOperation','nodeIndex','key','value']);
+  else if(op.action==='edit_item_graph_wire'){
+   keys(op,['action','index','operation','from','to']);
+   if(!['add','remove'].includes(op.operation))throw Error('Operation must be add or remove');
+   for(const endpoint of [op.from,op.to]){
+    keys(endpoint,[],['nodeId','graphFromOperation','nodeIndex']);
+    if(Object.hasOwn(endpoint,'nodeId')===Object.hasOwn(endpoint,'graphFromOperation')||Object.hasOwn(endpoint,'nodeIndex')!==Object.hasOwn(endpoint,'graphFromOperation'))throw Error('Endpoint must contain nodeId or graphFromOperation with nodeIndex');
+    if(Object.hasOwn(endpoint,'nodeId')&&(typeof endpoint.nodeId!=='string'||!endpoint.nodeId))throw Error('nodeId must be a nonempty string');
+    if(Object.hasOwn(endpoint,'graphFromOperation')&&(!Number.isInteger(endpoint.graphFromOperation)||endpoint.graphFromOperation<0||!Number.isInteger(endpoint.nodeIndex)||endpoint.nodeIndex<0))throw Error('Invalid graphFromOperation or nodeIndex');
+   }
+  }
   else if(op.action==='copy_patch_setting_to_item_graph'){
    keys(op,['action','index','donor','donorFormat','donorSha256','donorNodeId','key'],['nodeId','graphFromOperation','nodeIndex']);
    if(Object.hasOwn(op,'nodeId')===Object.hasOwn(op,'graphFromOperation')||Object.hasOwn(op,'nodeIndex')!==Object.hasOwn(op,'graphFromOperation'))throw Error('Provide nodeId or graphFromOperation with nodeIndex');
@@ -401,6 +430,15 @@ export async function composeProgramEditsCopy(args){
     if(!graph||invalidatedGraphs.has(ref)||!itemGraphContains(await readFile(program,'utf8'),operation.index,graph.nodeIds))throw Error('graphFromOperation must identify an active prior assemble_item_graph in the selected item');
     if(!Number.isInteger(operation.nodeIndex)||operation.nodeIndex<0||operation.nodeIndex>=graph.nodeIds.length)throw Error('nodeIndex must identify a node in the assembled graph');
     current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index:operation.index,nodeId:graph.nodeIds[operation.nodeIndex],key:operation.key,value:operation.value});
+   }else if(operation.action==='edit_item_graph_wire'){
+    const xml=await readFile(program,'utf8');
+    const resolveEndpoint=endpoint=>{
+     if(Object.hasOwn(endpoint,'nodeId'))return endpoint.nodeId;
+     const ref=endpoint.graphFromOperation,graph=ref<operationIndex?assembledItemGraphs.find(g=>g.operationIndex===ref):undefined;
+     if(!graph||invalidatedGraphs.has(ref)||!itemGraphContains(xml,operation.index,graph.nodeIds)||endpoint.nodeIndex>=graph.nodeIds.length)throw Error('graphFromOperation and nodeIndex must identify an active prior assemble_item_graph node in the selected item');
+     return graph.nodeIds[endpoint.nodeIndex];
+    };
+    current=await editItemGraphWire({program,destination,currentSha:current.sha256,index:operation.index,operation:operation.operation,fromNode:resolveEndpoint(operation.from),toNode:resolveEndpoint(operation.to),dir,step});
    }else if(operation.action==='copy_patch_setting_to_item_graph'){
     let nodeId=operation.nodeId;
     if(Object.hasOwn(operation,'graphFromOperation')){
