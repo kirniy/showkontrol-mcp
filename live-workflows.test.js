@@ -4,6 +4,18 @@ import http from 'node:http';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 
+test('live deck reads the exact deck and timestamps from state and rejects invalid state',async t=>{
+ let response={t:1234,tick:42,epochMs:1700000000000,decks:[{n:2,state:'cued',posUS:0},{n:1,state:'playing',posUS:987654,online:true,title:'Track'}]};
+ const seen=[];const mock=http.createServer((req,res)=>{seen.push(req.url);res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(response));});
+ await new Promise(r=>mock.listen(0,'127.0.0.1',r));t.after(()=>mock.close());
+ const client=new Client({name:'live-deck-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:{...process.env,SHOWKONTROL_URL:`http://127.0.0.1:${mock.address().port}`}}));t.after(()=>client.close());
+ const get=()=>client.callTool({name:'showkontrol_get_live_deck',arguments:{deck:1}});
+ let result=await get();assert.equal(result.isError,undefined);assert.deepEqual(JSON.parse(result.content[0].text),{deck:response.decks[1],t:1234,tick:42,epochMs:1700000000000});
+ response={decks:[{n:2,state:'playing'}]};result=await get();assert.equal(result.isError,true);assert.match(result.content[0].text,/Deck 1 is absent/);
+ for(const invalid of [{decks:{}},{decks:[{state:'playing'}]},{decks:[{n:1},{n:1}]},{decks:[{n:1}],t:'bad'}]){response=invalid;result=await get();assert.equal(result.isError,true);assert.match(result.content[0].text,/Malformed \/state response/);}
+ assert.deepEqual(seen,Array(6).fill('/api/v1/state'));
+});
+
 test('live workflow tools call documented endpoints once and preserve provided bodies',async t=>{
  const seen=[];
  const mock=http.createServer(async(req,res)=>{let s='';for await(const c of req)s+=c;seen.push({method:req.method,url:req.url,body:s?JSON.parse(s):undefined});res.writeHead(200,{'Content-Type':'application/json'});res.end('{"ok":true}');});
