@@ -7,14 +7,18 @@ import {planMappingOperations,editMappingText,vanishingValues,findReferences,ass
 
 const MAX_MAPPINGS=100;
 
-// Append literal source-to-MEDIA rows to the existing media.map of a show copy. No media file is read or copied.
-export async function addMediaMappingsCopy({source,destination,sha256,mappings}){
+// Append literal source-to-MEDIA rows to the media.map of a show copy, or create the part when asked. No media file is read or copied.
+export async function addMediaMappingsCopy({source,destination,sha256,mappings,createMediaMap=false}){
  if(typeof source!=='string'||!path.isAbsolute(source)||typeof destination!=='string'||!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Source and destination must be different absolute paths');
  if(typeof sha256!=='string')throw Error('Supply the inspected show SHA-256');
  if(!Array.isArray(mappings)||!mappings.length||mappings.length>MAX_MAPPINGS)throw Error(`Provide 1 to ${MAX_MAPPINGS} mappings`);
+ if(typeof createMediaMap!=='boolean')throw Error('createMediaMap must be a boolean');
  const inventory=await inspectShowMedia({file:source});
  if(inventory.sha256!==sha256)throw Error('Source changed since inspection');
- if(inventory.mapParts.length!==1)throw Error('The show must contain exactly one media.map part; use showkontrol_compose_session_media_copy to create one in a session');
+ // Creation is explicit, so a caller that expected an existing map never gets a new one.
+ if(inventory.mapParts.length>1)throw Error('The show must contain at most one media.map part');
+ if(!inventory.mapParts.length&&!createMediaMap)throw Error('The show has no media.map part; set createMediaMap to true to create one');
+ if(inventory.mapParts.length&&createMediaMap)throw Error('The show already has a media.map part; omit createMediaMap to append to it');
  const problems=[...new Set(inventory.diagnostics.filter(d=>MAP_DIAGNOSTICS.includes(d.code)).map(d=>d.code))];
  if(problems.length)throw Error(`media.map cannot be extended safely: ${problems.join(', ')}`);
  const sources=new Map(inventory.mappings.map(m=>[m.sourcePath,m.line])),keys=new Map(inventory.mappings.map(m=>[nameKey(m.archivePath),m.archivePath])),rows=[];
@@ -31,10 +35,13 @@ export async function addMediaMappingsCopy({source,destination,sha256,mappings})
   sources.set(sourcePath,null);keys.set(key,archivePath);rows.push({sourcePath,archivePath});
  }
  const snapshot=await readShowSnapshot({file:source});if(snapshot.sha256!==sha256)throw Error('Source changed since inspection');
- const text=readSnapshotPart({snapshot,name:'media.map'}).text;
+ // A created map gets the session composer's form: UTF-8 without a byte order mark, LF after every row.
+ const text=createMediaMap?'':readSnapshotPart({snapshot,name:'media.map'}).text;
  const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-media-map-'));let published=false,result;
  try{
   const staged=path.join(dir,'mapped.skshow'),written=await writeShowMediaMapCopy({source,destination:staged,sha256,text:appendMappingRows(text,rows)});
+  // An existing map must never be replaced by one holding only the new rows.
+  if(written.added!==createMediaMap)throw Error('Staged media.map part does not match the plan');
   // Parse the staged copy back: every earlier row is kept and the new rows follow in order.
   const after=await inspectShowMedia({file:staged});
   if(after.sha256!==written.sha256)throw Error('Staged show changed during verification');
@@ -44,7 +51,8 @@ export async function addMediaMappingsCopy({source,destination,sha256,mappings})
   const added=after.mappings.slice(inventory.mappings.length).map(m=>({line:m.line,sourcePath:m.sourcePath,archivePath:m.archivePath,
    archiveParts:m.archiveMatches.map(({name,valid,size})=>({name,valid,size})),
    clips:after.clips.filter(c=>c.attributes.file===m.sourcePath).map(c=>({part:c.part,...(c.itemIndex===undefined?{}:{itemIndex:c.itemIndex}),audioIndex:c.audioIndex,clipIndex:c.clipIndex}))}));
-  result={destination,sha256:written.sha256,md5:written.md5,mappings:added,note:'Only literal media.map rows were appended; every other part is byte-identical. No media file is read or copied, and no MEDIA/ sidecar or archive part is created. Whether ShowKontrol loads, relinks or plays the mapped media is unverified.'};
+  result={destination,sha256:written.sha256,md5:written.md5,mediaMap:{created:createMediaMap,rowsBefore:inventory.mappings.length,rowsAfter:after.mappings.length},mappings:added,
+   note:createMediaMap?'A media.map part holding only the new rows was added as the last part of the wrapper; every other part and the wrapper text around it are byte-identical. The part position and row form follow the session composer, not an app-saved file, and whether ShowKontrol reads a map added to a show without one is unverified. No media file is read or copied, and no MEDIA/ sidecar or archive part is created. Whether ShowKontrol loads, relinks or plays the mapped media is unverified.':'Only literal media.map rows were appended; every other part is byte-identical. No media file is read or copied, and no MEDIA/ sidecar or archive part is created. Whether ShowKontrol loads, relinks or plays the mapped media is unverified.'};
  }finally{
   try{await rm(dir,{recursive:true,force:true});}catch(error){if(!published)throw error;result.cleanupWarning=`Published copy is valid, but temporary directory cleanup failed: ${dir}: ${error.message}`;}
  }

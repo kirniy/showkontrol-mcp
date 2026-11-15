@@ -129,14 +129,17 @@ function replacePartChecksum(attrs,md5,name){
  return changed;
 }
 
+// A part whose last path segment reads as media.map makes it unclear which part a new media.map would join.
+const similarMediaMapPart=names=>names.find(n=>n!=='media.map'&&n.split(/[\\/]/).at(-1).trim().normalize('NFKC').toLowerCase()==='media.map');
 // Replace or add the media.map part. Every other part must stay byte-identical.
 export async function writeShowMediaMapCopy({source,destination,sha256,text}) {
  if(!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Destination must be a different absolute path');
  const {xml,sha256:actual}=await load(source);if(actual!==sha256)throw Error('Source changed since inspection');
  const entries=parts(xml),root=parseXmlSpans(xml),name='media.map';
  if(!entries.length||!entries.every(p=>p.valid))throw Error('Missing parts or a part MD5 does not match');
- if(entries.some(p=>p.name!==name&&p.name.toLowerCase()===name))throw Error('media.map part name is not canonical');
  const found=entries.filter(p=>p.name===name);if(found.length>1)throw Error('Duplicate media.map parts');
+ if(!found.length){const similar=similarMediaMapPart(entries.map(p=>p.name));if(similar!==undefined)throw Error(`Cannot create media.map: part ${JSON.stringify(similar)} has a similar name, so which part holds the map would be ambiguous`);}
+ if(entries.some(p=>p.name!==name&&p.name.toLowerCase()===name))throw Error('media.map part name is not canonical');
  const existing=found[0],bytes=Buffer.from(text,'utf8'),md5=createHash('md5').update(bytes).digest('hex');
  if(root.selfClosing)throw Error('Unsupported show wrapper');
  const entry=`<part${existing?replacePartChecksum(existing.attrs,md5,name):` name="${name}" md5="${md5}"`}>${bytes.toString('base64')}</part>`;

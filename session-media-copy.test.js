@@ -70,6 +70,14 @@ test('copies mapped and new sidecars into a new session and links a composed cli
  assert.deepEqual(r.warnings,[]);
 });
 
+test('does not create media.map beside a part with a similar name',async t=>{
+ const f=await fixture(t,{map:null,sidecars:{},extra:false});
+ const show=`<skshow>${part('content/A.sktl',timeline)}${part('MEDIA/Media.map','x')}</skshow>`;
+ await writeFile(path.join(f.session,'session.skshow'),show);
+ await assert.rejects(composeSessionMediaCopy({source:f.session,destination:f.destination,sha256:sha(show),media:[{source:f.source}]}),/Cannot create media\.map: part "MEDIA\/Media\.map" has a similar name/);
+ await assertNothingPublished(f);
+});
+
 test('creates media.map when absent and keeps CRLF, BOM and missing final line breaks',async t=>{
  const absent=await fixture(t,{map:null,sidecars:{},extra:false});
  const created=await composeSessionMediaCopy({source:absent.session,destination:absent.destination,sha256:absent.sha256,media:[{source:absent.source,sidecarName:'kick.wav'}]});
