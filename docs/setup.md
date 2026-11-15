@@ -91,7 +91,7 @@ Local pairing (`SHOWKONTROL_USE_LOCAL_PAIRING=1`) reads the current user's ShowK
 
 ## Choose the tools a client loads
 
-By default the server registers all 120 tools. Their `tools/list` response is about 256 KB of names, descriptions and input schemas, and clients pass tool definitions to the model. OpenAI's API has refused requests with more than 128 tools (`array_above_max_length`), so Codex's own tools or another MCP server can take a session over that limit. This has not been observed with this server.
+By default the server registers all 120 tools. Their `tools/list` response is about 256 KB of names, descriptions and input schemas, and clients pass tool definitions to the model. OpenAI's API has refused requests with more than 128 tools (`array_above_max_length`), so Codex's own tools or another MCP server can take a session over that limit unless the client defers MCP tools. This has not been observed with this server. In Codex CLI 0.133.0, `codex features list` shows `tool_search` as removed and `tool_search_always_defer_mcp_tools` as under development and off; whether that Codex defers this server's tools was not checked. In the Claude Code 2.1.300 session that measured these sizes, MCP tools were deferred and loaded on demand through tool search; when Claude Code does this was not checked.
 
 Set `SHOWKONTROL_TOOLSETS` to a comma-separated list to register fewer tools:
 
