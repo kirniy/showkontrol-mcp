@@ -191,6 +191,8 @@ Use `assemble_timeline_cue_graph` to assemble supported nodes from cue and patch
 
 Use `assemble_item_graph` to assemble the same supported donor nodes directly into a Program item graph. Supply the current item `index`, `nodes`, and optional `wires`. Replacing an existing graph requires `replaceExisting: true` and passes reference checks. Use `edit_assembled_item_graph_setting` with the earlier `graphFromOperation` and `nodeIndex` to configure a node in the same transaction. Program item activity uses `item.active`; its runtime behavior remains unverified.
 
+Use `copy_patch_setting_to_item_graph` to copy an existing action or trigger setting from an inspected patch donor into a same-type item graph node. Select the target with `nodeId` or with an earlier `graphFromOperation` and `nodeIndex`. Supply `donor`, `donorFormat`, `donorSha256`, `donorNodeId`, and `key`. Existing settings are replaced. Router targets are checked against the destination patch; action compatibility and runtime behavior remain unverified.
+
 Use `remove_timeline_cue_graph` with the current item `index` and `cueId` to remove a cue's graph while keeping the cue. The operation checks supported XML for references to removed node IDs. A later operation can copy or assemble a replacement graph. External, computed and binary references remain unchecked.
 
 Use `edit_timeline_graph_wire` with the current item `index`, `cueId`, `operation` (`add` or `remove`), `fromNode`, and `toNode` to edit a supported pin-0 wire in an existing cue graph. The supported node and wire types come from the observed fixtures. Other pins, external dependencies, and ShowKontrol execution remain unverified.

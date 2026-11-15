@@ -281,6 +281,22 @@ async function copyProgramPatchSetting({timeline,edited,program,source,sha256,cu
  return {...result,sha256:digest(output)};
 }
 
+async function copyItemPatchSetting({program,destination,source,sha256,currentSha,index,nodeId,operation,dir,step}){
+ const xml=await readFile(program,'utf8'),root=parseXmlSpans(xml),item=root.children[index];
+ if(root.name!=='skprogram'||!Number.isInteger(index)||index<0||!item||item.name!=='item')throw Error('Item index out of range');
+ const graphs=item.children.filter(n=>n.name==='graph');
+ if(graphs.length!==1||graphs[0].children.filter(n=>n.name==='node'&&n.attributes.id===nodeId).length!==1)throw Error('Target item graph and node must be unique');
+ const graph=graphs[0],cueId='__composition_item_setting__';
+ const timeline=path.join(dir,`item-setting-${step}.sktl`),edited=path.join(dir,`item-setting-edited-${step}.sktl`);
+ await writeFile(timeline,`<sktimeline version="1"><cue id="${cueId}">${xml.slice(graph.start,graph.end)}</cue></sktimeline>`,{flag:'wx'});
+ const result=await copyProgramPatchSetting({timeline,edited,program,source,sha256,currentSha,cueId,nodeId,operation,dir,step});
+ const output=await readFile(edited,'utf8'),proxy=parseXmlSpans(output),cues=proxy.children.filter(n=>n.name==='cue'&&n.attributes.id===cueId),outGraphs=cues.length===1?cues[0].children.filter(n=>n.name==='graph'):[];
+ if(outGraphs.length!==1)throw Error('Copied item graph could not be verified');
+ const modified=xml.slice(0,graph.start)+output.slice(outGraphs[0].start,outGraphs[0].end)+xml.slice(graph.end);
+ parseXmlSpans(modified);await writeFile(destination,modified,{flag:'wx'});
+ return {...result,sha256:digest(modified),note:'Copied a setting from a patch node into an offline Program item graph. Values, external dependencies and ShowKontrol acceptance are not validated.'};
+}
+
 // Each index addresses the current Program file order after all preceding operations.
 export async function composeProgramEditsCopy(args){
  keys(args,['source','destination','sha256','operations']);
@@ -295,6 +311,13 @@ export async function composeProgramEditsCopy(args){
   else if(op.action==='edit_graph_setting')keys(op,['action','index','nodeId','key','value']);
   else if(op.action==='assemble_item_graph'){keys(op,['action','index','nodes'],['wires','replaceExisting']);if(op.replaceExisting!==undefined&&typeof op.replaceExisting!=='boolean')throw Error('replaceExisting must be a boolean');}
   else if(op.action==='edit_assembled_item_graph_setting')keys(op,['action','index','graphFromOperation','nodeIndex','key','value']);
+  else if(op.action==='copy_patch_setting_to_item_graph'){
+   keys(op,['action','index','donor','donorFormat','donorSha256','donorNodeId','key'],['nodeId','graphFromOperation','nodeIndex']);
+   if(Object.hasOwn(op,'nodeId')===Object.hasOwn(op,'graphFromOperation')||Object.hasOwn(op,'nodeIndex')!==Object.hasOwn(op,'graphFromOperation'))throw Error('Provide nodeId or graphFromOperation with nodeIndex');
+   if(Object.hasOwn(op,'nodeId')&&(typeof op.nodeId!=='string'||!op.nodeId))throw Error('nodeId must be a nonempty string');
+   if(Object.hasOwn(op,'graphFromOperation')&&(!Number.isInteger(op.graphFromOperation)||op.graphFromOperation<0||!Number.isInteger(op.nodeIndex)||op.nodeIndex<0))throw Error('Invalid graphFromOperation or nodeIndex');
+   if(typeof op.donor!=='string'||!path.isAbsolute(op.donor)||!['skf','skshow'].includes(op.donorFormat)||!/^[a-f0-9]{64}$/.test(op.donorSha256||'')||!/^n\d+$/.test(op.donorNodeId||''))throw Error('Absolute donor path, donor format, donor SHA-256 and node ID are required');
+  }
   else if(op.action==='edit_timeline_graph_setting')keys(op,['action','index','cueId','nodeId','key','value']);
   else if(op.action==='edit_timeline_graph_wire')keys(op,['action','index','cueId','operation','fromNode','toNode']);
   else if(op.action==='edit_timeline_graph_wire_mapped'){
@@ -378,6 +401,16 @@ export async function composeProgramEditsCopy(args){
     if(!graph||invalidatedGraphs.has(ref)||!itemGraphContains(await readFile(program,'utf8'),operation.index,graph.nodeIds))throw Error('graphFromOperation must identify an active prior assemble_item_graph in the selected item');
     if(!Number.isInteger(operation.nodeIndex)||operation.nodeIndex<0||operation.nodeIndex>=graph.nodeIds.length)throw Error('nodeIndex must identify a node in the assembled graph');
     current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index:operation.index,nodeId:graph.nodeIds[operation.nodeIndex],key:operation.key,value:operation.value});
+   }else if(operation.action==='copy_patch_setting_to_item_graph'){
+    let nodeId=operation.nodeId;
+    if(Object.hasOwn(operation,'graphFromOperation')){
+     const ref=operation.graphFromOperation,graph=ref<operationIndex?assembledItemGraphs.find(g=>g.operationIndex===ref):undefined;
+     if(!graph||invalidatedGraphs.has(ref)||!itemGraphContains(await readFile(program,'utf8'),operation.index,graph.nodeIds))throw Error('graphFromOperation must identify an active prior assemble_item_graph in the selected item');
+     if(operation.nodeIndex>=graph.nodeIds.length)throw Error('nodeIndex must identify a node in the assembled graph');
+     nodeId=graph.nodeIds[operation.nodeIndex];
+    }
+    current=await copyItemPatchSetting({program,destination,source,sha256,currentSha:current.sha256,index:operation.index,nodeId,operation,dir,step});
+    donors.push({file:operation.donor,sha256:operation.donorSha256});
    }else if(operation.action==='edit_graph_setting'){
     const {index,nodeId,key,value}=operation;
     current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index,nodeId,key,value});
