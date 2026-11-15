@@ -1,0 +1,42 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,readFile,rm,writeFile} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
+import {inspectPatch,editPatchGraphCopy,copyPatchNode} from './patch.js';
+
+const part=(name,xml)=>`<part name="${name}" md5="${createHash('md5').update(xml).digest('hex')}">${Buffer.from(xml).toString('base64')}</part>`;
+const patch='<showkontrol version="2"><graph><node id="n1" type="action"><settings/></node></graph><appSettings/></showkontrol>';
+
+test('patch node creation rejects IDs used in any native show part',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-patch-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skshow'),template=path.join(dir,'template.skf');
+ const show=`<skshow>${part('patch.skf',patch)}${part('one.sktl','<sktimeline><cue><graph><node id="n2"/></graph></cue></sktimeline>')}${part('two.SKSC','<scene><node id="n3"/></scene>')}</skshow>`;
+ await writeFile(source,show);await writeFile(template,patch);
+ const target=await inspectPatch({file:source,format:'skshow'}),donor=await inspectPatch({file:template,format:'skf'});
+ const base={source,format:'skshow',sha256:target.sha256,nodeId:'n1'};
+ for(const id of ['n2','n3']){
+  await assert.rejects(editPatchGraphCopy({...base,destination:path.join(dir,`duplicate-${id}`),operation:'duplicate_node',newNodeId:id}),/unused/);
+  await assert.rejects(copyPatchNode({...base,destination:path.join(dir,`copy-${id}`),template,templateFormat:'skf',templateSha256:donor.sha256,newNodeId:id}),/unused/);
+ }
+ const duplicate=path.join(dir,'duplicate.skshow'),copy=path.join(dir,'copy.skshow');
+ await editPatchGraphCopy({...base,destination:duplicate,operation:'duplicate_node',newNodeId:'n4'});
+ await copyPatchNode({...base,destination:copy,template,templateFormat:'skf',templateSha256:donor.sha256,newNodeId:'n4'});
+ for(const file of [duplicate,copy])assert.deepEqual((await inspectPatch({file,format:'skshow'})).nodes.map(n=>n.id),['n1','n4']);
+ assert.equal(await readFile(source,'utf8'),show);
+});
+
+test('patch operations select real XML attributes, not lookalike attribute names',async t=>{
+ const {editPatchSettingCopy}=await import('./patch.js');
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-attributes-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skf'),donor=path.join(dir,'donor.skf');
+ const target='<showkontrol version="2"><graph><node id="n1"><settings><setting key="level">old</setting><setting data-key="level" key="other">untouched</setting></settings></node></graph><appSettings/></showkontrol>';
+ const template='<showkontrol version="2"><graph><node id="n&#49;" type="correct"><settings/></node><node data-id="n1" id="n2" type="wrong"><settings/></node></graph><appSettings/></showkontrol>';
+ await writeFile(source,target);await writeFile(donor,template);
+ const targetInfo=await inspectPatch({file:source,format:'skf'}),donorInfo=await inspectPatch({file:donor,format:'skf'});
+ const edited=path.join(dir,'edited.skf');
+ await editPatchSettingCopy({source,destination:edited,format:'skf',sha256:targetInfo.sha256,nodeId:'n1',key:'level',value:'new'});
+ assert.deepEqual((await inspectPatch({file:edited,format:'skf'})).nodes[0].settings.map(s=>s.value),['new','untouched']);
+ await assert.rejects(copyPatchNode({source,destination:path.join(dir,'copy.skf'),format:'skf',sha256:targetInfo.sha256,template:donor,templateFormat:'skf',templateSha256:donorInfo.sha256,nodeId:'n1',newNodeId:'n3'}),/node ID attribute/);
+});

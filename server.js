@@ -1,0 +1,177 @@
+#!/usr/bin/env node
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { z } from 'zod';
+import { readFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import {writeRpp} from './rpp.js';
+import {inspectTimeline,addTimelineCueCopy,inspectShowTimeline,addShowTimelineCueCopy,inspectCueGraph,copyCueGraphInShow,editTimelineCueCopy,deleteTimelineCueCopy,createShowTrackCopy} from './timeline.js';
+import {writeMarkerCsv} from './marker-csv.js';
+import {inspectPatch,editPatchSettingCopy,editPatchGraphCopy,copyPatchNode} from './patch.js';
+import {inspectXml,editXmlCopy,inspectShow,readShowPart,editShowPart} from './xml-copy.js';
+import {inspectShowSetlist,addShowSetlistTrackCopy,editShowSetlistCopy} from './setlist.js';
+
+const base = new URL(process.env.SHOWKONTROL_URL || 'http://127.0.0.1:8090');
+if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash || !['', '/'].includes(base.pathname)) throw Error('SHOWKONTROL_URL must be an HTTP(S) origin without credentials or a path');
+const timeout = Number(process.env.SHOWKONTROL_TIMEOUT_MS || 5000);
+if (!Number.isFinite(timeout) || timeout < 100 || timeout > 120000) throw Error('Invalid SHOWKONTROL_TIMEOUT_MS');
+async function credentials() {
+  let pair = process.env.SHOWKONTROL_PAIR_KEY || '';
+  let token = process.env.SHOWKONTROL_TOKEN || '';
+  let port;
+  if (!pair && process.env.SHOWKONTROL_USE_LOCAL_PAIRING === '1') {
+    if (!['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname)) throw Error('Local pairing is limited to loopback');
+    const file = process.env.SHOWKONTROL_PAIRING_FILE || path.join(homedir(), 'Documents/TC Supply/WEB/streamdeck.json');
+    try {
+      const data = JSON.parse(await readFile(file, 'utf8'));
+      if (data.enabled !== false) { pair = data.key || ''; token ||= data.token || ''; port = Number(data.port) || undefined; }
+    } catch (e) { if (e.code !== 'ENOENT') throw Error('Could not read local pairing file'); }
+  }
+  return {token, pair, port};
+}
+async function request(method, apiPath, body, accept = 'application/json', signal = AbortSignal.timeout(timeout)) {
+  if (!apiPath.startsWith('/') || apiPath.startsWith('//') || apiPath.includes('#') || /[\r\n\\]/.test(apiPath)) throw Error('Path must be a relative API path beginning with one slash');
+  const url = new URL('/api/v1' + apiPath, base);
+  if (url.origin !== base.origin || !(url.pathname === '/api/v1' || url.pathname.startsWith('/api/v1/'))) throw Error('Path escapes /api/v1');
+  const {token, pair, port} = await credentials();
+  if (port && !process.env.SHOWKONTROL_URL) url.port = String(port);
+  const headers = {Accept:accept};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (pair) headers['X-SK-Pair'] = pair;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  let res;
+  try { res = await fetch(url, {method, headers, ...(body !== undefined ? {body:JSON.stringify(body)} : {}), signal, redirect:'error'}); }
+  catch(e) { throw Error(`${method} ${url.pathname}: ${e.name === 'TimeoutError' ? 'timed out; the outcome of a write may be unknown' : 'connection failed'}; no automatic retry`); }
+  return res;
+}
+async function call(method, apiPath, body) {
+  const res = await request(method, apiPath, body);
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.toLowerCase().startsWith('text/event-stream')) { await res.body?.cancel(); throw Error('Use showkontrol_sample_events for event streams'); }
+  if (!contentType.includes('json') && !contentType.startsWith('text/') && res.status !== 204) throw Error(`HTTP ${res.status}: binary response is not supported by this tool`);
+  const limit = 5 * 1024 * 1024;
+  if (Number(res.headers.get('content-length')) > limit) { await res.body?.cancel(); throw Error('Response exceeds 5 MiB limit'); }
+  const reader = res.body?.getReader(); const chunks = []; let size = 0;
+  try { if (reader) while (true) { const {done,value} = await reader.read(); if(done) break; size += value.length; if(size > limit) throw Error('Response exceeds 5 MiB limit'); chunks.push(value); } }
+  catch(e) { await reader?.cancel().catch(()=>{}); throw e; }
+  const text = Buffer.concat(chunks).toString('utf8');
+  let result = text;
+  if (text) {try { result = JSON.parse(text); } catch { /* retain text */ }} else result = {};
+  if (!res.ok) throw Error(`HTTP ${res.status}: ${typeof result === 'object' && result?.error ? String(result.error) : res.statusText}`);
+  return result;
+}
+// Limit returned media to keep MCP messages bounded. No file is written.
+async function readBinary(apiPath) {
+  const res = await request('GET', apiPath, undefined, '*/*');
+  if (!res.ok) { await res.body?.cancel(); throw Error(`HTTP ${res.status}: ${res.statusText}`); }
+  const mimeType = (res.headers.get('content-type') || 'application/octet-stream').split(';')[0].trim().toLowerCase();
+  if (!/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(mimeType)) { await res.body?.cancel(); throw Error('Invalid response content type'); }
+  if (mimeType === 'text/event-stream') { await res.body?.cancel(); throw Error('Use showkontrol_sample_events for event streams'); }
+  const limit = 5 * 1024 * 1024;
+  if (Number(res.headers.get('content-length')) > limit) { await res.body?.cancel(); throw Error('Response exceeds 5 MiB limit'); }
+  const reader = res.body?.getReader();
+  const chunks = []; let size = 0;
+  try {
+    if (reader) while (true) {
+      const {done,value} = await reader.read(); if (done) break;
+      size += value.length; if (size > limit) throw Error('Response exceeds 5 MiB limit');
+      chunks.push(value);
+    }
+  } catch (e) { await reader?.cancel().catch(()=>{}); throw e; }
+  return {mimeType, blob:Buffer.concat(chunks).toString('base64')};
+}
+async function sampleEvents({durationMs, maxEvents}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), durationMs);
+  let reader; const events = []; let buffer = '', size = 0, ended = false;
+  try {
+    const res = await request('GET','/events',undefined,'text/event-stream',controller.signal);
+    if (!res.ok) { await res.body?.cancel(); throw Error(`HTTP ${res.status}: ${res.statusText}`); }
+    if (!(res.headers.get('content-type') || '').toLowerCase().startsWith('text/event-stream')) { await res.body?.cancel(); throw Error('Expected text/event-stream'); }
+    reader = res.body?.getReader(); const decoder = new TextDecoder();
+    let name = '', data = [];
+    while (reader && events.length < maxEvents) {
+      let chunk;
+      try { chunk = await reader.read(); } catch(e) { if (controller.signal.aborted) break; throw e; }
+      if (chunk.done) { ended = true; break; }
+      size += chunk.value.length; if (size > 1024 * 1024) throw Error('Event stream exceeds 1 MiB limit');
+      buffer += decoder.decode(chunk.value,{stream:true});
+      let i;
+      while ((i=buffer.indexOf('\n')) !== -1 && events.length < maxEvents) {
+        let line = buffer.slice(0,i); buffer = buffer.slice(i+1); if (line.endsWith('\r')) line = line.slice(0,-1);
+        if (!line) {
+          if (data.length) { const raw = data.join('\n'); let value; try { value=JSON.parse(raw); } catch { value=raw; } events.push({event:name || 'message',data:value}); }
+          name=''; data=[]; continue;
+        }
+        if (line.startsWith(':')) continue;
+        const colon=line.indexOf(':'); const field=colon<0?line:line.slice(0,colon); let value=colon<0?'':line.slice(colon+1); if(value.startsWith(' ')) value=value.slice(1);
+        if(field==='event') name=value; else if(field==='data') data.push(value);
+      }
+    }
+    return {events,reason:events.length >= maxEvents ? 'maxEvents' : ended ? 'streamClosed' : 'duration'};
+  } catch(e) {
+    if (controller.signal.aborted) return {events,reason:'duration'};
+    throw e;
+  } finally { clearTimeout(timer); controller.abort(); await reader?.cancel().catch(()=>{}); }
+}
+const server = new McpServer({name:'showkontrol',version:'0.1.0'},{instructions:'Use discovery tools to inspect the running show and available node types before live changes. For offline authoring, inspect the show or part first, use the returned SHA-256, and write each change to a new copy. Inspect each new copy before the next edit. Native show formats and some action bodies are not fully verified: report the actual validation level and check the result in ShowKontrol. Live writes are not retried; after a timeout, read the current state before deciding whether to repeat a write.'});
+function add(name, description, schema, handler, annotations) {
+ server.registerTool(name,{description,inputSchema:schema,annotations},async args=>{
+  try { const data = await handler(args); return {content:[{type:'text',text:JSON.stringify(data,null,2)}]}; }
+  catch(e) { return {isError:true,content:[{type:'text',text:e.message}]}; }
+ });
+}
+const readOnly = {readOnlyHint:true, destructiveHint:false, openWorldHint:true};
+const write = {readOnlyHint:false, destructiveHint:true, idempotentHint:false, openWorldHint:true};
+add('showkontrol_read','Read a ShowKontrol REST endpoint. Path is relative to /api/v1, for example /state, /nodes, /nodes/types, /patch, /settings, /variables, /decks/1, or /actions. Use the separate binary and event tools for those responses.',{path:z.string().describe('API path including leading slash and optional query')},({path})=>call('GET',path),readOnly);
+server.registerTool('showkontrol_read_binary',{description:'Read a binary API response as a base64 MCP embedded resource. Supply a documented endpoint path. Maximum response size is 5 MiB.',inputSchema:{path:z.string().describe('API path relative to /api/v1')},annotations:readOnly},async ({path:apiPath})=>{
+ try { const {mimeType,blob}=await readBinary(apiPath); return {content:[{type:'resource',resource:{uri:'showkontrol://api/binary',mimeType,blob}}]}; }
+ catch(e) { return {isError:true,content:[{type:'text',text:e.message}]}; }
+});
+add('showkontrol_sample_events','Sample the ShowKontrol /events server-sent event stream for a bounded duration. The server may replay the last event of each name on connection.',{durationMs:z.number().int().min(100).max(30000).default(1000),maxEvents:z.number().int().min(1).max(100).default(20)},sampleEvents,readOnly);
+add('showkontrol_write','Call a ShowKontrol REST endpoint. This can change a live show or trigger external equipment. Discover the target schema first. Writes are never retried. A timeout does not prove that the operation failed.',{method:z.enum(['POST','PUT','DELETE','PATCH']),path:z.string().describe('Path relative to /api/v1'),body:z.unknown().optional().describe('JSON body, if required by the endpoint')},({method,path,body})=>call(method,path,body),write);
+add('showkontrol_get_parameter','Read a node parameter by node ID or name and parameter key.',{node:z.string(),key:z.string()},({node,key})=>call('GET',`/nodes/${segment(node)}/params/${segment(key)}`),readOnly);
+add('showkontrol_set_parameter','Set a node parameter. This changes the running show.',{node:z.string(),key:z.string(),value:z.unknown()},({node,key,value})=>call('PUT',`/nodes/${segment(node)}/params/${segment(key)}`,{value}),write);
+add('showkontrol_set_setting','Set an application setting. This changes the running application.',{key:z.string(),value:z.unknown()},({key,value})=>call('PUT',`/settings/${segment(key)}`,{value}),write);
+add('showkontrol_fire_node','Fire a node in the running show. This can control external equipment.',{node:z.string()},({node})=>call('POST',`/nodes/${segment(node)}/fire`,{}),write);
+add('showkontrol_create_marker_csv','Create a new REAPER marker/region CSV for manual import in the ShowKontrol Cue Editor. Times are seconds and are rounded to milliseconds. No existing file is overwritten. Import into ShowKontrol has not been verified, and the file contains no cue action graphs.',{file:z.string(),entries:z.array(z.object({kind:z.enum(['marker','region']),name:z.string(),seconds:z.number().nonnegative(),endSeconds:z.number().nonnegative().optional()})).min(1)},writeMarkerCsv,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+add('showkontrol_create_rpp','Create a new REAPER project with markers, empty cue items, and audio/video media items for manual import in ShowKontrol Cue Editor. All positions, durations, offsets and fades are in seconds. Media and cue item import are not yet verified against the application. No existing file is overwritten.',{file:z.string(),projectName:z.string().optional(),markers:z.array(z.object({seconds:z.number().nonnegative(),name:z.string()})).optional(),tracks:z.array(z.object({name:z.string(),cues:z.array(z.object({seconds:z.number().nonnegative(),duration:z.number().positive(),name:z.string()})).min(1)})).optional(),mediaTracks:z.array(z.object({name:z.string(),kind:z.enum(['audio','video']),nativeColor:z.number().int().nonnegative().max(33554431).optional(),items:z.array(z.object({seconds:z.number().nonnegative(),duration:z.number().positive(),file:z.string().min(1),name:z.string().optional(),sourceOffset:z.number().nonnegative().optional(),fadeIn:z.number().nonnegative().optional(),fadeOut:z.number().nonnegative().optional(),takeVolume:z.number().nonnegative().optional()})).min(1)})).optional()},writeRpp,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+add('showkontrol_discover','Read documented live endpoint data: state, status, nodes, available node types, settings, variables, or the current patch. Node type availability depends on the licence.',{resource:z.enum(['state','status','nodes','node_types','settings','variables','patch'])},({resource})=>call('GET',({state:'/state',status:'/status',nodes:'/nodes',node_types:'/nodes/types',settings:'/settings',variables:'/variables',patch:'/patch'})[resource]),readOnly);
+add('showkontrol_get_deck','Read detail for a deck numbered 1 through 8.',{deck:z.number().int().min(1).max(8)},({deck})=>call('GET',`/decks/${deck}`),readOnly);
+add('showkontrol_deck_command','Send a documented transport command to a deck. The API manual does not specify the request body for seek, tempo, load, master, or sync: use the body expected by the running app. This can control physical equipment. Writes are never retried.',{deck:z.number().int().min(1).max(8),command:z.enum(['play','pause','playpause','stop','start','cue','seek','tempo','nudge','load','eject','master','sync','hotcue','beatjump']),body:z.unknown().optional()},({deck,command,body})=>call('POST',`/decks/${deck}/${command}`,body??{}),write);
+add('showkontrol_run_action','Run an Action catalogue ID. Supply the request body required by that action. This can trigger external equipment. Action parameter schemas are not documented here; discover them in the running app. Writes are never retried.',{id:z.string().min(1),body:z.unknown().optional()},({id,body})=>{if(id==='.'||id==='..')throw Error('Invalid action ID');return call('POST',`/actions/${encodeURIComponent(id)}`,body??{});},write);
+add('showkontrol_session_command','Launch the show or switch a screen using the documented REST endpoint. Supply the body expected by the running app. This changes the running session. Writes are never retried.',{command:z.enum(['launch','screen']),body:z.unknown().optional()},({command,body})=>call('POST',command==='launch'?'/session/launch':'/screen',body??{}),write);
+function segment(value){if(!value||value==='.'||value==='..')throw Error('Invalid identifier');return encodeURIComponent(value)}
+add('showkontrol_node_type_detail','Inspect a node type request, including available pins and parameters, before creating it.',{request:z.string().min(1)},({request})=>call('GET',`/nodes/types/${segment(request)}`),readOnly);
+add('showkontrol_create_node','Create or preview one node using a request from node types. Set dryRun true to preview without adding it. The supplied title may be normalized by ShowKontrol.',{request:z.string().min(1),title:z.string().optional(),dryRun:z.boolean()},({request,title,dryRun})=>call('POST','/nodes',{request,...(title!==undefined?{title}:{}),dryRun}),write);
+add('showkontrol_delete_node','Delete a running patch node by ID. This changes the show and can remove connected wires. Writes are never retried.',{id:z.string().min(1)},({id})=>call('DELETE',`/nodes/${segment(id)}`),write);
+add('showkontrol_list_connections','Read the running patch connections.',{},()=>call('GET','/connections'),readOnly);
+const endpointSchema=z.object({node:z.string().min(1),pin:z.union([z.string(),z.number().int().nonnegative()]).optional()});
+add('showkontrol_create_connection','Create or preview a connection using node IDs and optional pin names or indices. Set dryRun true to preview. This can change live show routing.',{from:endpointSchema,to:endpointSchema,dryRun:z.boolean()},({from,to,dryRun})=>call('POST','/connections',{from,to,dryRun}),write);
+add('showkontrol_delete_connection','Delete a connection identified by its two endpoints. This changes live show routing.',{from:endpointSchema,to:endpointSchema},({from,to})=>call('DELETE','/connections',{from,to}),write);
+add('showkontrol_validate_patch','Dry-run a proposed patch specification without applying it. ShowKontrol validates nodes and connections before a later write. The server always sets dryRun to true.',{spec:z.record(z.string(),z.unknown())},({spec})=>call('PUT','/patch',{...spec,dryRun:true}),readOnly);
+add('showkontrol_get_patch','Read the complete running patch using the ShowKontrol REST API.',{},()=>call('GET','/patch'),readOnly);
+add('showkontrol_put_patch','Submit a patch body to ShowKontrol. Get the current patch and discover its schema first. This changes the running show unless the app accepts a dry-run request.',{body:z.unknown()},({body})=>call('PUT','/patch',body),write);
+add('showkontrol_inspect_timeline','Inspect a version 1 offline .sktl timeline. Returns root attributes, layer and audio metadata, and discovered cue elements and paths. This does not modify the file.',{file:z.string()},inspectTimeline,readOnly);
+add('showkontrol_add_timeline_cue_copy','Add a simple cue to an offline version 1 .sktl copy. Inspect first and supply the source SHA-256. Layer is zero-based. Start and length are milliseconds. This creates no action graph; app loading is not yet verified.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),layer:z.number().int().nonnegative(),startMs:z.number().nonnegative(),lengthMs:z.number().positive(),label:z.string().min(1)},addTimelineCueCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+add('showkontrol_inspect_show_timeline','Inspect a named .sktl part inside an offline .skshow archive. Returns the archive SHA-256 and timeline metadata.',{file:z.string(),name:z.string()},inspectShowTimeline,readOnly);
+add('showkontrol_add_show_timeline_cue_copy','Add a simple cue to a named .sktl part in a new offline .skshow copy. Inspect first and supply the archive SHA-256. Layer is zero-based; times are milliseconds. The tool updates the part checksum and preserves other parts.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),name:z.string(),layer:z.number().int().nonnegative(),startMs:z.number().nonnegative(),lengthMs:z.number().positive(),label:z.string().min(1)},addShowTimelineCueCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+add('showkontrol_edit_timeline_cue_copy','Edit existing cue fields in an offline timeline or show copy while preserving its action graph. Inspect first and supply the source SHA-256. Times are milliseconds.',{source:z.string(),destination:z.string(),format:z.enum(['sktl','skshow']),sha256:z.string().length(64),name:z.string().optional(),cueId:z.string().min(1),layer:z.number().int().nonnegative().optional(),startMs:z.number().nonnegative().optional(),lengthMs:z.number().positive().optional(),label:z.string().min(1).optional()},editTimelineCueCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+add('showkontrol_delete_timeline_cue_copy','Delete a cue from an offline timeline or show copy. Inspect first and supply its SHA-256. A cue with a graph requires deleteGraph=true. The tool does not check external references to the cue; verify them and validate the result in ShowKontrol.',{source:z.string(),destination:z.string(),format:z.enum(['sktl','skshow']),sha256:z.string().length(64),name:z.string().optional(),cueId:z.string().min(1),deleteGraph:z.boolean().default(false)},deleteTimelineCueCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+add('showkontrol_create_show_track_copy','Create an empty track in an offline show copy using an existing empty timeline template. The set list is unchanged. Track names use ASCII letters, digits, spaces, underscores or hyphens. Part names use content/NAME.sktl with ASCII letters, digits, underscores or hyphens in NAME. Validate in ShowKontrol.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),templateName:z.string(),trackName:z.string().regex(/^[A-Za-z0-9 _-]*[A-Za-z0-9_-][A-Za-z0-9 _-]*$/),partName:z.string().regex(/^content\/[A-Za-z0-9_-]+\.sktl$/)},createShowTrackCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+add('showkontrol_inspect_show_setlist','Inspect a version 2 set list part in an offline .skshow. Returns set names and track entries plus the source checksum.',{file:z.string(),name:z.string()},inspectShowSetlist,readOnly);
+add('showkontrol_add_show_setlist_track_copy','Append an existing show track to a set in a new offline .skshow copy. Inspect the set list first and supply its source checksum. App acceptance of this edit is not yet verified.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),name:z.string(),setName:z.string().min(1),trackName:z.string().min(1)},addShowSetlistTrackCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+add('showkontrol_edit_show_setlist_copy','Create a set, remove a track entry, or move a track entry in an offline show copy. Inspect first and use its SHA-256. Track indices are zero-based. Set removal and reordering are unsupported because the active-set reference is unverified. Validate the result in ShowKontrol.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),name:z.string(),operation:z.enum(['create_set','remove_track','move_track']),setName:z.string().optional(),newSetName:z.string().optional(),index:z.number().int().nonnegative().optional(),toIndex:z.number().int().nonnegative().optional()},editShowSetlistCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+add('showkontrol_inspect_cue_graph','Inspect a cue graph in an offline .sktl or a named .sktl part of a .skshow. Returns graph nodes, connections and settings without changing the source.',{file:z.string(),format:z.enum(['sktl','skshow']),name:z.string().optional(),cueId:z.string()},inspectCueGraph,readOnly);
+add('showkontrol_copy_cue_graph_show_copy','Copy a fixture-supported cue graph to a graph-free cue in the same offline show copy. Allocates fresh node IDs after scanning XML parts. Supports groupin, trigger, and action nodes only. Check the result in ShowKontrol.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),name:z.string(),sourceCueId:z.string(),targetCueId:z.string()},copyCueGraphInShow,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+add('showkontrol_inspect_patch','Inspect nodes, connections and existing settings in an offline version 2 patch (.skf) or .skshow wrapper.',{file:z.string(),format:z.enum(['skf','skshow'])},inspectPatch,readOnly);
+add('showkontrol_edit_patch_setting_copy','Change one existing application or node setting in an offline patch copy. Inspect first and supply its SHA-256. Values are strings; accepted values and application compatibility are not validated. The destination must not exist.',{source:z.string(),destination:z.string(),format:z.enum(['skf','skshow']),sha256:z.string().length(64),nodeId:z.string().optional().describe('Node ID; omit for an application setting'),key:z.string(),value:z.string()},editPatchSettingCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+add('showkontrol_edit_patch_graph_copy','Duplicate or remove a node, or add or remove a connection in an offline patch copy. Inspect first. Node removal requires all its connections to be removed first. Duplicates retain settings, title and position. Pin and node compatibility is not validated.',{source:z.string(),destination:z.string(),format:z.enum(['skf','skshow']),sha256:z.string().length(64),operation:z.enum(['duplicate_node','remove_node','add_connection','remove_connection']),nodeId:z.string().optional(),newNodeId:z.string().optional(),connection:z.object({fromNode:z.string(),fromPin:z.number().int().nonnegative(),toNode:z.string(),toPin:z.number().int().nonnegative()}).optional()},editPatchGraphCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+add('showkontrol_copy_patch_node','Copy one existing node from an offline template patch into a new offline destination patch copy. Inspect both files first. Copies node XML only; no connections or dependencies. The copied title, position, settings and internal references remain unchanged. Compatibility is not validated.',{source:z.string(),destination:z.string(),format:z.enum(['skf','skshow']),sha256:z.string().length(64),template:z.string(),templateFormat:z.enum(['skf','skshow']),templateSha256:z.string().length(64),nodeId:z.string(),newNodeId:z.string()},copyPatchNode,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+add('showkontrol_inspect_xml','Inspect an offline UTF-8 XML file and return its SHA-256 checksum and exact text. Do not use this to edit an active show.',{file:z.string()},inspectXml,readOnly);
+add('showkontrol_edit_xml_copy','Apply exact unique text replacements to an offline XML file and write a new file. Requires the checksum from inspection. The source and all unmodified text are preserved. This validates XML syntax only, not ShowKontrol schema or compatibility.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),edits:z.array(z.object({find:z.string().min(1),replace:z.string()})).min(1)},editXmlCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+add('showkontrol_inspect_show','Read an offline .skshow wrapper manifest and verify part MD5 checksums.',{file:z.string()},inspectShow,readOnly);
+add('showkontrol_read_show_part','Read a UTF-8 part from an offline .skshow file after verifying its MD5.',{file:z.string(),name:z.string()},readShowPart,readOnly);
+add('showkontrol_edit_show_part_copy','Edit one XML part of an offline .skshow file. Verify all part checksums and source SHA-256, update the edited part MD5, and write a new file. XML validity does not prove ShowKontrol compatibility.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),name:z.string(),edits:z.array(z.object({find:z.string().min(1),replace:z.string()})).min(1)},editShowPart,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
+await server.connect(new StdioServerTransport());

@@ -1,0 +1,1 @@
+{"name":"showkontrol-mcp","version":"0.1.0","private":true,"type":"module","description":"Local MCP bridge to the ShowKontrol R27 REST API","bin":{"showkontrol-mcp":"./server.js"},"scripts":{"start":"node server.js","test":"node --test"},"engines":{"node":">=20"},"dependencies":{"@modelcontextprotocol/sdk":"^1.32.2","saxes":"^6.0.0","zod":"^4.0.0"}}
