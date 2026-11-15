@@ -193,9 +193,11 @@ Use `remove_timeline_cue_graph` with the current item `index` and `cueId` to rem
 
 Use `edit_timeline_graph_wire` with the current item `index`, `cueId`, `operation` (`add` or `remove`), `fromNode`, and `toNode` to edit a supported pin-0 wire in an existing cue graph. The supported node and wire types come from the observed fixtures. Other pins, external dependencies, and ShowKontrol execution remain unverified.
 
-Use `edit_timeline_graph_wire_mapped` to wire a node copied earlier in the same Program edit. Each `from` or `to` endpoint is either `{nodeId}` for an existing node or `{nodeFromOperation}` for an earlier node-copy operation. The operation checks that the receipt is still active and belongs to the selected cue.
+Use `edit_timeline_graph_wire_mapped` to wire a node copied earlier in the same Program edit. Each `from` or `to` endpoint is either `{nodeId}` for an existing node, `{nodeFromOperation}` for an earlier node-copy operation, or `{graphFromOperation, nodeIndex}` for an earlier assembled graph. The operation checks that the receipt is still active and belongs to the selected cue.
 
 Use `copy_timeline_cue_node` to add a supported node from an inspected cue or patch donor to an existing Program cue graph. Supply `donorType`, `donor`, `donorSha256`, and `donorNodeId`; cue donors also require `donorName` and `donorCueId`, while patch donors require `donorFormat`. The result returns the new node ID. Use `edit_copied_timeline_node_setting` with `nodeFromOperation` to edit that node in the same transaction. Use `remove_timeline_cue_node` to remove an unreferenced node. Copied nodes have no wires. External and computed references and app execution remain unverified.
+
+Use `copy_patch_setting_to_timeline_cue` to copy an existing setting from an inspected patch node into a same-type Program cue node. Select the cue with `cueId` or `cueFromOperation`, and the node with `nodeId` or `nodeFromOperation`. Supply the donor path, format, SHA-256, node ID, and setting key. An existing setting is replaced. Router targets are checked against the destination patch; action compatibility and execution remain unverified.
 
 For `copy_timeline_cue_node` and `edit_timeline_graph_wire_mapped`, select the cue with either `cueId` or the zero-based `cueFromOperation` index of an earlier `add_timeline_cue`. A new cue must first have a graph. Then a later operation can copy and wire nodes into it.
 
