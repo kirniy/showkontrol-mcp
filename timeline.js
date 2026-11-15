@@ -3,12 +3,13 @@ import {SaxesParser} from 'saxes';
 import {inspectXml,editXmlCopy,readShowSnapshot,readSnapshotPart,editShowPart,addShowPart} from './xml-copy.js';
 import {randomInt} from 'node:crypto';
 export function parseTimeline(xml) {
- const parser=new SaxesParser();const stack=[];const result={attributes:{},layers:[],audio:[],cueElements:[]};
+ const parser=new SaxesParser();const stack=[];const result={attributes:{},layers:[],audio:[],audioClips:[],cueElements:[]};
  parser.on('opentag',tag=>{
   const parent=stack.at(-1);stack.push(tag.name);
   if(stack.length===1){if(tag.name!=='sktimeline'||tag.attributes.version!=='1')throw Error('Expected a version 1 sktimeline');result.attributes={...tag.attributes};}
   if(tag.name==='layer'&&parent==='layers'&&stack.length===3)result.layers.push({...tag.attributes});
   if(tag.name==='audio'&&parent==='sktimeline'&&stack.length===2)result.audio.push({...tag.attributes});
+  if(tag.name==='clip'&&stack.join('/')==='sktimeline/audio/clip')result.audioClips.push({audioIndex:result.audio.length-1,attributes:{...tag.attributes}});
   if(tag.name==='cue')result.cueElements.push({path:stack.join('/'),attributes:{...tag.attributes}});
  });
  parser.on('closetag',()=>stack.pop());parser.write(xml).close();return result;
