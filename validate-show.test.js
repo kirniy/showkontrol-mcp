@@ -5,7 +5,7 @@ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(te
 test('show validation reports scoped graph, track and checksum problems',async t=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'sk-validate-'));t.after(()=>rm(dir,{recursive:true,force:true}));const file=path.join(dir,'show.skshow');
  const patch='<showkontrol version="2"><graph><node id="n1"/><connection fromNode="n1" toNode="missing"/></graph><appSettings/></showkontrol>';
- const timeline='<sktimeline version="1" name="Song"><cue id="c1"><graph><node id="n1"/></graph></cue></sktimeline>';
+ const timeline='<sktimeline version="1" name="Song"><layers><layer name="L"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40"><graph><node id="n1"/></graph></cue></sktimeline>';
  const setlist='<sksetlist version="2"><set name="Main"><entry track="Song"/><entry track="Absent"/></set></sksetlist>';
  const bad=part('bad.txt','data').replace(/md5="[a-f0-9]{32}"/,'md5="00000000000000000000000000000000"');
  const xml=`<skshow>${part('patch.skf',patch)}${part('one.sktl',timeline)}${part('two.sktl','<sktimeline version="1" name="Song"/>')}${part('set.skls',setlist)}${bad}</skshow>`;
@@ -18,7 +18,7 @@ test('show validation reports scoped graph, track and checksum problems',async t
 });
 test('valid show has no diagnostics and malformed parts are reported',async t=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'sk-validate-valid-'));t.after(()=>rm(dir,{recursive:true,force:true}));const file=path.join(dir,'show.skshow');
- const timeline=part('song.sktl','<sktimeline version="1" name="Song"><cue id="c"><graph><node id="n1"/><node id="n2"/><connection fromNode="n1" fromPin="0" toNode="n2" toPin="0"/></graph></cue></sktimeline>');
+ const timeline=part('song.sktl','<sktimeline version="1" name="Song"><layers><layer name="L"/></layers><cue id="c" layer="0" startMs="0" lenMs="40"><graph><node id="n1"/><node id="n2"/><connection fromNode="n1" fromPin="0" toNode="n2" toPin="0"/></graph></cue></sktimeline>');
  const list=part('set.skls','<sksetlist version="2"><set name="Set"><entry track="Song"/></set></sksetlist>');
  await writeFile(file,`<skshow>${timeline}${list}</skshow>`);assert.deepEqual((await validateShow({file})).diagnostics,[]);
  await writeFile(file,`<skshow>${part('bad.sktl','<wrong/>')}</skshow>`);assert.equal((await validateShow({file})).diagnostics[0].code,'invalid_native_xml');
@@ -50,10 +50,10 @@ test('MCP show validation reports graph errors and leaves the source intact',asy
  const {Client}=await import('@modelcontextprotocol/sdk/client/index.js');const {StdioClientTransport}=await import('@modelcontextprotocol/sdk/client/stdio.js');
  const dir=await mkdtemp(path.join(os.tmpdir(),'sk-validate-mcp-'));t.after(()=>rm(dir,{recursive:true,force:true}));const file=path.join(dir,'show.skshow');
  const patch='<showkontrol version="2"><graph><node id="n1" type="router"><settings><setting key="router.name">A</setting></settings></node><node id="n3" type="action"><settings><setting key="route.router_target">Absent</setting></settings></node></graph><appSettings/></showkontrol>';
- const cue='<sktimeline version="1"><cue id="c"><graph><node id="n2" type="action"><settings><setting key="route.router_target">Missing</setting></settings></node><connection fromNode="n2" fromPin="bad" toNode="n2" toPin="0"/></graph></cue></sktimeline>';
+ const cue='<sktimeline version="1"><layers><layer/></layers><cue id="c" layer="1" startMs="" lenMs="40"><graph><node id="n2" type="action"><settings><setting key="route.router_target">Missing</setting></settings></node><connection fromNode="n2" fromPin="bad" toNode="n2" toPin="0"/></graph></cue></sktimeline>';
  const xml=`<skshow>${part('patch.skf',patch)}${part('song.sktl',cue)}</skshow>`;await writeFile(file,xml);
  const client=new Client({name:'validate-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
- const response=await client.callTool({name:'showkontrol_validate_show',arguments:{file}});assert.equal(response.isError,undefined);const result=JSON.parse(response.content[0].text);assert.equal(result.diagnostics.filter(d=>d.code==='missing_router_target').length,2);assert.ok(result.diagnostics.some(d=>d.code==='missing_router_target'&&d.scope.part==='patch.skf'));assert.ok(result.diagnostics.some(d=>d.code==='invalid_wire_pin'));assert.equal(await readFile(file,'utf8'),xml);
+ const response=await client.callTool({name:'showkontrol_validate_show',arguments:{file}});assert.equal(response.isError,undefined);const result=JSON.parse(response.content[0].text);assert.equal(result.diagnostics.filter(d=>d.code==='missing_router_target').length,2);assert.ok(result.diagnostics.some(d=>d.code==='missing_router_target'&&d.scope.part==='patch.skf'));assert.ok(result.diagnostics.some(d=>d.code==='invalid_wire_pin'));assert.equal(result.diagnostics.filter(d=>d.code==='invalid_cue_field').length,2);assert.equal(await readFile(file,'utf8'),xml);
 });
 
 test('patch action router targets are checked once',async t=>{
@@ -76,4 +76,38 @@ test('duplicate and misplaced router settings are invalid in supported graphs',a
 test('unsupported graph paths have partial coverage and a scoped warning',async t=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'sk-unsupported-graph-'));t.after(()=>rm(dir,{recursive:true,force:true}));const file=path.join(dir,'show.skshow');
  const timeline='<sktimeline version="1"><cue id="c"><extension><graph><node id="n1"/><connection fromNode="n1" fromPin="bad" toNode="n1" toPin="0"/></graph></extension></cue></sktimeline>';await writeFile(file,`<skshow>${part('song.sktl',timeline)}</skshow>`);const result=await validateShow({file});assert.equal(result.coverage[0].status,'partial');assert.ok(result.diagnostics.some(d=>d.code==='unsupported_graph'&&d.severity==='warning'&&d.scope.path==='sktimeline/cue/extension/graph'));assert.ok(!result.diagnostics.some(d=>d.code==='invalid_wire_pin'));
+});
+
+
+test('cue constraints report each field and preserve partial coverage',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-cue-validation-'));t.after(()=>rm(dir,{recursive:true,force:true}));const file=path.join(dir,'show.skshow');
+ const timeline='<sktimeline version="1"><layers><layer name="one"/><layer name="two"/></layers><cue id="ok" layer="1" startMs="0.0" lenMs="40.0"/><cue id="bad" layer="2" startMs="NaN" lenMs=""/><cue id="missing" layer="-1" startMs="-1"/><cue id="forms" layer="1.5" startMs="0x10" lenMs="0"/><extension><cue id="nested" layer="99" startMs="bad" lenMs="0"/></extension></sktimeline>';
+ const xml=`<skshow>${part('song.sktl',timeline)}${part('scene.sksc','<scene/>')}</skshow>`;await writeFile(file,xml);
+ const result=await validateShow({file});assert.equal(await readFile(file,'utf8'),xml);
+ assert.equal(result.diagnostics.filter(d=>d.code==='invalid_cue_field').length,8);
+ assert.ok(result.diagnostics.some(d=>d.code==='missing_cue_field'&&d.scope.cueId==='missing'&&d.scope.field==='lenMs'));
+ assert.ok(result.diagnostics.some(d=>d.code==='unsupported_cue'&&d.scope.path==='sktimeline/extension/cue'));
+ assert.equal(result.coverage[0].status,'partial');assert.equal(result.coverage[1].status,'partial');
+});
+
+test('ambiguous layer containers do not establish a valid layer',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-cue-layers-'));t.after(()=>rm(dir,{recursive:true,force:true}));const file=path.join(dir,'show.skshow');
+ for(const layers of ['', '<layers><layer/></layers><layers><layer/></layers>']){
+  await writeFile(file,`<skshow>${part('song.sktl',`<sktimeline version="1">${layers}<cue id="c" layer="0" startMs="0" lenMs="40"/></sktimeline>`)}</skshow>`);
+  const result=await validateShow({file});assert.equal(result.coverage[0].status,'partial');assert.ok(result.diagnostics.some(d=>d.code==='ambiguous_cue_layers'&&d.scope.cueIndex===0));
+ }
+});
+
+
+test('cue numeric forms and empty layers are checked',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-cue-numbers-'));t.after(()=>rm(dir,{recursive:true,force:true}));const file=path.join(dir,'show.skshow');
+ for(const [layers,cue,expected] of [
+  ['<layers><layer/></layers>','layer="0" startMs=" " lenMs="40"',['invalid_cue_field']],
+  ['<layers><layer/></layers>','layer="0" startMs="Infinity" lenMs="1e999"',['invalid_cue_field','invalid_cue_field']],
+  ['<layers/>','layer="0" startMs="0" lenMs="40"',['invalid_cue_field']],
+  ['<layers><layer/></layers>','layer="0e0" startMs="1e2" lenMs="4e1"',[]],
+ ]){
+  const xml=`<skshow>${part('song.sktl',`<sktimeline version="1">${layers}<cue id="c" ${cue}/></sktimeline>`)}</skshow>`;await writeFile(file,xml);
+  const result=await validateShow({file});assert.deepEqual(result.diagnostics.map(d=>d.code),expected);assert.equal(await readFile(file,'utf8'),xml);
+ }
 });

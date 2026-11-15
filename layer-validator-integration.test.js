@@ -11,7 +11,7 @@ test('MCP registers layer editing and show validation',async t=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'sk-layers-mcp-'));t.after(()=>rm(dir,{recursive:true,force:true}));
  const source=path.join(dir,'in.skshow'),appended=path.join(dir,'appended.skshow'),renamed=path.join(dir,'renamed.skshow');
  const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
- const timeline='<sktimeline version="1" name="Track"><layers><layer name="Layer 1" color="blue"/></layers><cue id="c1" layer="0"/></sktimeline>';
+ const timeline='<sktimeline version="1" name="Track"><layers><layer name="Layer 1" color="blue"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40"/></sktimeline>';
  const setlist='<sksetlist version="2"><set name="Main"><entry track="Track"/><entry track="Absent"/></set></sksetlist>';
  await writeFile(source,`<skshow>${part('content/Track.sktl',timeline)}${part('content/Setlist.skls',setlist)}</skshow>`);
  const client=new Client({name:'layer-validator-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());

@@ -26,6 +26,26 @@ export async function validateShow({file}){
   try{
    if(/\.sktl$/i.test(part.name)){
     const timeline=parseTimeline(xml);timelines.push({part:part.name,name:timeline.attributes.name??''});
+    const root=parseXmlSpans(xml),containers=root.children.filter(n=>n.name==='layers');
+    const cues=root.children.filter(n=>n.name==='cue');
+    const number=/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+    for(const [index,cue] of cues.entries()){
+     const cueScope={part:part.name,path:'sktimeline/cue',cueIndex:index,...(cue.attributes.id?{cueId:cue.attributes.id}:{})};
+     for(const field of ['layer','startMs','lenMs']){
+      const value=cue.attributes[field],fieldScope={...cueScope,field,value:value??null};
+      if(value===undefined){if(partCoverage.status==='checked')partCoverage.status='partial';add('missing_cue_field',fieldScope,'Cue field is missing; this variant is not checked','warning');continue;}
+      const n=Number(value);
+      if(!number.test(value)||!Number.isFinite(n)||(field==='layer'&&(!Number.isInteger(n)||n<0))||(field==='startMs'&&n<0)||(field==='lenMs'&&n<=0)){
+       add('invalid_cue_field',fieldScope,'Cue field does not meet the supported numeric constraints');continue;
+      }
+      if(field==='layer'){
+       if(containers.length!==1){if(partCoverage.status==='checked')partCoverage.status='partial';add('ambiguous_cue_layers',fieldScope,'A single direct layers element is required to check the cue layer','warning');}
+       else if(n>=containers[0].children.filter(child=>child.name==='layer').length)add('invalid_cue_field',fieldScope,'Cue layer is outside the direct layer count');
+      }
+     }
+    }
+    const visit=(node,path)=>{for(const child of node.children){const childPath=`${path}/${child.name}`;if(child.name==='cue'&&node!==root){if(partCoverage.status==='checked')partCoverage.status='partial';add('unsupported_cue', {part:part.name,path:childPath,...(child.attributes.id?{cueId:child.attributes.id}:{})},'Nested cue timing and layer are not checked','warning');}visit(child,childPath);}};
+    visit(root,'sktimeline');
    }
    if(/\.skls$/i.test(part.name))setlists.push({part:part.name,sets:parseSetlist(xml)});
    if(!/\.(?:skf|sktl|sksc)$/i.test(part.name))continue;
