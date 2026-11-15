@@ -91,3 +91,29 @@ test('MCP composes ordered audio clip edits atomically across existing and new t
  assert.equal(bad.isError,true);await assert.rejects(readFile(missing),/ENOENT/);
  assert.equal(await readFile(source,'utf8'),input);assert.deepEqual((await readdir(dir)).filter(name=>name.startsWith('.showkontrol-')),[]);
 });
+
+test('MCP composes ordered cue edits and new cues atomically',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-compose-cue-edits-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skshow');
+ const graph='<graph><node id="n1" type="trigger"><settings><setting key="trigger.path">original</setting></settings></node></graph>';
+ const timeline=`<sktimeline version="1" name="Existing"><layers><layer name="Layer 1"/><layer name="Layer 2"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Original">${graph}</cue></sktimeline>`;
+ const input=`<skshow><!-- keep -->${part('content/Existing.sktl',timeline)}${part('content/Empty.sktl','<sktimeline version="1" name="Empty"><layers><layer name="Layer 1"/></layers></sktimeline>')}${part('media/file.wav','media bytes')}${part('patch.skf','<showkontrol version="2"><graph/></showkontrol>')}</skshow>`;
+ await writeFile(source,input);const sha256=(await inspectShow({file:source})).sha256;
+ const client=new Client({name:'compose-cue-edits-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const call=(name,args)=>client.callTool({name,arguments:args});
+ const existing={existingPartName:'content/Existing.sktl',cueEdits:[{cueId:'c1',label:'First',startMs:10},{cueId:'c1',label:'Final',layer:1,lengthMs:80}],cues:[{layer:0,startMs:100,lengthMs:40,label:'Added'}]};
+ const fresh={templateName:'content/Empty.sktl',trackName:'New',partName:'content/New.sktl',cues:[{layer:0,startMs:200,lengthMs:40,label:'New'}]};
+ for(const multi of [false,true]){
+  const destination=path.join(dir,`result-${multi}.skshow`),name=multi?'showkontrol_compose_multi_track_show_copy':'showkontrol_compose_show_copy';
+  const args={source,destination,sha256,...(multi?{tracks:[fresh,existing]}:existing)};const result=await call(name,args);
+  assert.equal(result.isError,undefined,JSON.stringify(result));assert.equal(JSON.parse(result.content[0].text).sha256,(await inspectShow({file:destination})).sha256);
+  const snapshot=await readShowSnapshot({file:destination});assert.ok(snapshot.parts.every(p=>p.valid));
+  const target=snapshot.parts.find(p=>p.name===existing.existingPartName).bytes.toString();assert.ok(target.includes(`<cue id="c1" layer="1" startMs="10" lenMs="80" label="Final">${graph}</cue>`));
+  assert.equal(snapshot.parts.find(p=>p.name==='media/file.wav').bytes.toString(),'media bytes');assert.equal((await inspectShowTimeline({file:destination,name:existing.existingPartName})).cueElements.length,2);
+  assert.equal((await call(name,args)).isError,true);
+ }
+ for(const [name,tracks] of [['late',[fresh,{...existing,cueEdits:[...existing.cueEdits,{cueId:'missing',label:'Bad'}]}]],['new',[{...fresh,cueEdits:[{cueId:'c1',label:'Bad'}]}]],['limit',[{...existing,cueEdits:Array.from({length:101},()=>({cueId:'c1',label:'Bad'}))}]]]){
+  const destination=path.join(dir,`${name}.skshow`);const result=await call('showkontrol_compose_multi_track_show_copy',{source,destination,sha256,tracks});assert.equal(result.isError,true,JSON.stringify(result));await assert.rejects(readFile(destination),/ENOENT/);
+ }
+ assert.equal(await readFile(source,'utf8'),input);assert.deepEqual((await readdir(dir)).filter(name=>name.startsWith('.showkontrol-')),[]);
+});
