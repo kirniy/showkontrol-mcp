@@ -264,6 +264,7 @@ const programOperation=z.discriminatedUnion('action',[
  ...programItemOperations,
  z.object({action:z.literal('edit_graph_setting'),index:z.number().int().nonnegative(),nodeId:z.string().min(1),key:z.string().min(1),value:z.string()}).strict(),
  z.object({action:z.literal('edit_timeline_graph_setting'),index:z.number().int().nonnegative(),cueId:z.string().min(1),nodeId:z.string().min(1),key:z.string().min(1),value:z.string()}).strict(),
+ z.object({action:z.literal('edit_timeline_graph_wire'),index:z.number().int().nonnegative(),cueId:z.string().min(1),operation:z.enum(['add','remove']),fromNode:z.string().min(1),toNode:z.string().min(1)}).strict(),
  z.object({action:z.literal('remove_timeline_cue_graph'),index:z.number().int().nonnegative(),cueId:z.string().min(1)}).strict(),
  z.object({action:z.literal('add_timeline_cue'),index:z.number().int().nonnegative(),layer:z.number().int().nonnegative(),startMs:z.number().nonnegative(),lengthMs:z.number().positive(),label:z.string().min(1)}).strict(),
  z.object({action:z.literal('delete_timeline_cue'),index:z.number().int().nonnegative(),cueId:z.string().min(1),deleteGraph:z.boolean().optional()}).strict(),

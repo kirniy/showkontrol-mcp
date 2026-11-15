@@ -8,6 +8,7 @@ import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
 import {validateShow} from './validate-show.js';
 import {parseXmlSpans} from './xml-spans.js';
 import {hasXmlReference} from './xml-references.js';
+import {editCueGraphWireCopy} from './cue-wires.js';
 
 function keys(value,required,optional=[]){
  if(!value||typeof value!=='object'||Array.isArray(value)||required.some(k=>!Object.hasOwn(value,k))||Object.keys(value).some(k=>!required.includes(k)&&!optional.includes(k)))throw Error('Unsupported edit composition input');
@@ -200,6 +201,7 @@ export async function composeProgramEditsCopy(args){
   else if(op.action==='remove'){keys(op,['action','index'],['allowContentRemoval']);if(op.allowContentRemoval!==undefined&&typeof op.allowContentRemoval!=='boolean')throw Error('allowContentRemoval must be a boolean');}
   else if(op.action==='edit_graph_setting')keys(op,['action','index','nodeId','key','value']);
   else if(op.action==='edit_timeline_graph_setting')keys(op,['action','index','cueId','nodeId','key','value']);
+  else if(op.action==='edit_timeline_graph_wire')keys(op,['action','index','cueId','operation','fromNode','toNode']);
   else if(op.action==='remove_timeline_cue_graph')keys(op,['action','index','cueId']);
   else if(op.action==='edit_copied_timeline_graph_setting')keys(op,['action','index','graphFromOperation','donorNodeId','key','value']);
   else if(op.action==='edit_assembled_timeline_graph_setting')keys(op,['action','index','graphFromOperation','nodeIndex','key','value']);
@@ -232,9 +234,10 @@ export async function composeProgramEditsCopy(args){
    if(operation.action==='edit_graph_setting'){
     const {index,nodeId,key,value}=operation;
     current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index,nodeId,key,value});
-   }else if(['edit_timeline_cue','edit_timeline_graph_setting','edit_copied_timeline_graph_setting','edit_assembled_timeline_graph_setting','add_timeline_cue','delete_timeline_cue','copy_timeline_cue_graph','assemble_timeline_cue_graph','remove_timeline_cue_graph'].includes(operation.action)){
+   }else if(['edit_timeline_cue','edit_timeline_graph_setting','edit_timeline_graph_wire','edit_copied_timeline_graph_setting','edit_assembled_timeline_graph_setting','add_timeline_cue','delete_timeline_cue','copy_timeline_cue_graph','assemble_timeline_cue_graph','remove_timeline_cue_graph'].includes(operation.action)){
     const {index,layer,startMs,lengthMs,label}=operation;
     let cueId=operation.cueId,nodeId=operation.nodeId;
+    if(operation.action==='edit_timeline_graph_wire')cueId=resolveTargetCue(await readFile(program,'utf8'),index,cueId);
     if(['copy_timeline_cue_graph','assemble_timeline_cue_graph'].includes(operation.action)){
      const xml=await readFile(program,'utf8');
      cueId=Object.hasOwn(operation,'cueId')?resolveTargetCue(xml,index,operation.cueId):resolveCreatedCue(xml,index,createdCues,operation.cueFromOperation);
@@ -272,6 +275,8 @@ export async function composeProgramEditsCopy(args){
      ?await removeCueGraphCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId})
      :operation.action==='edit_timeline_cue'
      ?await editTimelineCueCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,layer,startMs,lengthMs,label})
+     :operation.action==='edit_timeline_graph_wire'
+     ?await editCueGraphWireCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,operation:operation.operation,fromNode:operation.fromNode,toNode:operation.toNode})
      :await editCueGraphSettingCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,nodeId,key:operation.key,value:operation.value});
     if(operation.action==='delete_timeline_cue')collect({...changed,note:'Deleted a cue from an offline Program copy. Literal XML references were checked; binary, encoded and external references may be missed. Validate in ShowKontrol.'});
     else collect(changed);
