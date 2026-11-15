@@ -1,0 +1,23 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,writeFile,readFile,readdir,rm} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
+import {copyProgramItemGraphRemappedCopy as copy} from './program-graph-copy-remap.js';
+const hash=(a,b)=>createHash(a).update(b).digest('hex');
+test('remaps before insertion, preserves other content, and guards failures',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'graph-copy-'));t.after(()=>rm(dir,{recursive:true,force:true}));const f=n=>path.join(dir,n);
+ const program='<skprogram version="1"><item start="0" name="A" notes=""><sktimeline version="1"><layers/><cue id="c"><graph><node id="n9" type="x"/></graph></cue></sktimeline></item><item start="1" name="B" notes=""/></skprogram>';
+ const timeline='<sktimeline version="1"><layers/><cue id="c1"><graph><node id="n9" type="x"/><node id="n2" type="y"/><connection fromNode="n9" toNode="n2"/></graph></cue></sktimeline>';
+ const show=`<skshow><part name="content/Program.skpr" md5="${hash('md5',program)}">${Buffer.from(program).toString('base64')}</part></skshow>`;
+ await Promise.all([writeFile(f('in.skpr'),program),writeFile(f('donor.sktl'),timeline),writeFile(f('target.skshow'),show)]);
+ const args={source:f('in.skpr'),destination:f('one.skpr'),sha256:hash('sha256',program),index:0,donor:f('donor.sktl'),donorSha256:hash('sha256',timeline),donorCueId:'c1',target:f('target.skshow'),targetSha256:hash('sha256',show)};
+ const first=await copy(args);assert.deepEqual(first.mapping,{n9:'n10',n2:'n11'});const one=await readFile(args.destination,'utf8');assert.ok(one.includes('<node id="n9" type="x"/>'));assert.ok(one.includes('<connection fromNode="n10" toNode="n11"/>'));
+ const second=await copy({...args,source:args.destination,sha256:hash('sha256',one),index:1,destination:f('two.skpr')});assert.deepEqual(second.mapping,{n9:'n12',n2:'n13'});
+ const replace={...args,source:args.destination,sha256:hash('sha256',one),destination:f('replace.skpr')};await assert.rejects(copy(replace),/already has/);await copy({...replace,replaceExisting:true});
+ for(const key of ['sha256','donorSha256','targetSha256'])await assert.rejects(copy({...args,[key]:'0'.repeat(64),destination:f('bad.skpr')}),/changed/);
+ const unsafe=timeline.replace('<node id="n9" type="x"/>','<node id="n9" type="x"><settings><setting key="ref">n2</setting></settings></node>');await writeFile(f('unsafe.sktl'),unsafe);await assert.rejects(copy({...args,donor:f('unsafe.sktl'),donorSha256:hash('sha256',unsafe),destination:f('bad.skpr')}),/unsupported internal references/);
+ const linked=one.replace('<item start="1" name="B" notes=""/>','<item start="1" name="n10" notes=""/>');await writeFile(f('linked.skpr'),linked);await assert.rejects(copy({...replace,source:f('linked.skpr'),sha256:hash('sha256',linked),destination:f('linked-out.skpr'),replaceExisting:true}),/referenced outside/);
+ await assert.rejects(copy(args),{code:'EEXIST'});assert.equal(await readFile(args.destination,'utf8'),one);assert.ok(!(await readdir(dir)).some(n=>n.endsWith('.tmp')));await assert.rejects(readFile(f('bad.skpr')),{code:'ENOENT'});
+});
