@@ -251,7 +251,8 @@ export async function composeProgramEditsCopy(args){
   else if(op.action==='edit_timeline_graph_setting')keys(op,['action','index','cueId','nodeId','key','value']);
   else if(op.action==='edit_timeline_graph_wire')keys(op,['action','index','cueId','operation','fromNode','toNode']);
   else if(op.action==='edit_timeline_graph_wire_mapped'){
-   keys(op,['action','index','cueId','operation','from','to']);
+   keys(op,['action','index','operation','from','to'],['cueId','cueFromOperation']);
+   if(Object.hasOwn(op,'cueFromOperation')===Object.hasOwn(op,'cueId'))throw Error('Provide exactly one of cueId or cueFromOperation');
    for(const endpoint of [op.from,op.to]){
     keys(endpoint,[],['nodeId','nodeFromOperation']);
     if(Object.hasOwn(endpoint,'nodeId')===Object.hasOwn(endpoint,'nodeFromOperation'))throw Error('Endpoint must contain exactly one of nodeId or nodeFromOperation');
@@ -260,7 +261,8 @@ export async function composeProgramEditsCopy(args){
    }
   }
   else if(op.action==='copy_timeline_cue_node'){
-   keys(op,['action','index','cueId','donorType','donor','donorSha256','donorNodeId'],['donorName','donorCueId','donorFormat']);
+   keys(op,['action','index','donorType','donor','donorSha256','donorNodeId'],['donorName','donorCueId','donorFormat','cueId','cueFromOperation']);
+   if(Object.hasOwn(op,'cueFromOperation')===Object.hasOwn(op,'cueId'))throw Error('Provide exactly one of cueId or cueFromOperation');
    if(!path.isAbsolute(op.donor||'')||!/^[a-f0-9]{64}$/.test(op.donorSha256||'')||!/^n\d+$/.test(op.donorNodeId||''))throw Error('Absolute donor path, donor SHA-256 and node ID are required');
    if(op.donorType==='cue'){if(!op.donorName||!op.donorCueId||op.donorFormat!==undefined)throw Error('Cue donor requires donorName and donorCueId');}
    else if(op.donorType==='patch'){if(!['skf','skshow'].includes(op.donorFormat)||op.donorName!==undefined||op.donorCueId!==undefined)throw Error('Patch donor requires donorFormat');}
@@ -309,7 +311,11 @@ export async function composeProgramEditsCopy(args){
     const {index,layer,startMs,lengthMs,label}=operation;
     let cueId=operation.cueId,nodeId=operation.nodeId;
     let fromNode=operation.fromNode,toNode=operation.toNode;
-    if(['edit_timeline_graph_wire','edit_timeline_graph_wire_mapped'].includes(operation.action))cueId=resolveTargetCue(await readFile(program,'utf8'),index,cueId);
+    if(operation.action==='edit_timeline_graph_wire')cueId=resolveTargetCue(await readFile(program,'utf8'),index,cueId);
+    if(['copy_timeline_cue_node','edit_timeline_graph_wire_mapped'].includes(operation.action)){
+     const xml=await readFile(program,'utf8');
+     cueId=Object.hasOwn(operation,'cueId')?resolveTargetCue(xml,index,operation.cueId):resolveCreatedCue(xml,index,createdCues,operation.cueFromOperation);
+    }
     if(operation.action==='edit_timeline_graph_wire_mapped'){
      const resolveEndpoint=endpoint=>{
       if(Object.hasOwn(endpoint,'nodeId'))return endpoint.nodeId;
@@ -344,7 +350,7 @@ export async function composeProgramEditsCopy(args){
      if(!entry||invalidatedGraphs.has(ref))throw Error('nodeFromOperation must identify an active prior copy_timeline_cue_node');
      cueId=resolveTargetCue(await readFile(program,'utf8'),index,entry.cueId);nodeId=entry.nodeId;
     }
-    if(['copy_timeline_cue_node','remove_timeline_cue_node'].includes(operation.action))cueId=resolveTargetCue(await readFile(program,'utf8'),index,cueId);
+    if(operation.action==='remove_timeline_cue_node')cueId=resolveTargetCue(await readFile(program,'utf8'),index,cueId);
     const timeline=path.join(dir,`${step++}.sktl`),edited=path.join(dir,`${step++}.sktl`);
     const extracted=await extractProgramTimelineCopy({source:program,destination:timeline,sha256:current.sha256,index});
     collect(extracted);
