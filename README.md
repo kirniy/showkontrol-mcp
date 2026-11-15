@@ -171,7 +171,19 @@ A generated test `.skshow` was opened in ShowKontrol. Its working `session.skf` 
 
 These tools use static R27 code evidence. No application fixture or runtime test has verified the generated Program, item sorting, cues, or media. Check a copy in ShowKontrol before use.
 
+To edit a schedule in a show copy:
+
+1. Inspect the show and its Program. Extract the Program, or create one if it is absent.
+2. Inspect the Program. Add or edit items by file-order index. Use the current SHA-256 for each copy.
+3. If an item has a timeline, extract it. Edit and inspect the timeline copy. Embed it in a new Program copy.
+4. If an item needs a graph, copy a cue graph. Inspect its node settings, stopped state, dependencies, and IDs. Set `trigger.path` to `item.active` when the item activity signal is needed. This trigger behavior is unverified.
+5. Inspect the final Program. Attach it to a new show copy with the current show and Program hashes. Inspect and validate the result.
+
+The checks do not prove that the Program loads or runs. Media, runtime IDs, trigger behavior, and connected equipment require application tests.
+
 `showkontrol_extract_program_timeline_copy` copies an item's exact embedded version 1 timeline element to a new absolute `.sktl` file. Supply the standalone `.skpr` or `.skshow` source, its inspected `sha256`, and the zero-based item `index`. The destination must not exist and its filesystem must support hard links. The copy has no added XML declaration or byte-order mark. Media is not copied and IDs are not remapped. External references, media, runtime IDs, and application acceptance are unverified.
+
+`showkontrol_edit_program_item_graph_setting_copy` changes an existing direct node setting in one item graph in a new standalone `.skpr` copy. Supply the inspected source SHA-256, zero-based item index, node ID, setting key and string value. The destination must not exist and publication requires hard-link support. After copying a cue graph, `trigger.path` set to `item.active` is a candidate for an item trigger; `trigger.on` can remain `State On` for onset. This is a static inference, and automatic trigger behavior is unverified. Inspect stored stopped states and dependencies. For `node.stopped`, use `true` or `false`; the tool also updates an existing supported `stopped` attribute. Values and ShowKontrol acceptance are unverified.
 
 `showkontrol_copy_program_item_graph_copy` copies one direct cue graph from a standalone `.sktl` or a `.skshow` to an item in a new standalone `.skpr` file. Supply the inspected Program `source` and `sha256`, zero-based item `index`, `donor`, `donorSha256`, and `donorCueId`. For a show donor, also supply the exact `donorName` timeline part name. The destination must be a new absolute `.skpr` path. Set `replaceExisting: true` to replace an existing item graph. The tool preserves the graph XML and the item's timeline and attributes. It does not change IDs or trigger settings. Inspect the trigger settings and change `cue.active` to `item.active` as appropriate. Inspect dependencies and IDs for collisions and validity. Graph structures and application acceptance are unverified. Publication requires hard-link support.
 

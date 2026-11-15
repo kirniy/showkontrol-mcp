@@ -216,3 +216,39 @@ export async function copyProgramItemGraphCopy({source,destination,sha256,index,
  }finally{if(created)await unlink(temp);}
  return {destination,sha256:hash(Buffer.from(xml)),items:publicItems(parse(xml).items),warnings:['Inspect trigger settings and change cue.active to item.active as appropriate; settings were not changed.','Inspect dependencies and IDs for collisions and validity; IDs were not remapped.','Graph structure and ShowKontrol application acceptance are unverified.']};
 }
+
+// Edit only an existing direct node setting; retain all unrelated Program bytes.
+export async function editProgramItemGraphSettingCopy({source,destination,sha256,index,nodeId,key,value}){
+ if(typeof source!=='string'||!path.isAbsolute(destination)||path.extname(destination).toLowerCase()!=='.skpr'||path.resolve(source)===path.resolve(destination))throw Error('Destination must be a different absolute .skpr path');
+ if(!/^[a-f0-9]{64}$/.test(sha256||''))throw Error('A source SHA-256 is required');
+ if(!/^[A-Za-z0-9_.:-]+$/.test(nodeId||'')||!/^[A-Za-z0-9_.:-]+$/.test(key||''))throw Error('Unsupported node ID or setting key');
+ if(typeof value!=='string'||/[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]|[\ud800-\udfff]/u.test(value))throw Error('Invalid setting value');
+ const input=await snapshot(source);if(input.sha256!==sha256)throw Error('Program changed since inspection');
+ if(!Number.isInteger(index)||index<0||index>=input.items.length)throw Error('Item index out of range');
+ const graph=input.items[index].node.children.find(c=>c.name==='graph');if(!graph)throw Error('Item has no graph');
+ const descendants=(node,predicate)=>{const found=[];const visit=n=>{for(const c of n.children){if(predicate(c))found.push(c);visit(c);}};visit(node);return found;};
+ const nodes=descendants(graph,n=>n.name==='node'&&n.attributes.id===nodeId);
+ if(nodes.length!==1||!graph.children.includes(nodes[0]))throw Error('Node ID must occur exactly once as a direct graph node');
+ const node=nodes[0],containers=node.children.filter(c=>c.name==='settings');if(containers.length!==1)throw Error('Node must have exactly one direct settings container');
+ const settings=descendants(node,n=>n.name==='setting'&&n.attributes.key===key);
+ if(settings.length!==1||!containers[0].children.includes(settings[0]))throw Error('Setting must occur exactly once as a direct node setting');
+ const setting=settings[0],content=input.xml.slice(setting.openEnd,setting.closeStart);
+ if(setting.children.length||content.includes('<')||Object.hasOwn(setting.attributes,'value'))throw Error('Unsupported setting serialization');
+ const edits=[];
+ if(key==='node.stopped'){
+  if(!['true','false'].includes(value))throw Error('node.stopped value must be exactly true or false');
+  if(setting.selfClosing||!['true','false'].includes(content))throw Error('Unsupported stopped setting value');
+  if(Object.hasOwn(node.attributes,'stopped')){
+   if(!['0','1'].includes(node.attributes.stopped))throw Error('Unsupported stopped attribute value');
+   edits.push(attr(input.xml,node,'stopped',value==='true'?'1':'0'));
+  }
+ }
+ const encoded=value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('\r','&#xD;');
+ if(setting.selfClosing){const opening=input.xml.slice(setting.start,setting.openEnd);edits.push({start:setting.start,end:setting.end,value:opening.replace(/\s*\/>$/,'>')+encoded+'</setting>'});}
+ else edits.push({start:setting.openEnd,end:setting.closeStart,value:encoded});
+ let xml=input.xml;for(const e of edits.sort((a,b)=>b.start-a.start))xml=xml.slice(0,e.start)+e.value+xml.slice(e.end);
+ parse(xml);if(Buffer.byteLength(xml,'utf8')>10*1024*1024)throw Error('Program exceeds 10 MiB');
+ const temp=path.join(path.dirname(destination),`.showkontrol-program-${randomUUID()}.tmp`);let created=false;
+ try{await writeFile(temp,xml,{flag:'wx'});created=true;if((await snapshot(source)).sha256!==sha256)throw Error('Program changed since inspection');await link(temp,destination);}finally{if(created)await unlink(temp);}
+ return {destination,sha256:hash(Buffer.from(xml)),index,nodeId,key,value,note:'Changed an existing Program item graph setting in an offline copy. Value semantics and ShowKontrol acceptance are unverified.'};
+}
