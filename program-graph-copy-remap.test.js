@@ -53,3 +53,15 @@ test('copy permits opted-in OSC text but still rejects other references',async t
  await assert.rejects(copy(args),/unsupported internal references/);const result=await copy({...args,allowOpaqueNodeText:true});assert.match(await readFile(args.destination,'utf8'),/\/n42/);assert.deepEqual(result.warnings.find(w=>w.code==='opaque_node_references_unverified').scope,{part:args.destination,itemIndex:0,nodeId:result.mapping.n1,key:'gen.address'});
  const unsafe=donor.replace('</settings>','<setting key="other">n2</setting></settings>');await writeFile(f('unsafe.sktl'),unsafe);await assert.rejects(copy({...args,donor:f('unsafe.sktl'),donorSha256:hash('sha256',unsafe),destination:f('bad.skpr'),allowOpaqueNodeText:true}),/unsupported internal references/);
 });
+
+test('replacement protects references in setlist and control parts',async t=>{
+ for(const ext of ['skls','skcp']){
+  const dir=await mkdtemp(path.join(os.tmpdir(),'graph-extra-ref-'));t.after(()=>rm(dir,{recursive:true,force:true}));const f=n=>path.join(dir,n);
+  const p='<skprogram version="1"><item start="0" name="A" notes=""><graph><node id="n7" type="x"/></graph></item></skprogram>',d='<sktimeline version="1"><layers/><cue id="c"><graph><node id="n1" type="x"/></graph></cue></sktimeline>';
+  const part=(name,xml)=>`<part name="${name}" md5="${hash('md5',xml)}">${Buffer.from(xml).toString('base64')}</part>`,show=ref=>`<skshow>${part('content/Program.skpr',p)}${part(`extra.${ext}`,ref)}</skshow>`;
+  const unsafe=show('<root ref="n7"/>');await Promise.all([writeFile(f('in.skpr'),p),writeFile(f('donor.sktl'),d),writeFile(f('target.skshow'),unsafe)]);
+  const a={source:f('in.skpr'),destination:f('out.skpr'),sha256:hash('sha256',p),index:0,donor:f('donor.sktl'),donorSha256:hash('sha256',d),donorCueId:'c',target:f('target.skshow'),targetSha256:hash('sha256',unsafe),replaceExisting:true};
+  await assert.rejects(copy(a),/referenced outside/);await assert.rejects(readFile(a.destination),{code:'ENOENT'});
+  const safe=show('<root ref="n70"/>');await writeFile(a.target,safe);await copy({...a,targetSha256:hash('sha256',safe)});assert.match(await readFile(a.destination,'utf8'),/id="n8"/);
+ }
+});

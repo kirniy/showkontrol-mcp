@@ -195,7 +195,7 @@ export async function attachShowProgramCopy({source,destination,sha256,program,p
   }
   const removed=[...oldIds.keys()].filter(id=>!newIds.has(id));
   if(removed.length){
-   const others=archive.parts.filter(p=>p.name!=='content/Program.skpr'&&/\.(?:skf|sktl|sksc|skpr)$/i.test(p.name));
+   const others=archive.parts.filter(p=>p.name!=='content/Program.skpr'&&/\.(?:skf|sktl|sksc|skls|skpr|skcp)$/i.test(p.name));
    for(const part of others){
     const xml=readSnapshotPart({snapshot:archive,name:part.name}).text;
     for(const id of removed){const escaped=id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');

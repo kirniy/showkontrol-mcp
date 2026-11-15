@@ -82,7 +82,7 @@ test('node removal checks decoded references in the remaining patch and supporte
   const xml=makePatch(`<node id="other"><settings><setting key="ref">${reference}</setting></settings></node>`);
   await assert.rejects(attempt('skf',xml),/reference/);await assert.rejects(readFile(destination),{code:'ENOENT'});
  }
- for(const name of ['other.skf','content/track.sktl','content/scene.sksc','sets.skls','content/Program.skpr']){
+ for(const name of ['other.skf','content/track.sktl','content/scene.sksc','sets.skls','content/Program.skpr','extra.skcp']){
   const show=`<skshow>${part('patch.skf',makePatch(''))}${part(name,'<root><setting>a<![CDATA[.]]>b</setting></root>')}</skshow>`;
   await assert.rejects(attempt('skshow',show),/reference/);await assert.rejects(readFile(destination),{code:'ENOENT'});
  }
@@ -98,4 +98,11 @@ test('malformed or checksum-invalid Program prevents patch node changes',async t
   await assert.rejects(editPatchGraphCopy({source,destination,format:'skshow',sha256,operation:'duplicate_node',nodeId:'n1',newNodeId:'n2'}));
   await assert.rejects(readFile(destination),{code:'ENOENT'});assert.equal(await readFile(source,'utf8'),show);
  }
+});
+
+test('router removal checks control parts for router targets',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'router-control-ref-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.skshow'),destination=path.join(dir,'out.skshow');
+ const patch='<showkontrol version="2"><graph><node id="n1" type="router"><settings><setting key="router.name">Main</setting></settings></node></graph><appSettings/></showkontrol>',show=value=>`<skshow>${part('patch.skf',patch)}${part('extra.skcp',`<root><setting key="route.router_target">${value}</setting></root>`)}</skshow>`;
+ await writeFile(source,show('Main'));let {sha256}=await inspectPatch({file:source,format:'skshow'});const args={source,destination,format:'skshow',sha256,operation:'remove_node',nodeId:'n1'};await assert.rejects(editPatchGraphCopy(args),/router target reference/);await assert.rejects(readFile(destination),{code:'ENOENT'});
+ await writeFile(source,show('Other'));({sha256}=await inspectPatch({file:source,format:'skshow'}));await editPatchGraphCopy({...args,sha256});assert.ok(await readFile(destination));
 });

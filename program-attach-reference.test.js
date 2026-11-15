@@ -50,3 +50,12 @@ test('unchanged duplicate definitions remain valid but changes are ambiguous',as
  await assert.rejects(readFile(destination),{code:'ENOENT'});
  await call(duplicate.replace('name="A"','name="B"'));assert.ok((await readFile(destination,'utf8')).includes(part('patch.skf','<patch target="n1"/>')));
 });
+
+test('Program attachment checks removed IDs in setlist and control parts',async t=>{
+ for(const ext of ['skls','skcp']){
+  const dir=await mkdtemp(path.join(os.tmpdir(),'attach-extra-ref-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.skshow'),input=path.join(dir,'in.skpr'),destination=path.join(dir,'out.skshow');
+  const next=program('<graph><node id="n2"/></graph>'),make=ref=>`<skshow>${part('content/Program.skpr',old)}${part(`extra.${ext}`,`<root ref="${ref}"/>`)}</skshow>`;let show=make('n1');await Promise.all([writeFile(source,show),writeFile(input,next)]);
+  const call=()=>attachShowProgramCopy({source,destination,sha256:digest('sha256',show),program:input,programSha256:digest('sha256',next),replaceExisting:true});
+  await assert.rejects(call(),/Removed Program ID/);await assert.rejects(readFile(destination),{code:'ENOENT'});show=make('n2');await writeFile(source,show);await call();assert.ok((await readFile(destination,'utf8')).includes(part(`extra.${ext}`,'<root ref="n2"/>')));
+ }
+});

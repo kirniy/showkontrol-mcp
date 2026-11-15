@@ -118,14 +118,14 @@ export async function editPatchGraphCopy({source,destination,format,sha256,opera
     if(scopes.length!==1||names.length!==1||nameElements.length!==1||nameElements[0].children.length||Object.keys(nameElements[0].attributes).length!==1||!names[0].value.trim())throw Error('Router name is missing or ambiguous; cannot check router target references');
     const name=names[0].value;
     if(hasRouterTarget(modified,name))throw Error('Router has a router target reference in the patch');
-    if(loaded.snapshot)for(const part of loaded.snapshot.parts.filter(p=>p.name!=='patch.skf'&&/\.(?:skf|sktl|sksc|skls|skpr)$/i.test(p.name))){
+    if(loaded.snapshot)for(const part of loaded.snapshot.parts.filter(p=>p.name!=='patch.skf'&&/\.(?:skf|sktl|sksc|skls|skpr|skcp)$/i.test(p.name))){
      if(hasRouterTarget(readSnapshotPart({snapshot:loaded.snapshot,name:part.name}).text,name))throw Error('Router has a router target reference in another show part');
     }
    }
    // Match substrings conservatively: IDs can appear inside arbitrary field values.
    const pattern=new RegExp(escapeRegex(nodeId));
    if(hasXmlReference(modified,pattern))throw Error('Node has a reference in the patch');
-   if(loaded.snapshot)for(const part of loaded.snapshot.parts.filter(p=>p.name!=='patch.skf'&&/\.(?:skf|sktl|sksc|skls|skpr)$/i.test(p.name))){
+   if(loaded.snapshot)for(const part of loaded.snapshot.parts.filter(p=>p.name!=='patch.skf'&&/\.(?:skf|sktl|sksc|skls|skpr|skcp)$/i.test(p.name))){
     const xml=readSnapshotPart({snapshot:loaded.snapshot,name:part.name}).text;
     if(/<!DOCTYPE/i.test(xml))throw Error('DOCTYPE is not supported');
     if(hasXmlReference(xml,pattern))throw Error('Node has a reference in another show part');

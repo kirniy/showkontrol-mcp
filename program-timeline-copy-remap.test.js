@@ -20,3 +20,18 @@ test('opt-in cue remapping permits repeated donor with distinct cue and node IDs
 test('cue remapping rejects references to donor cue IDs',async t=>{for(const d of [donor.replace('</sktimeline>','<setting>cue-a</setting></sktimeline>'),donor.replace('<cue id="cue-a">','<cue id="cue-a" next="cue-a">')]){const a=await setup(t,{donor:d});await assert.rejects(embedProgramTimelineRemappedCopy({...a,remapCueIds:true}),/unsupported reference/);await assert.rejects(readFile(a.destination),/ENOENT/);}});
 test('opaque node text requires opt-in and warnings use remapped cue and node IDs',async t=>{const d=donor.replace('<node id="n1" type="a"/>','<node id="n1" type="processor" kind=""><settings><setting key="proc.script">return n2;</setting></settings></node>');const a=await setup(t,{donor:d});await assert.rejects(embedProgramTimelineRemappedCopy(a),/unsupported node references/);await assert.rejects(embedProgramTimelineRemappedCopy({...a,allowOpaqueNodeText:'true'}),/boolean/);const r=await embedProgramTimelineRemappedCopy({...a,allowOpaqueNodeText:true,remapCueIds:true});assert.ok((await readFile(a.destination,'utf8')).includes('return n2;'));assert.deepEqual(r.warnings.find(w=>w.code==='opaque_node_references_unverified').scope,{part:a.destination,cueId:r.cueMapping['cue-a'],nodeId:r.mapping.n1,key:'proc.script',itemIndex:0});});
 test('opaque opt-in preserves cue reference and graph structure checks',async t=>{for(const d of [donor.replace('<node id="n1" type="a"/>','<node id="n1" type="processor" kind=""><settings><setting key="proc.script">cue-a n2</setting></settings></node>'),donor.replace('toNode="n2"','toNode="n99"')]){const a=await setup(t,{donor:d});await assert.rejects(embedProgramTimelineRemappedCopy({...a,allowOpaqueNodeText:true,remapCueIds:true}));await assert.rejects(readFile(a.destination),/ENOENT/);}});
+
+test('replacement protects cue and node references in setlist and control parts',async t=>{
+ const old='<sktimeline version="1"><cue id="old"><graph><node id="n4" type="a"/></graph></cue></sktimeline>',p=program.replace('/><item',`>${old}</item><item`);
+ for(const ext of ['skls','skcp'])for(const id of ['old','n4']){
+  const unsafe=`<skshow>${part(`extra.${ext}`,`<root ref="${id}"/>`)}</skshow>`,a=await setup(t,{program:p,show:unsafe});
+  await assert.rejects(embedProgramTimelineRemappedCopy({...a,replaceExisting:true}),/target show/);await assert.rejects(readFile(a.destination),{code:'ENOENT'});
+  const safe=`<skshow>${part(`extra.${ext}`,'<root ref="unrelated"/>')}</skshow>`;await writeFile(a.target,safe);await embedProgramTimelineRemappedCopy({...a,targetSha256:hash(safe),replaceExisting:true});assert.ok((await readFile(a.destination,'utf8')).includes('cue-a'));
+ }
+});
+test('cue remapping checks donor setlist and control parts',async t=>{
+ for(const ext of ['skls','skcp']){
+  const a=await setup(t),show=`<skshow>${part('donor.sktl',donor)}${part(`extra.${ext}`,'<root ref="cue-a"/>')}</skshow>`,file=path.join(a.dir,'donor.skshow');await writeFile(file,show);
+  await assert.rejects(embedProgramTimelineRemappedCopy({...a,donor:file,donorName:'donor.sktl',donorSha256:hash(show),remapCueIds:true}),/unsupported reference/);await assert.rejects(readFile(a.destination),{code:'ENOENT'});
+ }
+});
