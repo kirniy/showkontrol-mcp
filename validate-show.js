@@ -17,6 +17,9 @@ export async function validateShow({file}){
   const containers=root.children.filter(n=>n.name==='layers');
     const cues=root.children.filter(n=>n.name==='cue');
     const number=/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+    // The cue tools select a cue by an ID that occurs once among the direct cues.
+    const cueIds=new Map();for(const cue of cues)if(cue.attributes.id!==undefined)cueIds.set(cue.attributes.id,(cueIds.get(cue.attributes.id)??0)+1);
+    for(const [cueId,count] of cueIds)if(count>1)add('duplicate_cue_id',{...baseScope,path:`${basePath}/cue`,cueId},`Cue ID occurs ${count} times among the direct cues`);
     for(const [index,cue] of cues.entries()){
      const cueScope={...baseScope,path:`${basePath}/cue`,cueIndex:index,...(cue.attributes.id?{cueId:cue.attributes.id}:{})};
      for(const field of ['layer','startMs','lenMs']){
@@ -139,7 +142,11 @@ export async function validateShow({file}){
     diagnostics.push(...storedStoppedWarnings(xml,part.name,root));
     validateTimelineCues(root,scope,'sktimeline',partCoverage);
    }
-   if(/\.skls$/i.test(part.name))setlists.push({part:part.name,sets:parseSetlist(xml)});
+   if(/\.skls$/i.test(part.name)){
+    const sets=parseSetlist(xml),active=parseXmlSpans(xml).attributes.active;setlists.push({part:part.name,sets});
+    // Static R27 evidence reads active as a zero-based set index (see remove_set); how the app treats another value is unknown.
+    if(active!==undefined&&!(/^(0|[1-9]\d*)$/.test(active)&&Number(active)<sets.length))add('unsupported_active_set',{...scope,value:active,sets:sets.length},'Set list active attribute is not the zero-based index of an existing set','warning');
+   }
    if(!/\.(?:skf|sktl|sksc)$/i.test(part.name))continue;
    if(/\.skf$/i.test(part.name))try{parsePatch(xml);}catch(error){partCoverage.status='invalid';add('invalid_patch',scope,error.message);}
    const graphParser=new SaxesParser(),tagStack=[],parsedGraphs=[];let graph=null;

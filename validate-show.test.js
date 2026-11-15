@@ -142,3 +142,35 @@ test('MCP validation reports Program coverage and malformed Program',async t=>{
   await writeFile(file,`<skshow>${part('content/Program.skpr',xml)}</skshow>`);const response=await client.callTool({name:'showkontrol_validate_show',arguments:{file}});assert.equal(response.isError,undefined);const result=JSON.parse(response.content[0].text);assert.equal(result.coverage[0].status,status);assert.ok(result.diagnostics.some(d=>d.code===code));
  }
 });
+
+test('duplicate direct cue IDs are errors in tracks and Program item timelines',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-cue-id-validation-'));t.after(()=>rm(dir,{recursive:true,force:true}));const file=path.join(dir,'show.skshow');
+ const cue=id=>`<cue id="${id}" layer="0" startMs="0" lenMs="10"/>`;
+ const track=`<sktimeline version="1" name="A"><layers><layer/></layers>${cue('c1')}${cue('c2')}${cue('c1')}${cue('c1')}<extension>${cue('c2')}</extension></sktimeline>`;
+ const other=`<sktimeline version="1" name="B"><layers><layer/></layers>${cue('c1')}</sktimeline>`;
+ const program=`<skprogram version="1"><item start="0" name="I" notes=""><sktimeline version="1" name="E"><layers><layer/></layers>${cue('p')}${cue('p')}</sktimeline></item></skprogram>`;
+ const xml=`<skshow>${part('content/A.sktl',track)}${part('content/B.sktl',other)}${part('content/Program.skpr',program)}</skshow>`;await writeFile(file,xml);
+ const result=await validateShow({file});
+ const duplicates=result.diagnostics.filter(d=>d.code==='duplicate_cue_id');
+ // Each duplicated ID is reported once per timeline; the nested cue and the same ID in another track are not duplicates.
+ assert.deepEqual(duplicates.map(d=>[d.severity,d.scope.part,d.scope.cueId,d.message]),[
+  ['error','content/A.sktl','c1','Cue ID occurs 3 times among the direct cues'],
+  ['error','content/Program.skpr','p','Cue ID occurs 2 times among the direct cues']
+ ]);
+ assert.equal(duplicates[0].scope.path,'sktimeline/cue');assert.equal(duplicates[1].scope.itemIndex,0);
+ assert.equal(await readFile(file,'utf8'),xml);
+});
+
+test('a set list active value that is not an existing zero-based set index is a warning',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-active-validation-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const track='<sktimeline version="1" name="A"><layers><layer/></layers></sktimeline>';
+ const sets='<set name="One"><entry track="A"/></set><set name="Two"/>';
+ for(const [active,expected] of [[undefined,false],['0',false],['1',false],['2',true],['5',true],['-1',true],['01',true],['x',true],['',true]]){
+  const file=path.join(dir,`active-${active??'none'}.skshow`);
+  await writeFile(file,`<skshow>${part('content/A.sktl',track)}${part('content/Setlist.skls',`<sksetlist version="2"${active===undefined?'':` active="${active}"`}>${sets}</sksetlist>`)}</skshow>`);
+  const result=await validateShow({file}),found=result.diagnostics.filter(d=>d.code==='unsupported_active_set');
+  assert.equal(found.length,expected?1:0,String(active));
+  if(expected)assert.deepEqual([found[0].severity,found[0].scope],['warning',{part:'content/Setlist.skls',value:active,sets:2}]);
+  assert.deepEqual(result.diagnostics.filter(d=>d.severity==='error'),[],String(active));
+ }
+});
