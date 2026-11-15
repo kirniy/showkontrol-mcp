@@ -1,15 +1,34 @@
-import {readFile,writeFile} from 'node:fs/promises';
+import {open,writeFile} from 'node:fs/promises';
+import {constants} from 'node:fs';
 import {SaxesParser} from 'saxes';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-const MAX_BYTES=5*1024*1024;
+const DEFAULT_MAX_BYTES=128*1024*1024;
+function maxBytes(){
+ const value=process.env.SHOWKONTROL_OFFLINE_MAX_BYTES;
+ if(value===undefined)return DEFAULT_MAX_BYTES;
+ if(!/^\d+$/.test(value)||!Number.isSafeInteger(Number(value))||Number(value)<1)throw Error('Invalid SHOWKONTROL_OFFLINE_MAX_BYTES');
+ return Number(value);
+}
+function checkSize(size,limit,kind){if(size>limit)throw Error(`${kind} exceeds offline size limit of ${limit} bytes`);}
 function validate(xml) {
  if (/<!DOCTYPE/i.test(xml)) throw Error('DOCTYPE is not supported');
  const parser=new SaxesParser(); parser.write(xml).close();
 }
 async function load(file) {
  if (!path.isAbsolute(file)) throw Error('Use an absolute source path');
- const data=await readFile(file);if(data.length>MAX_BYTES)throw Error('XML file exceeds 5 MiB');
+ const limit=maxBytes(),handle=await open(file,constants.O_RDONLY|constants.O_NONBLOCK);let data;
+ try{
+  const info=await handle.stat();if(!info.isFile())throw Error('XML source must be a regular file');
+  checkSize(info.size,limit,'XML file');
+  const chunks=[];let total=0;
+  while(total<=limit){
+   const buffer=Buffer.allocUnsafe(Math.min(64*1024,limit-total+1));
+   const {bytesRead}=await handle.read(buffer,0,buffer.length,null);if(!bytesRead)break;
+   total+=bytesRead;checkSize(total,limit,'XML file');chunks.push(buffer.subarray(0,bytesRead));
+  }
+  data=Buffer.concat(chunks,total);
+ }finally{await handle.close();}
  const xml=new TextDecoder('utf-8',{fatal:true}).decode(data);validate(xml);return xml;
 }
 export async function inspectXml({file}) {
@@ -25,7 +44,7 @@ export async function editXmlCopy({source,destination,sha256,edits}) {
   const pos=xml.indexOf(find);if(pos<0||xml.indexOf(find,pos+1)>=0)throw Error('Each search text must occur exactly once');
   xml=xml.slice(0,pos)+replace+xml.slice(pos+find.length);
  }
- if(Buffer.byteLength(xml)>MAX_BYTES)throw Error('XML output exceeds 5 MiB');
+ checkSize(Buffer.byteLength(xml),maxBytes(),'XML output');
  validate(xml);await writeFile(destination,xml,{encoding:'utf8',flag:'wx'});
  return {destination,sha256:createHash('sha256').update(xml).digest('hex'),edits:edits.length,note:'XML syntax checked; ShowKontrol compatibility has not been checked.'};
 }
@@ -43,17 +62,24 @@ function parts(xml) {
  if ((xml.match(/<part(?:\s|>)/g)||[]).length !== out.length) throw Error('Unsupported part encoding or structure');
  return out;
 }
-export async function inspectShow({file}) {
+export async function readShowSnapshot({file}) {
  const xml=await load(file);const entries=parts(xml);
  if(!/^\s*(?:<\?xml[^>]*>\s*)?<skshow(?:\s|>)/.test(xml)||!entries.length)throw Error('Not a supported skshow wrapper');
- return {file,sha256:createHash('sha256').update(xml).digest('hex'),parts:entries.map(({name,md5,valid,bytes})=>({name,md5,valid,size:bytes.length}))};
+ return {file,sha256:createHash('sha256').update(xml).digest('hex'),parts:entries.map(({name,md5,valid,bytes})=>({name,md5,valid,bytes}))};
 }
-export async function readShowPart({file,name}) {
- const xml=await load(file);const found=parts(xml).filter(p=>p.name===name);
+export async function inspectShow({file}) {
+ const snapshot=await readShowSnapshot({file});
+ return {file,sha256:snapshot.sha256,parts:snapshot.parts.map(({name,md5,valid,bytes})=>({name,md5,valid,size:bytes.length}))};
+}
+export function readSnapshotPart({snapshot,name}) {
+ const found=snapshot.parts.filter(p=>p.name===name);
  if(found.length!==1)throw Error('Part name must match exactly one part');
  if(!found[0].valid)throw Error('Part MD5 mismatch');
  let text;try{text=new TextDecoder('utf-8',{fatal:true}).decode(found[0].bytes)}catch{throw Error('Part is not UTF-8 text')}
  return {name,md5:found[0].md5,text};
+}
+export async function readShowPart({file,name}) {
+ return readSnapshotPart({snapshot:await readShowSnapshot({file}),name});
 }
 export async function editShowPart({source,destination,sha256,name,edits}) {
  if(!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Destination must be a different absolute path');
@@ -71,7 +97,7 @@ export async function editShowPart({source,destination,sha256,name,edits}) {
  let parsedAttrs;const parser=new SaxesParser();parser.on('opentag',tag=>{parsedAttrs=tag.attributes});parser.write(`<part${attrs}/>`).close();
  if(parsedAttrs.md5!==md5)throw Error('Unsupported part checksum serialization');
  const replacement=`<part${attrs}>${bytes.toString('base64')}</part>`;const output=xml.slice(0,part.start)+replacement+xml.slice(part.end);validate(output);
- if(Buffer.byteLength(output)>MAX_BYTES)throw Error('XML output exceeds 5 MiB');
+ checkSize(Buffer.byteLength(output),maxBytes(),'XML output');
  await writeFile(destination,output,{encoding:'utf8',flag:'wx'});
  return {destination,name,md5,note:'Part and wrapper syntax checked; ShowKontrol compatibility has not been checked.'};
 }
@@ -88,6 +114,6 @@ export async function addShowPart({source,destination,sha256,name,text}) {
  if(!patch)throw Error('Show has no patch.skf part');
  const at=patch.start;const entry=`<part name="${name}" md5="${md5}">${bytes.toString('base64')}</part>`;
  const output=xml.slice(0,at)+entry+xml.slice(at);validate(output);
- if(Buffer.byteLength(output)>MAX_BYTES)throw Error('XML output exceeds 5 MiB');
+ checkSize(Buffer.byteLength(output),maxBytes(),'XML output');
  await writeFile(destination,output,{encoding:'utf8',flag:'wx'});return {destination,name,md5};
 }

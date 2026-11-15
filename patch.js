@@ -1,5 +1,5 @@
 import {SaxesParser} from 'saxes';
-import {inspectXml,editXmlCopy,inspectShow,readShowPart,editShowPart} from './xml-copy.js';
+import {inspectXml,editXmlCopy,readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';
 
 function parsePatch(xml) {
  const parser=new SaxesParser(); const stack=[]; let root, graphCount=0, appCount=0, currentNode, currentSetting, text='';
@@ -31,14 +31,14 @@ function parsePatch(xml) {
 }
 async function sourceData(file,format){
  if(format==='skshow'){
-  const wrapper=await inspectShow({file});if(!wrapper.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
-  return {sha256:wrapper.sha256,xml:(await readShowPart({file,name:'patch.skf'})).text,parts:wrapper.parts};
+  const snapshot=await readShowSnapshot({file});if(!snapshot.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
+  return {sha256:snapshot.sha256,xml:readSnapshotPart({snapshot,name:'patch.skf'}).text,snapshot};
  }
  const info=await inspectXml({file});return {sha256:info.sha256,xml:info.xml};
 }
-async function showNodeIdExists(file,parts,id){
- for(const part of parts.filter(p=>/\.(?:skf|sktl|sksc)$/i.test(p.name))){
-  const xml=(await readShowPart({file,name:part.name})).text;
+function showNodeIdExists(snapshot,id){
+ for(const part of snapshot.parts.filter(p=>/\.(?:skf|sktl|sksc)$/i.test(p.name))){
+  const xml=readSnapshotPart({snapshot,name:part.name}).text;
   if(/<!DOCTYPE/i.test(xml))throw Error('DOCTYPE is not supported');
   let found=false;const parser=new SaxesParser();
   parser.on('opentag',tag=>{if(tag.name==='node'&&tag.attributes.id===id)found=true});
@@ -89,7 +89,7 @@ export async function editPatchGraphCopy({source,destination,format,sha256,opera
    if(parsed.connections.some(c=>c.fromNode===nodeId||c.toNode===nodeId))throw Error('Remove all connections referencing this node first');
    changed=graph.slice(0,nodes[0].index)+graph.slice(nodes[0].index+node.length);
   }else{
-   if(!newNodeId||!idPattern.test(newNodeId)||ids.has(newNodeId)||format==='skshow'&&await showNodeIdExists(source,loaded.parts,newNodeId))throw Error('New node ID must be valid and unused');
+   if(!newNodeId||!idPattern.test(newNodeId)||ids.has(newNodeId)||format==='skshow'&&showNodeIdExists(loaded.snapshot,newNodeId))throw Error('New node ID must be valid and unused');
    const start=node.indexOf('>');const opening=node.slice(0,start+1);
    const idAttr=new RegExp('(\\sid=["\\\'])'+escapeRegex(nodeId)+'(["\\\'])','g');
    if([...opening.matchAll(idAttr)].length!==1)throw Error('Cannot uniquely locate node ID attribute');
@@ -132,7 +132,7 @@ export async function copyPatchNode({source,destination,format,sha256,template,t
  if(donor.sha256!==templateSha256)throw Error('Template source changed since inspection');
  const targetPatch=parsePatch(target.xml),donorPatch=parsePatch(donor.xml);
  const targetIds=new Set(targetPatch.nodes.map(n=>n.id));
- if(targetIds.has(newNodeId)||format==='skshow'&&await showNodeIdExists(source,target.parts,newNodeId))throw Error('New node ID must be unused');
+ if(targetIds.has(newNodeId)||format==='skshow'&&showNodeIdExists(target.snapshot,newNodeId))throw Error('New node ID must be unused');
  if(!donorPatch.nodes.some(n=>n.id===nodeId))throw Error('Template node ID does not exist');
  for(const c of targetPatch.connections)if(!targetIds.has(c.fromNode)||!targetIds.has(c.toNode)||!/^\d+$/.test(c.fromPin||'')||!/^\d+$/.test(c.toPin||''))throw Error('Destination graph has invalid connection references or pins');
  const findGraph=xml=>{const graphs=[...xml.matchAll(/<graph\b[^>]*>[\s\S]*?<\/graph\s*>/g)];if(graphs.length!==1)throw Error('Cannot uniquely locate graph serialization');return graphs[0];};

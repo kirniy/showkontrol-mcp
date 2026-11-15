@@ -40,3 +40,19 @@ test('patch operations select real XML attributes, not lookalike attribute names
  assert.deepEqual((await inspectPatch({file:edited,format:'skf'})).nodes[0].settings.map(s=>s.value),['new','untouched']);
  await assert.rejects(copyPatchNode({source,destination:path.join(dir,'copy.skf'),format:'skf',sha256:targetInfo.sha256,template:donor,templateFormat:'skf',templateSha256:donorInfo.sha256,nodeId:'n1',newNodeId:'n3'}),/node ID attribute/);
 });
+
+test('show snapshots keep the inspected hash and node XML from the same file read',async t=>{
+ const {readShowSnapshot,readSnapshotPart}=await import('./xml-copy.js');
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-snapshot-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const file=path.join(dir,'donor.skshow'),target=path.join(dir,'target.skf'),out=path.join(dir,'out.skf');
+ const old=`<skshow>${part('patch.skf',patch)}</skshow>`;
+ const modifiedPatch=patch.replace('type="action"','type="changed"');
+ const updated=`<skshow>${part('patch.skf',modifiedPatch)}</skshow>`;
+ await writeFile(file,old);await writeFile(target,patch);
+ const snapshot=await readShowSnapshot({file}),before=await inspectPatch({file,format:'skshow'}),targetInfo=await inspectPatch({file:target,format:'skf'});
+ await writeFile(file,updated);
+ assert.equal(snapshot.sha256,createHash('sha256').update(old).digest('hex'));
+ assert.equal(readSnapshotPart({snapshot,name:'patch.skf'}).text,patch);
+ await assert.rejects(copyPatchNode({source:target,destination:out,format:'skf',sha256:targetInfo.sha256,template:file,templateFormat:'skshow',templateSha256:before.sha256,nodeId:'n1',newNodeId:'n2'}),/Template source changed/);
+ await assert.rejects(readFile(out),{code:'ENOENT'});
+});

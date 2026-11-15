@@ -1,4 +1,15 @@
 import {test} from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';import path from 'node:path';import os from 'node:os';import {createHash} from 'node:crypto';import {inspectShowSetlist,addShowSetlistTrackCopy} from './setlist.js';
+import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';
+test('set list inspection uses the same snapshot for its checksum and contents',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-set-snapshot-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.skshow');
+ const part=text=>`<part name="Setlist.skls" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const show=name=>`<skshow>${part(`<sksetlist version="2"><set name="${name}"/></sksetlist>`)}</skshow>`;
+ const original=show('Before'),replacement=show('After');await writeFile(source,original);
+ const open=fs.promises.open;let replaced=false;
+ fs.promises.open=async (...args)=>{const handle=await open(...args);if(args[0]===source&&!replaced){const close=handle.close.bind(handle);handle.close=async()=>{await close();replaced=true;await writeFile(source,replacement)};}return handle;};syncBuiltinESMExports();
+ try{const result=await inspectShowSetlist({file:source,name:'Setlist.skls'});assert.equal(result.sha256,createHash('sha256').update(original).digest('hex'));assert.deepEqual(result.sets,[{name:'Before',tracks:[]}]);assert.equal(await readFile(source,'utf8'),replacement);}
+ finally{fs.promises.open=open;syncBuiltinESMExports();}
+});
 test('append a track to the app-fixture set list without altering other parts',async t=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'sk-set-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.skshow'),destination=path.join(dir,'out.skshow');
  const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;

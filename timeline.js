@@ -1,5 +1,5 @@
 import {SaxesParser} from 'saxes';
-import {inspectXml,editXmlCopy,inspectShow,readShowPart,editShowPart,addShowPart} from './xml-copy.js';
+import {inspectXml,editXmlCopy,readShowSnapshot,readSnapshotPart,editShowPart,addShowPart} from './xml-copy.js';
 import {randomInt} from 'node:crypto';
 function parseTimeline(xml) {
  const parser=new SaxesParser();const stack=[];const result={attributes:{},layers:[],audio:[],cueElements:[]};
@@ -17,8 +17,8 @@ export async function inspectTimeline({file}) {
 }
 export async function inspectShowTimeline({file,name}) {
  if(!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
- const show=await inspectShow({file});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
- const {text}=await readShowPart({file,name});return {file,name,sha256:show.sha256,...parseTimeline(text)};
+ const show=await readShowSnapshot({file});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
+ const {text}=readSnapshotPart({snapshot:show,name});return {file,name,sha256:show.sha256,...parseTimeline(text)};
 }
 function xmlAttr(s) {
  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]/u.test(s))throw Error('Invalid XML character in cue label');
@@ -43,9 +43,9 @@ export async function addTimelineCueCopy({source,destination,sha256,layer,startM
 }
 export async function addShowTimelineCueCopy({source,destination,sha256,name,layer,startMs,lengthMs,label}) {
  if(!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
- const show=await inspectShow({file:source});if(show.sha256!==sha256)throw Error('Source changed since inspection');
+ const show=await readShowSnapshot({file:source});if(show.sha256!==sha256)throw Error('Source changed since inspection');
  if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
- const {text}=await readShowPart({file:source,name});const {id,modified}=addCue(text,{layer,startMs,lengthMs,label});
+ const {text}=readSnapshotPart({snapshot:show,name});const {id,modified}=addCue(text,{layer,startMs,lengthMs,label});
  const result=await editShowPart({source,destination,sha256,name,edits:[{find:text,replace:modified}]});
  return {...result,id,layer,startMs,lengthMs,label,note:'A simple cue was added to an offline show copy. No action graph was created.'};
 }
@@ -74,7 +74,7 @@ export async function inspectCueGraph({file,format,name,cueId}){
  let xml,sha256;
  if(format==='skshow'){
   if(!name||!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
-  const show=await inspectShow({file});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');sha256=show.sha256;xml=(await readShowPart({file,name})).text;
+  const show=await readShowSnapshot({file});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');sha256=show.sha256;xml=(readSnapshotPart({snapshot:show,name})).text;
  }else if(format==='sktl'){const info=await inspectXml({file});sha256=info.sha256;xml=info.xml;}
  else throw Error('Format must be sktl or skshow');
  return {file,format,...(name?{name}:{}),sha256,...cueGraph(xml,cueId)};
@@ -86,9 +86,9 @@ function regexEscape(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
 export async function copyCueGraphInShow({source,destination,sha256,name,sourceCueId,targetCueId}){
  if(sourceCueId===targetCueId)throw Error('Select two different cues');
  if(!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
- const show=await inspectShow({file:source});if(show.sha256!==sha256)throw Error('Source changed since inspection');
+ const show=await readShowSnapshot({file:source});if(show.sha256!==sha256)throw Error('Source changed since inspection');
  if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
- const part=await readShowPart({file:source,name});const xml=part.text;
+ const part=readSnapshotPart({snapshot:show,name});const xml=part.text;
  const src=cueGraph(xml,sourceCueId),target=cueGraph(xml,targetCueId);
  if(!src.graph||!src.graph.nodes.length)throw Error('Source cue has no graph');
  if(target.graph)throw Error('Target cue already has a graph');
@@ -98,7 +98,7 @@ export async function copyCueGraphInShow({source,destination,sha256,name,sourceC
  if(src.graph.connections.some(c=>!ids.includes(c.fromNode)||!ids.includes(c.toNode)))throw Error('Graph has external or invalid connections');
  let max=0;
  for(const entry of show.parts.filter(p=>/\.(?:skf|sktl|sksc)$/i.test(p.name))){
-  const txt=(await readShowPart({file:source,name:entry.name})).text;
+  const txt=(readSnapshotPart({snapshot:show,name:entry.name})).text;
   for(const id of xmlNodeIds(txt)){if(/^n\d+$/.test(id)){const n=Number(id.slice(1));if(!Number.isSafeInteger(n)||n>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,n)}}
  }
  if(max+ids.length>1000000000)throw Error('No node IDs remain in the supported range');
@@ -125,8 +125,8 @@ export async function editTimelineCueCopy({source,destination,format,sha256,name
  let xml,actual;
  if(format==='skshow'){
   if(!name||!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
-  const show=await inspectShow({file:source});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
-  actual=show.sha256;xml=(await readShowPart({file:source,name})).text;
+  const show=await readShowSnapshot({file:source});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
+  actual=show.sha256;xml=(readSnapshotPart({snapshot:show,name})).text;
  }else ({xml,sha256:actual}=await inspectXml({file:source}));
  if(actual!==sha256)throw Error('Source changed since inspection');
  const info=parseTimeline(xml);
@@ -159,12 +159,12 @@ export async function editTimelineCueCopy({source,destination,format,sha256,name
 export async function createShowTrackCopy({source,destination,sha256,templateName,trackName,partName}) {
  if(!/^[A-Za-z0-9 _-]+$/.test(trackName||'')||!trackName.trim())throw Error('Track name must use letters, digits, spaces, underscores or hyphens');
  if(!/^content\/[A-Za-z0-9_-]+\.sktl$/.test(partName||''))throw Error('Part name must be a content/ timeline filename with letters, digits, underscores or hyphens');
- const show=await inspectShow({file:source});if(show.sha256!==sha256)throw Error('Source changed since inspection');
+ const show=await readShowSnapshot({file:source});if(show.sha256!==sha256)throw Error('Source changed since inspection');
  if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
  if(!templateName||!templateName.toLowerCase().endsWith('.sktl'))throw Error('Select an empty timeline template');
  let template;
  for(const part of show.parts.filter(p=>p.name.toLowerCase().endsWith('.sktl'))){
-  const xml=(await readShowPart({file:source,name:part.name})).text, info=parseTimeline(xml);
+  const xml=(readSnapshotPart({snapshot:show,name:part.name})).text, info=parseTimeline(xml);
   if(info.attributes.name?.toLowerCase()===trackName.toLowerCase())throw Error('Track name already exists');
   if(part.name===templateName){if(info.cueElements.length||info.attributes.media||info.attributes.mediaWave||info.attributes.mediaGrid||info.attributes.mediaStructS||info.attributes.mediaStructE||info.attributes.mediaStructL)throw Error('Template must be empty and have no media');template=xml;}
  }
@@ -187,8 +187,8 @@ export async function deleteTimelineCueCopy({source,destination,format,sha256,na
  let xml,actual;
  if(format==='skshow'){
   if(!name||!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
-  const show=await inspectShow({file:source});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
-  actual=show.sha256;xml=(await readShowPart({file:source,name})).text;
+  const show=await readShowSnapshot({file:source});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
+  actual=show.sha256;xml=(readSnapshotPart({snapshot:show,name})).text;
  }else ({xml,sha256:actual}=await inspectXml({file:source}));
  if(actual!==sha256)throw Error('Source changed since inspection');
  const info=parseTimeline(xml);const cues=info.cueElements.filter(c=>c.path==='sktimeline/cue'&&c.attributes.id===cueId);
@@ -202,4 +202,39 @@ export async function deleteTimelineCueCopy({source,destination,format,sha256,na
  const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};
  const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
  return {...result,cueId,deletedGraph:!!graph,note:'Deleted a cue from an offline copy. Validate in ShowKontrol.'};
+}
+
+export async function editCueGraphSettingCopy({source,destination,format,sha256,name,cueId,nodeId,key,value}){
+ if(!['sktl','skshow'].includes(format))throw Error('Format must be sktl or skshow');
+ if(!/^[A-Za-z0-9_.:-]+$/.test(nodeId||'')||!/^[A-Za-z0-9_.:-]+$/.test(key||''))throw Error('Unsupported node ID or setting key');
+ if(typeof cueId!=='string'||!cueId||typeof value!=='string'||/[\x00-\x08\x0b\x0c\x0e-\x1f\ufffe\uffff]/u.test(value))throw Error('Invalid cue ID or setting value');
+ let xml,actual;
+ if(format==='skshow'){
+  if(!name||!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
+  const show=await readShowSnapshot({file:source});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');actual=show.sha256;xml=(readSnapshotPart({snapshot:show,name})).text;
+ }else ({xml,sha256:actual}=await inspectXml({file:source}));
+ if(actual!==sha256)throw Error('Source changed since inspection');
+ const graph=cueGraph(xml,cueId).graph;if(!graph)throw Error('Cue has no action graph');
+ const nodes=graph.nodes.filter(n=>n.id===nodeId);if(nodes.length!==1)throw Error('Node ID must occur exactly once in cue graph');
+ if(nodes[0].settings.filter(s=>s.key===key).length!==1)throw Error('Setting must exist exactly once in selected node');
+ const cueMatches=[...xml.matchAll(/<cue\b(?:[^>"']|"[^"]*"|'[^']*')*?(?:\/>|>[\s\S]*?<\/cue\s*>)/g)].filter(m=>{
+  let attrs;const p=new SaxesParser();p.on('opentag',t=>{if(!attrs)attrs=t.attributes});p.write(m[0]).close();return attrs.id===cueId;
+ });
+ if(cueMatches.length!==1)throw Error('Unsupported or ambiguous cue serialization');
+ const cue=cueMatches[0];
+ const nodeMatches=[...cue[0].matchAll(/<node\b(?:[^>"']|"[^"]*"|'[^']*')*>[\s\S]*?<\/node\s*>/g)].filter(m=>{
+  let attrs;const p=new SaxesParser();p.on('opentag',t=>{if(!attrs)attrs=t.attributes});p.write(m[0]).close();return attrs.id===nodeId;
+ });
+ if(nodeMatches.length!==1)throw Error('Unsupported or ambiguous node serialization');
+ const node=nodeMatches[0];
+ const settings=[...node[0].matchAll(/(<setting\b(?:[^>"']|"[^"]*"|'[^']*')*?)(?:\/>|>([^<]*)<\/setting\s*>)/g)].filter(m=>{
+  let attrs;const p=new SaxesParser();p.on('opentag',t=>{if(!attrs)attrs=t.attributes});p.write(m[0]).close();return attrs.key===key;
+ });
+ if(settings.length!==1)throw Error('Unsupported or ambiguous setting serialization');
+ const setting=settings[0],encoded=value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+ const newNode=node[0].slice(0,setting.index)+setting[1]+ '>'+encoded+'</setting>'+node[0].slice(setting.index+setting[0].length);
+ const newCue=cue[0].slice(0,node.index)+newNode+cue[0].slice(node.index+node[0].length);
+ const modified=xml.slice(0,cue.index)+newCue+xml.slice(cue.index+cue[0].length);cueGraph(modified,cueId);
+ const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
+ return {...result,cueId,nodeId,key,value,note:'Changed an existing cue graph setting in an offline copy. Value semantics and ShowKontrol acceptance are not validated.'};
 }

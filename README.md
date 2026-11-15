@@ -52,6 +52,7 @@ Environment variables:
 - `SHOWKONTROL_USE_LOCAL_PAIRING=1`: read the current user's ShowKontrol Stream Deck pairing file. This only works with a loopback URL. The file must be enabled. When no URL is specified, its port is used.
 - `SHOWKONTROL_PAIR_KEY`: explicit local pairing key, if required.
 - `SHOWKONTROL_TIMEOUT_MS`: request timeout from 100 to 120000 milliseconds. Default: 5000.
+- `SHOWKONTROL_OFFLINE_MAX_BYTES`: maximum offline XML input or output size in bytes. Default: 134217728 (128 MiB). This does not change the 5 MiB live API response limit. Raw XML and part inspection can return large MCP messages; client limits may be lower.
 
 No credentials are needed for offline file tools.
 
@@ -72,6 +73,7 @@ No credentials are needed for offline file tools.
 - `showkontrol_inspect_timeline`: inspect the root metadata, layers, audio entries and cue element paths in an offline version 1 `.sktl` file.
 - `showkontrol_add_timeline_cue_copy`: add a simple cue to a new offline timeline copy. Layer indices start at zero; start and length are in milliseconds. The source checksum must match and the destination must not exist. The shape comes from an app-created cue. In a separate test session, ShowKontrol R27 27.0.11 loaded a generated copy and displayed the added cue at 5 seconds with a 2-second duration. This tool does not create an action graph.
 - `showkontrol_inspect_cue_graph`: inspect the graph nodes, connections and settings of a cue in an offline timeline or show archive.
+- `showkontrol_edit_cue_graph_setting_copy`: change an existing node setting in a cue graph in a new copy. Inspect first. The tool does not validate the value or create a missing setting. ShowKontrol acceptance remains unverified.
 - `showkontrol_copy_cue_graph_show_copy`: copy a graph from one cue to an empty cue in a new show archive. It supports only the group input, trigger and action node types seen in the test fixture. It scans `.skf`, `.sktl`, and `.sksc` XML parts for node IDs and remaps graph nodes and connections. It rejects unsupported references. Reopening its output in the app remains unverified.
 - `showkontrol_inspect_show_timeline`, `showkontrol_add_show_timeline_cue_copy`: inspect a named `.sktl` part and add a simple cue in a new `.skshow` copy. The archive checksum must match. The tool validates part checksums and updates the changed part checksum. Other parts are preserved. ShowKontrol displayed a generated cue in a separate test session.
 - `showkontrol_edit_timeline_cue_copy`, `showkontrol_delete_timeline_cue_copy`: edit or delete a cue in a new copy. Moving or editing a cue preserves its action graph. Deleting a cue with a graph requires `deleteGraph: true`. External references are not checked. App acceptance remains unverified.

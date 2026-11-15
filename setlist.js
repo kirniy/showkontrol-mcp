@@ -1,5 +1,5 @@
 import {SaxesParser} from 'saxes';
-import {inspectShow,readShowPart,editShowPart} from './xml-copy.js';
+import {readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';
 
 function parseSetlist(xml) {
  const parser=new SaxesParser(),stack=[],sets=[];let current,root=false;
@@ -14,8 +14,8 @@ function parseSetlist(xml) {
 function escapeAttr(s){return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&apos;');}
 async function loadShow(file,name){
  if(!name||!name.toLowerCase().endsWith('.skls'))throw Error('Select a .skls part');
- const show=await inspectShow({file});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
- const xml=(await readShowPart({file,name})).text;return {show,xml,sets:parseSetlist(xml)};
+ const show=await readShowSnapshot({file});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
+ const xml=readSnapshotPart({snapshot:show,name}).text;return {show,xml,sets:parseSetlist(xml)};
 }
 export async function inspectShowSetlist({file,name}){const {show,sets}=await loadShow(file,name);return {file,name,sha256:show.sha256,sets};}
 export async function addShowSetlistTrackCopy({source,destination,sha256,name,setName,trackName}){
@@ -25,7 +25,7 @@ export async function addShowSetlistTrackCopy({source,destination,sha256,name,se
  if(selected[0].tracks.includes(trackName))throw Error('Track already exists in this set');
  let tracks=0;
  for(const part of show.parts.filter(p=>p.name.toLowerCase().endsWith('.sktl'))){
-  const text=(await readShowPart({file:source,name:part.name})).text;let root;const parser=new SaxesParser();parser.on('opentag',tag=>{if(!root)root=tag});parser.write(text).close();
+  const text=readSnapshotPart({snapshot:show,name:part.name}).text;let root;const parser=new SaxesParser();parser.on('opentag',tag=>{if(!root)root=tag});parser.write(text).close();
   if(root?.name==='sktimeline'&&root.attributes.version==='1'&&root.attributes.name===trackName)tracks++;
  }
  if(tracks!==1)throw Error('Track name must identify exactly one timeline in the show');

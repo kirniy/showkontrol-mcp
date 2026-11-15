@@ -111,3 +111,35 @@ test('edit and delete cues when labels contain literal greater-than signs',async
  await editTimelineCueCopy({source,destination:edited,format:'sktl',sha256,cueId:'target',layer:1});const info=await inspectTimeline({file:edited});assert.equal(info.cueElements[1].attributes.layer,'1');assert.equal(info.cueElements[1].attributes.label,'C > D');
  await deleteTimelineCueCopy({source,destination:deleted,format:'sktl',sha256,cueId:'target',deleteGraph:true});const after=await inspectTimeline({file:deleted});assert.deepEqual(after.cueElements.map(c=>c.attributes.id),['other']);assert.equal(after.cueElements[0].attributes.label,'A > B');
 });
+import {editCueGraphSettingCopy} from './timeline.js';
+test('edit an existing fixture cue graph setting and preserve connections and other parts',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-graph-setting-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.skshow'),destination=path.join(dir,'out.skshow');
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const graph='<graph><node id="n154" type="groupin" x="60" y="140" title="Cue" layer="-1" kind=""><settings/></node><node id="n155" type="trigger" x="300" y="140" title="cue_active" layer="-1" kind=""><settings><setting key="trigger.path">cue.active</setting><setting key="trigger.on">State On</setting></settings></node><node id="n156" type="action" x="540" y="140" title="FeedbackBeep" layer="-1" kind=""><settings><setting key="action.category">Application</setting></settings></node><connection fromNode="n154" fromPin="0" toNode="n155" toPin="0"/><connection fromNode="n155" fromPin="0" toNode="n156" toPin="0"/></graph>';
+ const timeline=`<sktimeline version="1"><layers><layer name="Layer 1"/></layers><cue id="c1" layer="0" startMs="0.0" lenMs="40.0" label="Cue">${graph}</cue></sktimeline>`;const patch=part('patch.skf','<showkontrol version="2"/>');const original=`<skshow>${part('content/Track.sktl',timeline)}${patch}</skshow>`;await writeFile(source,original);
+ const name='content/Track.sktl',{sha256}=await inspectShowTimeline({file:source,name});const args={source,destination,format:'skshow',sha256,name,cueId:'c1',nodeId:'n155',key:'trigger.path',value:'cue.test & value'};
+ await editCueGraphSettingCopy(args);const result=await inspectCueGraph({file:destination,format:'skshow',name,cueId:'c1'});assert.equal(result.graph.nodes[1].settings[0].value,'cue.test & value');assert.equal(result.graph.nodes[1].settings[1].value,'State On');assert.equal(result.graph.connections.length,2);assert.equal(await readFile(source,'utf8'),original);assert.ok((await readFile(destination,'utf8')).includes(patch));
+ await assert.rejects(editCueGraphSettingCopy(args),/EEXIST/);await assert.rejects(editCueGraphSettingCopy({...args,destination:path.join(dir,'stale'),sha256:'0'.repeat(64)}),/changed/);await assert.rejects(editCueGraphSettingCopy({...args,destination:path.join(dir,'missing'),key:'unknown'}),/exactly once/);
+});
+test('cue graph setting selection ignores similarly named attributes and attribute text',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-graph-select-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.sktl'),destination=path.join(dir,'out.sktl');
+ const xml=`<sktimeline version="1"><layers><layer name="Layer 1"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Cue"><graph><node id="decoy" data-id="n155" type="trigger"><settings><setting key="trigger.path">leave node</setting></settings></node><node id="n155" type="trigger"><settings><setting key="other" data-key="trigger.path">leave setting</setting><setting key="trigger.path">cue.active</setting></settings></node></graph></cue></sktimeline>`;await writeFile(source,xml);const {sha256}=await inspectTimeline({file:source});
+ await editCueGraphSettingCopy({source,destination,format:'sktl',sha256,cueId:'c1',nodeId:'n155',key:'trigger.path',value:'new'});
+ const graph=(await inspectCueGraph({file:destination,format:'sktl',cueId:'c1'})).graph;assert.equal(graph.nodes[0].settings[0].value,'leave node');assert.equal(graph.nodes[1].settings[0].value,'leave setting');assert.equal(graph.nodes[1].settings[1].value,'new');
+});
+import {readShowSnapshot,readSnapshotPart} from './xml-copy.js';
+test('timeline archive snapshot keeps all parts and hash tied to one source read',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-snapshot-'));t.after(()=>rm(dir,{recursive:true,force:true}));const file=path.join(dir,'in.skshow');
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const archive=(track,patch)=>`<skshow>${part('content/Track.sktl',`<sktimeline version="1" name="${track}"/>`)}${part('patch.skf',`<showkontrol version="2" name="${patch}"/>`)}</skshow>`;
+ const initial=archive('A','A'),replacement=archive('B','B');await writeFile(file,initial);const snapshot=await readShowSnapshot({file});await writeFile(file,replacement);
+ assert.equal(snapshot.sha256,createHash('sha256').update(initial).digest('hex'));assert.match(readSnapshotPart({snapshot,name:'content/Track.sktl'}).text,/name="A"/);assert.match(readSnapshotPart({snapshot,name:'patch.skf'}).text,/name="A"/);
+ const next=await inspectShowTimeline({file,name:'content/Track.sktl'});assert.equal(next.attributes.name,'B');assert.equal(next.sha256,createHash('sha256').update(replacement).digest('hex'));
+});
+test('edit a self-closing cue setting and leave adjacent settings unchanged',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-empty-setting-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.sktl'),destination=path.join(dir,'out.sktl');
+ const xml='<sktimeline version="1"><layers><layer name="Layer 1"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Cue"><graph><node id="n155" type="trigger"><settings><setting key="trigger.path"/><setting key="trigger.on">State On</setting></settings></node></graph></cue></sktimeline>';await writeFile(source,xml);const {sha256}=await inspectTimeline({file:source});
+ assert.equal((await inspectCueGraph({file:source,format:'sktl',cueId:'c1'})).graph.nodes[0].settings[0].value,'');
+ await editCueGraphSettingCopy({source,destination,format:'sktl',sha256,cueId:'c1',nodeId:'n155',key:'trigger.path',value:'cue.active'});
+ const settings=(await inspectCueGraph({file:destination,format:'sktl',cueId:'c1'})).graph.nodes[0].settings;assert.deepEqual(settings,[{key:'trigger.path',value:'cue.active'},{key:'trigger.on',value:'State On'}]);assert.equal(await readFile(source,'utf8'),xml);
+});
