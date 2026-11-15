@@ -1,0 +1,48 @@
+import {mkdtemp, link, rm} from 'node:fs/promises';
+import path from 'node:path';
+import {inspectShow} from './xml-copy.js';
+import {createShowTrackCopy, addShowTimelineCueCopy, copyCueGraphInShow} from './timeline.js';
+import {addShowSetlistTrackCopy} from './setlist.js';
+
+// Compose only structures supported by the existing offline writers.
+export async function composeShowCopy({source, destination, sha256, templateName, trackName, partName, cues, donor, set}) {
+ if (!path.isAbsolute(source) || !path.isAbsolute(destination) || path.resolve(source) === path.resolve(destination)) throw Error('Source and destination must be different absolute paths');
+ if (!Array.isArray(cues) || cues.length < 1 || cues.length > 100) throw Error('Provide between 1 and 100 cues');
+ const validDonor = value => value === undefined || value === null || (typeof value === 'object' && path.isAbsolute(value.file || '') && value.sha256 && value.name && value.cueId);
+ if (!validDonor(donor) || cues.some(cue => !validDonor(cue?.donor))) throw Error('Donor requires an absolute file path, SHA-256, timeline name and cue ID');
+ if (set && (!set.name || !set.setName)) throw Error('Set requires a set list part name and set name');
+ const initial = await inspectShow({file: source});
+ if (initial.sha256 !== sha256) throw Error('Source changed since inspection');
+ const dir = await mkdtemp(path.join(path.dirname(destination), '.showkontrol-compose-'));
+ let current = source, currentHash = sha256, published = false, result, index = 0;
+ const added = [];
+ try {
+  const step = async fn => {
+   const next = path.join(dir, `${index++}.skshow`);
+   const value = await fn(next);
+   const info = await inspectShow({file: next});
+   if (current !== source) await rm(current);
+   current = next; currentHash = info.sha256;
+   return value;
+  };
+  await step(next => createShowTrackCopy({source: current, destination: next, sha256: currentHash, templateName, trackName, partName}));
+  for (const cue of cues) {
+   const {layer, startMs, lengthMs, label} = cue || {};
+   const created = await step(next => addShowTimelineCueCopy({source: current, destination: next, sha256: currentHash, name: partName, layer, startMs, lengthMs, label}));
+   const item = {id: created.id, layer, startMs, lengthMs, label};
+   const selectedDonor = cue?.donor === undefined ? donor : cue.donor;
+   if (selectedDonor) {
+    const copied = await step(next => copyCueGraphInShow({source: current, destination: next, sha256: currentHash, name: partName, sourceName: selectedDonor.name, sourceCueId: selectedDonor.cueId, targetCueId: created.id, template: selectedDonor.file, templateSha256: selectedDonor.sha256}));
+    item.idMap = copied.idMap;
+   }
+   added.push(item);
+  }
+  if (set) await step(next => addShowSetlistTrackCopy({source: current, destination: next, sha256: currentHash, name: set.name, setName: set.setName, trackName}));
+  await link(current, destination); published = true;
+  result = {destination, sha256: currentHash, trackName, partName, cues: added, ...(set ? {set} : {}), note: 'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};
+ } finally {
+  try { await rm(dir, {recursive: true, force: true}); }
+  catch (error) { if (!published) throw error; result.cleanupWarning = `Published copy is valid, but temporary directory cleanup failed: ${dir}: ${error.message}`; }
+ }
+ return result;
+}

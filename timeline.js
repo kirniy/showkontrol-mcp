@@ -86,7 +86,31 @@ export async function inspectCueGraph({file,format,name,cueId}){
 function xmlNodeIds(xml){
  const ids=[];const p=new SaxesParser();p.on('opentag',tag=>{if(tag.name==='node'&&tag.attributes.id)ids.push(tag.attributes.id)});p.write(xml).close();return ids;
 }
-function regexEscape(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
+function remapCueGraph(xml,graph,idMap){
+ const replacements=[];
+ const walk=(node,parent)=>{
+  const supported=parent===graph&&node.name==='node'?['id']:parent===graph&&node.name==='connection'?['fromNode','toNode']:[];
+  for(const [key,value] of Object.entries(node.attributes))if(!supported.includes(key)&&/node|ref/i.test(key)&&Object.hasOwn(idMap,value))throw Error('Graph contains node references outside supported attributes');
+  if(supported.length){
+   const opening=xml.slice(node.start,node.openEnd),attr=/\s+([^\s=/>]+)\s*=\s*(["'])([\s\S]*?)\2/y;let pos=1+node.name.length;
+   while(pos<opening.length){
+    if(/^\s*\/?>$/.test(opening.slice(pos)))break;
+    attr.lastIndex=pos;const m=attr.exec(opening);if(!m)throw Error('Unsupported graph attribute serialization');
+    if(supported.includes(m[1])){
+     const value=node.attributes[m[1]];if(!Object.hasOwn(idMap,value))throw Error('Graph contains unsupported node references');
+     const start=node.start+pos+m[0].indexOf(m[2])+1;replacements.push({start,end:start+m[3].length,value:idMap[value]});
+    }
+    pos=attr.lastIndex;
+   }
+   for(const key of supported)if(!Object.hasOwn(node.attributes,key))throw Error('Graph node or connection is missing required attributes');
+  }
+  for(const child of node.children)walk(child,node);
+ };
+ walk(graph,null);
+ let result=xml.slice(graph.start,graph.end);
+ for(const r of replacements.sort((a,b)=>b.start-a.start))result=result.slice(0,r.start-graph.start)+r.value+result.slice(r.end-graph.start);
+ return result;
+}
 function cueElements(xml,cueId){
  return [...xml.matchAll(/<cue\b(?:[^"'<>]|"[^"]*"|'[^']*')*?(?:\/>|>[\s\S]*?<\/cue\s*>)/g)].filter(match=>{
   const opening=match[0].match(/^<cue\b(?:[^"'<>]|"[^"]*"|'[^']*')*?>/)[0];
@@ -129,11 +153,7 @@ export async function copyCueGraphInShow({source,destination,sha256,name,sourceN
  if(sm.length!==1||sm[0].selfClosing)throw Error('Unsupported source cue serialization');
  const gm=selectXmlSpans(sourceRoot,['sktimeline',{name:'cue',attributes:{id:sourceCueId}},'graph']);
  if(gm.length!==1||gm[0].selfClosing)throw Error('Unsupported graph serialization');
- let graph=sourceXml.slice(gm[0].start,gm[0].end);
- for(const [oldId,newId] of Object.entries(idMap)){
-  const re=new RegExp('((?:\\sid|\\sfromNode|\\stoNode)=["\\\'])'+regexEscape(oldId)+'(["\\\'])','g');graph=graph.replace(re,(_,a,b)=>a+newId+b);
- }
- for(const oldId of ids)if(new RegExp('(^|[^A-Za-z0-9_])'+regexEscape(oldId)+'([^A-Za-z0-9_]|$)').test(graph))throw Error('Graph contains node references outside supported attributes');
+ const graph=remapCueGraph(sourceXml,gm[0],idMap);
  const tm=selectXmlSpans(targetRoot,['sktimeline',{name:'cue',attributes:{id:targetCueId}}]);if(tm.length!==1)throw Error('Target cue must occur exactly once');
  const changed=insertCueGraph(xml,tm[0],graph);
  const expected={nodes:src.graph.nodes.map(node=>({...node,id:idMap[node.id]})),connections:src.graph.connections.map(connection=>({...connection,fromNode:idMap[connection.fromNode],toNode:idMap[connection.toNode]}))};
@@ -277,9 +297,7 @@ export async function copyCueGraphBetweenTimelines({source,destination,sha256,te
  const donorRoot=parseXmlSpans(donor.xml),targetRoot=parseXmlSpans(target.xml);
  const graphs=selectXmlSpans(donorRoot,['sktimeline',{name:'cue',attributes:{id:sourceCueId}},'graph']);if(graphs.length!==1||graphs[0].selfClosing)throw Error('Unsupported source graph serialization');
  const cues=selectXmlSpans(targetRoot,['sktimeline',{name:'cue',attributes:{id:targetCueId}}]);if(cues.length!==1)throw Error('Target cue must occur exactly once');
- let graph=donor.xml.slice(graphs[0].start,graphs[0].end);
- for(const [oldId,newId] of Object.entries(idMap)){const re=new RegExp('((?:\\sid|\\sfromNode|\\stoNode)=["\\\'])'+regexEscape(oldId)+'(["\\\'])','g');graph=graph.replace(re,(_,a,b)=>a+newId+b);}
- for(const oldId of ids)if(new RegExp('(^|[^A-Za-z0-9_])'+regexEscape(oldId)+'([^A-Za-z0-9_]|$)').test(graph))throw Error('Graph contains node references outside supported attributes');
+ const graph=remapCueGraph(donor.xml,graphs[0],idMap);
  const modified=insertCueGraph(target.xml,cues[0],graph);
  const expected={nodes:src.graph.nodes.map(node=>({...node,id:idMap[node.id]})),connections:src.graph.connections.map(c=>({...c,fromNode:idMap[c.fromNode],toNode:idMap[c.toNode]}))};
  if(JSON.stringify(cueGraph(modified,targetCueId).graph)!==JSON.stringify(expected))throw Error('Copied graph did not match selected source and target cues');

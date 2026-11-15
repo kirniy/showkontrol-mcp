@@ -259,3 +259,17 @@ test('add a fixture-supported setting to an empty cue node settings element',asy
  await assert.rejects(addCueGraphSettingCopy({...args,destination:path.join(dir,'wrong'),key:'action.category'}),/fixture/);await assert.rejects(addCueGraphSettingCopy({...args,destination:path.join(dir,'stale'),sha256:'0'.repeat(64)}),/changed/);
  const info=await inspectTimeline({file:destination});await assert.rejects(addCueGraphSettingCopy({...args,source:destination,destination:path.join(dir,'duplicate'),sha256:info.sha256}),/already exists/);
 });
+test('graph copies remap only node and connection attributes, preserving metadata',async t=>{
+ const {copyCueGraphBetweenTimelines}=await import('./timeline.js');const {readShowPart}=await import('./xml-copy.js');
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-graph-meta-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const graph=`<graph><node id = "n1" type="trigger"><settings><setting key="note" description=" id='n1' and fromNode='n1'">n1</setting></settings></node><connection fromNode = "n1" toNode = "n1"/></graph>`;
+ const donor=`<sktimeline version="1"><cue id="s">${graph}</cue></sktimeline>`,target='<sktimeline version="1"><cue id="t"/></sktimeline>';
+ const donorFile=path.join(dir,'donor.sktl'),targetFile=path.join(dir,'target.sktl'),out=path.join(dir,'out.sktl');await writeFile(donorFile,donor);await writeFile(targetFile,target);
+ const d=await inspectTimeline({file:donorFile}),tgt=await inspectTimeline({file:targetFile});
+ const standalone=await copyCueGraphBetweenTimelines({source:targetFile,destination:out,sha256:tgt.sha256,template:donorFile,templateSha256:d.sha256,sourceCueId:'s',targetCueId:'t'});
+ const output=await readFile(out,'utf8');assert.ok(output.includes(`description=" id='n1' and fromNode='n1'">n1</setting>`));assert.ok(output.includes(`id = "${standalone.idMap.n1}"`));assert.ok(output.includes(`fromNode = "${standalone.idMap.n1}"`));
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const show=path.join(dir,'show.skshow'),showOut=path.join(dir,'show-out.skshow');await writeFile(show,`<skshow>${part('Track.sktl',`<sktimeline version="1"><cue id="s">${graph}</cue><cue id="t"/></sktimeline>`)}</skshow>`);
+ const info=await inspectShowTimeline({file:show,name:'Track.sktl'});await copyCueGraphInShow({source:show,destination:showOut,sha256:info.sha256,name:'Track.sktl',sourceCueId:'s',targetCueId:'t'});
+ const xml=(await readShowPart({file:showOut,name:'Track.sktl'})).text;assert.equal(xml.split(`description=" id='n1' and fromNode='n1'">n1</setting>`).length-1,2);
+});
