@@ -1,6 +1,6 @@
 import {maskOpaqueNodeText,opaqueNodeWarnings} from './opaque-node-text.js';
 import {storedStoppedWarnings} from './stored-stopped-warnings.js';
-import {inspectXml,readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';import {hasXmlReference} from './xml-references.js';
+import {inspectXml,readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';import {hasXmlReference} from './xml-references.js';import {validateCopiedRouterTargets} from './patch-setting-to-cue.js';
 function walk(node,fn){fn(node);for(const child of node.children)walk(child,fn);}
 function withNewId(xml,node,id){
  const opening=xml.slice(node.start,node.openEnd),attr=/\s+([^\s=/>]+)\s*=\s*(["'])([^"']*(?:(?!\2)["'][^"']*)*)\2/y;let pos=5,found;
@@ -17,6 +17,7 @@ export async function copyPatchNodeToCueShowCopy({source,destination,sha256,name
  const xml=readSnapshotPart({snapshot:target,name}).text,root=parseXmlSpans(xml),cuePath=['sktimeline',{name:'cue',attributes:{id:cueId}}],cues=selectXmlSpans(root,cuePath),graphs=selectXmlSpans(root,[...cuePath,'graph']),oldNodes=selectXmlSpans(root,[...cuePath,'graph','node']);if(root.name!=='sktimeline'||root.attributes.version!=='1'||cues.length!==1||graphs.length!==1)throw Error('Target cue and graph must occur exactly once');
  let max=0;for(const part of target.parts.filter(p=>/\.(?:skf|sktl|sksc|skpr)$/i.test(p.name)))walk(parseXmlSpans(readSnapshotPart({snapshot:target,name:part.name}).text),n=>{if(n.name==='node'&&/^n\d+$/.test(n.attributes.id||'')){const id=Number(n.attributes.id.slice(1));if(!Number.isSafeInteger(id)||id>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,id);}});
  const oldId=Number(nodeId.slice(1));if(!Number.isSafeInteger(oldId)||oldId>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,oldId);if(max>=1000000000)throw Error('No node IDs remain in the supported range');const newNodeId=`n${max+1}`,copy=withNewId(donorXml,node,newNodeId);
+ validateCopiedRouterTargets(target,copy);
  const masked=maskOpaqueNodeText(copy,parseXmlSpans(copy),allowOpaqueNodeText);
  if(hasXmlReference(masked.masked,/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/,{ignoreRootId:true}))throw Error('Node contains unsupported internal references');
  const graph=graphs[0];let modified;if(graph.selfClosing){const opening=xml.slice(graph.start,graph.openEnd).replace(/\s*\/>$/,'>');modified=xml.slice(0,graph.start)+opening+copy+'</graph>'+xml.slice(graph.end);}else modified=xml.slice(0,graph.closeStart)+copy+xml.slice(graph.closeStart);

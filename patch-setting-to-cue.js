@@ -11,6 +11,17 @@ export function validateRouterTarget(target,value){
   }
   if(matches!==1)throw Error('Router target must match exactly one router name in the destination patch');
 }
+// A copied node keeps its route.router_target; check it as copy_cue_graph_show_copy does, so the copy does not fail validation.
+export function validateCopiedRouterTargets(target,nodeXml){
+  const node=parseXmlSpans(nodeXml),all=[],collect=n=>{if(n.name==='setting'&&n.attributes.key==='route.router_target')all.push(n);for(const c of n.children)collect(c);};collect(node);
+  const direct=node.children.filter(c=>c.name==='settings').flatMap(c=>c.children.filter(s=>s.name==='setting'&&s.attributes.key==='route.router_target'));
+  if(direct.length>1||all.length!==direct.length)throw Error('Invalid router target setting');
+  for(const setting of direct){
+   const value=scalarValue(nodeXml.slice(setting.start,setting.end));
+   if(node.attributes.type!=='action'||!value||value.trim()!==value||Object.keys(setting.attributes).length!==1)throw Error('Invalid router target setting');
+   validateRouterTarget(target,value);
+  }
+}
 export async function copyPatchSettingToCueShowCopy({source,destination,sha256,name,cueId,nodeId,template,templateFormat,templateSha256,templateNodeId,key,allowOpaqueNodeText}){
  if(allowOpaqueNodeText!==undefined&&typeof allowOpaqueNodeText!=='boolean')throw Error('allowOpaqueNodeText must be a boolean');
  if(key==='node.stopped')throw Error('Cannot copy node.stopped from a patch; use the cue node stopped-state tool');

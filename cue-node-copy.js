@@ -3,6 +3,7 @@ import {storedStoppedWarnings} from './stored-stopped-warnings.js';
 import {readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';
 import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';
 import {hasXmlReference} from './xml-references.js';
+import {validateCopiedRouterTargets} from './patch-setting-to-cue.js';
 export function supportedCueCopyNode(node){return ['groupin','trigger','action'].includes(node.type)||(node.type==='processor'&&node.kind==='')||(node.type==='generator'&&node.kind==='OSC');}
 export const cuePrototypeNote='Processor kind empty and generator kind OSC are patch prototypes only; cue acceptance and execution are unverified. External dependencies are not validated.';
 function walk(node,fn){fn(node);for(const child of node.children)walk(child,fn);}
@@ -27,6 +28,7 @@ export async function copyCueGraphNodeShowCopy({source,destination,sha256,name,c
  let max=0;for(const part of target.parts.filter(p=>/\.(?:skf|sktl|sksc|skpr)$/i.test(p.name))){const root=parseXmlSpans(readSnapshotPart({snapshot:target,name:part.name}).text);walk(root,n=>{if(n.name==='node'&&/^n\d+$/.test(n.attributes.id||'')){const num=Number(n.attributes.id.slice(1));if(!Number.isSafeInteger(num)||num>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,num);}});}
  const donorId=Number(nodeId.slice(1));if(!Number.isSafeInteger(donorId)||donorId>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,donorId);if(max>=1000000000)throw Error('No node IDs remain in the supported range');const newNodeId=`n${max+1}`;
  const {copy}=replaceId(donorXml,node,newNodeId);
+ validateCopiedRouterTargets(target,copy);
  const masked=maskOpaqueNodeText(copy,parseXmlSpans(copy),allowOpaqueNodeText);
  if(hasXmlReference(masked.masked,/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/,{ignoreRootId:true}))throw Error('Node contains unsupported internal references');
  const graph=targetGraph.graph;let modified;

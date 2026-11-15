@@ -168,7 +168,7 @@ Lanes and clips have no IDs. They are selected by `audioIndex` and `clipIndex`. 
 
 - `showkontrol_copy_cue_graph_timeline_copy`: copy a supported graph between standalone timeline files. The ID scan covers the target timeline only. It rejects ID-like references outside node IDs and connection endpoints and rejects router targets because it cannot check the destination patch. This conservative check can reject harmless text. Check the rest of the show for collisions before using the copy in a show. App acceptance remains unverified.
 
-- `showkontrol_copy_cue_graph_node_show_copy`: copy a supported node into an existing cue graph in a new show copy. It copies no wires and rejects ID-like internal references. App acceptance remains unverified.
+- `showkontrol_copy_cue_graph_node_show_copy`: copy a supported node into an existing cue graph in a new show copy. It copies no wires and rejects ID-like internal references. App acceptance remains unverified. An action node's `route.router_target` must name exactly one router in the destination `patch.skf`, as for `showkontrol_copy_cue_graph_show_copy`; the same check applies to `showkontrol_copy_patch_node_to_cue_show_copy` and to both graph assembly tools.
 
 - `showkontrol_copy_patch_node_to_cue_show_copy`: copy an action, trigger, Script processor, or OSC generator node from an offline patch into a cue graph. It copies no wires and rejects ID-like internal references. Script and OSC support uses stopped, disconnected patch nodes saved by R27; cue acceptance and execution are unverified. In one test, a copied notification action fired from a generated cue; other nodes and dependencies remain unverified.
 
