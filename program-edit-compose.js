@@ -1,13 +1,49 @@
 import {mkdtemp,rm,link,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {extractShowProgramCopy,createProgramCopy,attachShowProgramCopy,inspectShowProgram,editProgramItemGraphSettingCopy,extractProgramTimelineCopy,embedProgramTimelineCopy} from './program.js';
-import {editTimelineCueCopy,editCueGraphSettingCopy} from './timeline.js';
+import {addTimelineCueCopy,deleteTimelineCueCopy,editTimelineCueCopy,editCueGraphSettingCopy} from './timeline.js';
+import {readShowSnapshot,readSnapshotPart} from './xml-copy.js';
 import {validateShow} from './validate-show.js';
 import {parseXmlSpans} from './xml-spans.js';
 import {hasXmlReference} from './xml-references.js';
 
 function keys(value,required,optional=[]){
  if(!value||typeof value!=='object'||Array.isArray(value)||required.some(k=>!Object.hasOwn(value,k))||Object.keys(value).some(k=>!required.includes(k)&&!optional.includes(k)))throw Error('Unsupported edit composition input');
+}
+
+async function checkCueRemovalReferences(program,index,cueId,source,sha256){
+ const xml=await readFile(program,'utf8'),root=parseXmlSpans(xml),item=root.children[index];
+ if(!Number.isInteger(index)||index<0||!item)throw Error('Item index out of range');
+ const timelines=item.children.filter(n=>n.name==='sktimeline');
+ if(timelines.length!==1)throw Error('Item must contain exactly one timeline');
+ const cues=timelines[0].children.filter(n=>n.name==='cue'&&n.attributes.id===cueId);
+ if(cues.length!==1)throw Error('Cue ID must occur exactly once as a direct timeline child');
+ const cue=cues[0],ids=[];
+ function visit(node){
+  if(node.name==='node'||node.name==='cue'){
+   const id=node.attributes.id;
+   if(!id||id.length>1024||ids.includes(id))throw Error('Cannot safely remove cue with unidentified or ambiguous IDs');
+   ids.push(id);
+  }
+  for(const child of node.children)visit(child);
+ }
+ visit(cue);if(ids.length>1001)throw Error('Cue exceeds reference scan limit');
+ const alternatives=ids.sort((a,b)=>b.length-a.length).map(id=>id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('|');
+ const pattern=new RegExp(`(?<![A-Za-z0-9_])(?:${alternatives})(?![A-Za-z0-9_])`);
+ if(hasXmlReference(xml.slice(0,cue.start)+xml.slice(cue.end),pattern))throw Error('Cue or graph node has surviving XML references in Program');
+ const show=await readShowSnapshot({file:source});
+ if(show.sha256!==sha256)throw Error('Source changed since inspection');
+ if(show.parts.some(p=>!p.valid))throw Error('A part MD5 does not match');
+ const names=new Set();
+ for(const part of show.parts){
+  if(!/\.(?:skf|sktl|sksc|skls|skpr|skcp)$/i.test(part.name))continue;
+  if(names.has(part.name))throw Error('Duplicate supported XML part name');names.add(part.name);
+  if(part.name==='content/Program.skpr')continue;
+  let text;
+  try{text=readSnapshotPart({snapshot:show,name:part.name}).text;parseXmlSpans(text);}
+  catch{throw Error(`A supported XML part could not be scanned: ${part.name}`);}
+  if(hasXmlReference(text,pattern))throw Error(`Cue or graph node has surviving XML references in ${part.name}`);
+ }
 }
 
 // Inspect all descendants, including extensions, so that hidden definitions cannot be
@@ -46,6 +82,8 @@ export async function composeProgramEditsCopy(args){
   else if(op.action==='remove'){keys(op,['action','index'],['allowContentRemoval']);if(op.allowContentRemoval!==undefined&&typeof op.allowContentRemoval!=='boolean')throw Error('allowContentRemoval must be a boolean');}
   else if(op.action==='edit_graph_setting')keys(op,['action','index','nodeId','key','value']);
   else if(op.action==='edit_timeline_graph_setting')keys(op,['action','index','cueId','nodeId','key','value']);
+  else if(op.action==='add_timeline_cue')keys(op,['action','index','layer','startMs','lengthMs','label']);
+  else if(op.action==='delete_timeline_cue'){keys(op,['action','index','cueId'],['deleteGraph']);if(op.deleteGraph!==undefined&&typeof op.deleteGraph!=='boolean')throw Error('deleteGraph must be a boolean');}
   else if(op.action==='edit_timeline_cue'){
    keys(op,['action','index','cueId'],['layer','startMs','lengthMs','label']);
    if(['layer','startMs','lengthMs','label'].every(k=>op[k]===undefined))throw Error('Provide at least one cue field');
@@ -56,24 +94,33 @@ export async function composeProgramEditsCopy(args){
  try{
   let step=0;const next=()=>path.join(dir,`${step++}.skpr`);
   const warnings=new Set();
+  const createdCues=[];
   const collect=result=>{for(const warning of [...(result.warnings??[]),result.note])if(typeof warning==='string'&&warning)warnings.add(warning);};
   let program=next(),current=await extractShowProgramCopy({source,destination:program,sha256});collect(current);
-  for(const operation of operations){
+  for(const [operationIndex,operation] of operations.entries()){
    if(operation.action==='remove')await checkRemovalReferences(program,operation.index);
    const destination=next();
    if(operation.action==='edit_graph_setting'){
     const {index,nodeId,key,value}=operation;
     current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index,nodeId,key,value});
-   }else if(operation.action==='edit_timeline_cue'||operation.action==='edit_timeline_graph_setting'){
+   }else if(['edit_timeline_cue','edit_timeline_graph_setting','add_timeline_cue','delete_timeline_cue'].includes(operation.action)){
     const {index,cueId,layer,startMs,lengthMs,label}=operation;
     const timeline=path.join(dir,`${step++}.sktl`),edited=path.join(dir,`${step++}.sktl`);
     const extracted=await extractProgramTimelineCopy({source:program,destination:timeline,sha256:current.sha256,index});
     collect(extracted);
-    const changed=operation.action==='edit_timeline_cue'
+    if(operation.action==='delete_timeline_cue')await checkCueRemovalReferences(program,index,cueId,source,sha256);
+    const changed=operation.action==='add_timeline_cue'
+     ?await addTimelineCueCopy({source:timeline,destination:edited,sha256:extracted.sha256,layer,startMs,lengthMs,label})
+     :operation.action==='delete_timeline_cue'
+     ?await deleteTimelineCueCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,deleteGraph:operation.deleteGraph})
+     :operation.action==='edit_timeline_cue'
      ?await editTimelineCueCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,layer,startMs,lengthMs,label})
      :await editCueGraphSettingCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,nodeId:operation.nodeId,key:operation.key,value:operation.value});
-    collect(changed);
+    if(operation.action==='delete_timeline_cue')collect({...changed,note:'Deleted a cue from an offline Program copy. Literal XML references were checked; binary, encoded and external references may be missed. Validate in ShowKontrol.'});
+    else collect(changed);
+    if(operation.action==='add_timeline_cue')createdCues.push({operationIndex,index,id:changed.id});
     current=await embedProgramTimelineCopy({source:program,destination,sha256:current.sha256,index,donor:edited,donorSha256:changed.sha256,replaceExisting:true});
+    if(operation.action==='add_timeline_cue')await checkCueRemovalReferences(destination,index,changed.id,source,sha256);
    }else current=await createProgramCopy({source:program,destination,sha256:current.sha256,operation});
    collect(current);program=destination;
   }
@@ -85,6 +132,6 @@ export async function composeProgramEditsCopy(args){
   if(final.sha256!==attached.sha256||final.programSha256!==current.sha256)throw Error('Final show checksum mismatch');
   if((await inspectShowProgram({file:source})).sha256!==sha256)throw Error('Source changed since inspection');
   await link(candidate,destination);
-  return {destination,sha256:attached.sha256,programSha256:current.sha256,items:final.items,warnings:[...warnings],validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
+  return {destination,sha256:attached.sha256,programSha256:current.sha256,items:final.items,createdCues,warnings:[...warnings],validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
  }finally{await rm(dir,{recursive:true,force:true});}
 }

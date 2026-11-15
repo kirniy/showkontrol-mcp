@@ -3,6 +3,7 @@ import path from 'node:path';
 import {readShowSnapshot,readSnapshotPart,editShowPart,inspectShow} from './xml-copy.js';
 import {parseXmlSpans} from './xml-spans.js';
 import {parseSetlist} from './setlist.js';
+import {SaxesParser} from 'saxes';
 
 function changeAttribute(xml,node,key,value){
  const opening=xml.slice(node.start,node.openEnd), re=/\s+([^\s=/>]+)\s*=\s*("[^"]*"|'[^']*')/g;
@@ -13,6 +14,26 @@ function changeAttribute(xml,node,key,value){
  return {start:at,end:at+m[2].length-2,value:escaped};
 }
 function apply(xml,edits){for(const e of edits.sort((a,b)=>b.start-a.start))xml=xml.slice(0,e.start)+e.value+xml.slice(e.end);return xml;}
+function checkReferences(xml,part,oldName,{timeline=false,setlist=false}={}){
+ const pattern=new RegExp(oldName.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i'),parser=new SaxesParser(),stack=[];
+ const check=value=>{if(pattern.test(value))throw Error(`Track name has an unsupported reference in ${part}`);};
+ parser.on('doctype',()=>{throw Error(`Unsupported XML in ${part}`);});
+ parser.on('opentag',tag=>{
+  const path=[...stack.map(n=>n.name),tag.name].join('/');
+  for(const [key,value] of Object.entries(tag.attributes)){
+   if(timeline&&path==='sktimeline'&&key==='name'&&value===oldName)continue;
+   if(setlist&&path==='sksetlist/set/entry'&&key==='track'&&value===oldName)continue;
+   check(value);
+  }
+  stack.push({name:tag.name,text:''});
+ });
+ parser.on('text',text=>{if(stack.length)stack.at(-1).text+=text;});
+ parser.on('cdata',text=>{if(stack.length)stack.at(-1).text+=text;});
+ parser.on('comment',check);
+ parser.on('processinginstruction',instruction=>check(`${instruction.target} ${instruction.body}`));
+ parser.on('closetag',()=>{const node=stack.pop();check(node.text);if(stack.length)stack.at(-1).text+=node.text;});
+ parser.write(xml).close();
+}
 export async function renameShowTrackCopy({source,destination,sha256,oldName,newName}){
  if(!path.isAbsolute(source)||!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Source and destination must be different absolute paths');
  if(typeof oldName!=='string'||!oldName||typeof newName!=='string'||!newName.trim()||/[\x00-\x1f\ufffe\uffff]/u.test(newName))throw Error('Valid track names are required');
@@ -32,12 +53,17 @@ export async function renameShowTrackCopy({source,destination,sha256,oldName,new
   for(const set of root.children)for(const entry of set.children)if(entry.attributes.track===oldName){edits.push(changeAttribute(xml,entry,'track',newName));entries++;}
   if(edits.length){const modified=apply(xml,edits),expected=before.map(s=>({...s,tracks:s.tracks.map(t=>t===oldName?newName:t)}));if(JSON.stringify(parseSetlist(modified))!==JSON.stringify(expected))throw Error('Set list readback failed');changes.push({name:part.name,xml,modified});}
  }
+ for(const part of show.parts.filter(p=>/\.(?:skf|sktl|sksc|skls|skpr|skcp)$/i.test(p.name))){
+  const xml=readSnapshotPart({snapshot:show,name:part.name}).text;
+  parseXmlSpans(xml);
+  checkReferences(xml,part.name,oldName,{timeline:part.name===selected[0].name,setlist:part.name.toLowerCase().endsWith('.skls')});
+ }
  const check=parseXmlSpans(changes[0].modified);if(check.name!=='sktimeline'||check.attributes.name!==newName||check.attributes.version!=='1')throw Error('Timeline readback failed');
  const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-rename-'));let current=source,hash=sha256,published=false,result;
  try{
   for(let i=0;i<changes.length;i++){const next=path.join(dir,`${i}.skshow`),c=changes[i];await editShowPart({source:current,destination:next,sha256:hash,name:c.name,edits:[{find:c.xml,replace:c.modified}]});current=next;hash=(await inspectShow({file:current})).sha256;}
   if((await inspectShow({file:source})).sha256!==sha256)throw Error('Source changed since inspection');
-  await link(current,destination);published=true;result={destination,sha256:hash,part:selected[0].name,oldName,newName,entries,note:'Offline copy only. Other references and ShowKontrol acceptance are not checked.'};
+  await link(current,destination);published=true;result={destination,sha256:hash,part:selected[0].name,oldName,newName,entries,note:'Offline copy only. Literal references in supported XML parts were checked; binary, external and computed references and ShowKontrol acceptance are not checked.'};
  }finally{try{await rm(dir,{recursive:true,force:true});}catch(e){if(!published)throw e;result.cleanupWarning=`Temporary directory cleanup failed: ${dir}: ${e.message}`;}}
  return result;
 }
