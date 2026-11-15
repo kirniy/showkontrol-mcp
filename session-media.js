@@ -31,5 +31,15 @@ export async function inspectSessionMedia({directory}) {
   const {status,size}=await sidecarStatus(root,mapping.archivePath);
   findings.push({line:mapping.line,archivePath:mapping.archivePath,status,...(size!==undefined?{size}:{})});
  }
- return {directory:root,showSha256:show.sha256,findings,diagnostics:show.diagnostics,limitations:['Checks sidecar file metadata only; does not open media, compare contents, resolve original source paths, or test playback.','A matching path does not prove that ShowKontrol uses the sidecar or that the session is portable.']};
+ // Lanes and clips with the media.map row whose source path equals the clip file, for choosing audio edits and removals.
+ const scope=item=>({part:item.part,...(item.itemIndex!==undefined?{itemIndex:item.itemIndex}:{})});
+ const rows=new Map();for(const [i,m] of show.mappings.entries())rows.set(m.sourcePath,[...(rows.get(m.sourcePath)??[]),{m,finding:findings[i]}]);
+ const lanes=show.timelines.flatMap(t=>t.lanes.map(lane=>({...scope(t),...lane})));
+ const clips=show.clips.map(c=>{
+  const file=c.attributes.file,list=typeof file==='string'?rows.get(file)??[]:[];
+  // Duplicate source rows are reported as a diagnostic; none of them is chosen here.
+  const mapping=list.length===1?{line:list[0].m.line,archivePath:list[0].m.archivePath,sidecar:list[0].finding.status}:list.length?{ambiguousLines:list.map(r=>r.m.line)}:null;
+  return {...scope(c),audioIndex:c.audioIndex,clipIndex:c.clipIndex,attributes:c.attributes,mapping};
+ });
+ return {directory:root,showSha256:show.sha256,findings,lanes,clips,diagnostics:show.diagnostics,limitations:['Checks sidecar file metadata only; does not open media, compare contents, resolve original source paths, or test playback.','A matching path does not prove that ShowKontrol uses the sidecar or that the session is portable.','A clip mapping is an exact match of the clip file attribute to a media.map source path. Whether ShowKontrol resolves the clip through that row is unverified.']};
 }

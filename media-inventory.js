@@ -59,7 +59,7 @@ export async function inspectShowMedia({file}){
   for(const key of MEDIA_FIELDS)if(Object.hasOwn(root,key)){
    const value=root[key];mediaFields[key]=value.length>MAX_VALUE_CHARS?{length:value.length,valueOmitted:true}:{length:value.length,value};
   }
-  timelines.push({...scope,mediaFields,attributeMappings:mappedAttributes(root),audioLanes:timeline.audio.length,clipCount:timeline.audioClips.length});
+  timelines.push({...scope,mediaFields,attributeMappings:mappedAttributes(root),audioLanes:timeline.audio.length,clipCount:timeline.audioClips.length,lanes:timeline.audio.map((attributes,audioIndex)=>({audioIndex,attributes,clipCount:timeline.audioClips.filter(c=>c.audioIndex===audioIndex).length}))});
   if(timelines.length>MAX_ITEMS)throw Error('Timeline count exceeds inventory item limit');
   const laneClips=new Map();
   for(const clip of timeline.audioClips){

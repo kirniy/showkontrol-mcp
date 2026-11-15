@@ -262,13 +262,17 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
   if(clash)throw Error(`Sidecar ${archivePath} collides with ${clash}; names are compared without case after Unicode normalization. Choose another sidecarName`);
   keys.set(key,archivePath);added.push({mediaIndex:index,sourcePath:item.source,archivePath});
  }
- const resolvedTracks=(tracks??[]).map((track,trackIndex)=>!track||typeof track!=='object'||!Array.isArray(track.audioClips)?track:{...track,audioClips:track.audioClips.map((item,clipItemIndex)=>{
+ // mediaIndex selects a new media entry; its source path becomes the clip file.
+ const withMedia=(items,label,field,trackIndex)=>items.map((item,index)=>{
   if(!item||typeof item!=='object'||item.mediaIndex===undefined)return item;
   const {mediaIndex,...rest}=item;
-  if(!Number.isSafeInteger(mediaIndex)||!added[mediaIndex])throw Error(`Track ${trackIndex} audio clip ${clipItemIndex}: mediaIndex must select an entry in media`);
-  if(!rest.clip||typeof rest.clip!=='object'||Array.isArray(rest.clip)||Object.hasOwn(rest.clip,'file'))throw Error(`Track ${trackIndex} audio clip ${clipItemIndex}: mediaIndex supplies clip.file; omit file`);
-  return {...rest,clip:{...rest.clip,file:added[mediaIndex].sourcePath}};
- })});
+  if(!Number.isSafeInteger(mediaIndex)||!added[mediaIndex])throw Error(`Track ${trackIndex} ${label} ${index}: mediaIndex must select an entry in media`);
+  if(!rest[field]||typeof rest[field]!=='object'||Array.isArray(rest[field])||Object.hasOwn(rest[field],'file'))throw Error(`Track ${trackIndex} ${label} ${index}: mediaIndex supplies ${field}.file; omit file`);
+  return {...rest,[field]:{...rest[field],file:added[mediaIndex].sourcePath}};
+ });
+ const resolvedTracks=(tracks??[]).map((track,trackIndex)=>!track||typeof track!=='object'?track:{...track,
+  ...(Array.isArray(track.audioClips)?{audioClips:withMedia(track.audioClips,'audio clip','clip',trackIndex)}:{}),
+  ...(Array.isArray(track.audioClipEdits)?{audioClipEdits:withMedia(track.audioClipEdits,'audio clip edit','attributes',trackIndex)}:{})});
  const copies=[],missing=[];let total=0;
  for(const entry of existing.values()){
   const status=await sidecarStatus(root,entry.archivePath);
@@ -372,6 +376,18 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
    if(!row)warnings.push({code:'clip_file_unmapped',trackIndex,clipItemIndex,file,message:'The clip file is not a media.map source path in the new session.'});
    else if(allowedMissing.has(row.archivePath))warnings.push({code:'clip_sidecar_missing',trackIndex,clipItemIndex,file,archivePath:row.archivePath});
   }
+  // A clip edit that sets file changes the clip media; link it like a new clip.
+  for(const [trackIndex,track] of resolvedTracks.entries())for(const [clipEditIndex,edit] of (track?.audioClipEdits??[]).entries()){
+   if(!edit?.attributes||!Object.hasOwn(edit.attributes,'file'))continue;
+   const file=edit.attributes.file,row=rowsBySource.get(file);
+   clipLinks.push({trackIndex,clipEditIndex,file,...(row?{mappingLine:row.line,archivePath:row.archivePath,sidecar:sidecarState(row)}:{mappingLine:null})});
+   if(!row)warnings.push({code:'clip_file_unmapped',trackIndex,clipEditIndex,file,message:'The edited clip file is not a media.map source path in the new session.'});
+   else if(allowedMissing.has(row.archivePath))warnings.push({code:'clip_sidecar_missing',trackIndex,clipEditIndex,file,archivePath:row.archivePath});
+  }
+  // Rows are never removed. Report rows that a clip named before the composition and none names now.
+  const named=clips=>new Set(clips.map(c=>c.attributes.file).filter(f=>typeof f==='string'));
+  const namedBefore=named(inventory.clips),namedAfter=named(staged.clips);
+  for(const row of inventory.mappings)if(namedBefore.has(row.sourcePath)&&!namedAfter.has(row.sourcePath))warnings.push({code:'mapping_no_longer_referenced',line:row.line,sourcePath:row.sourcePath,archivePath:row.archivePath,message:'No track or Program clip in the new session.skshow names this source path. The media.map row and its sidecar are kept.'});
   // Program item clips come from the staged inventory, including clips embedded from staged tracks.
   const programClipLinks=program===undefined?undefined:staged.clips.filter(c=>c.itemIndex!==undefined).map(c=>{
    const file=c.attributes.file??null,row=typeof file==='string'?rowsBySource.get(file):undefined,scope={itemIndex:c.itemIndex,audioIndex:c.audioIndex,clipIndex:c.clipIndex};

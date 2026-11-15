@@ -481,12 +481,13 @@ export async function addCueGraphSettingCopy({source,destination,format,sha256,n
  return {...result,cueId,nodeId,key,value,note:'Added a fixture-supported setting to an offline cue graph. Values and ShowKontrol acceptance are not validated.'};
 }
 
-// Edit only existing attributes on a direct audio clip.
+// Edit only existing attributes on a direct audio clip. Text fields follow the add-clip limits.
 export async function editTimelineAudioClipCopy({source,destination,format,sha256,name,audioIndex,clipIndex,attributes}) {
- const allowed=['pps','offsetMs','vol','trimStartMs','trimEndMs','fadeInMs','fadeOutMs'];
+ const allowed=['name','file','wave','grid','pps','offsetMs','vol','trimStartMs','trimEndMs','fadeInMs','fadeOutMs'];
  if(!['sktl','skshow'].includes(format))throw Error('Format must be sktl or skshow');
  if(!Number.isSafeInteger(audioIndex)||audioIndex<0||!Number.isSafeInteger(clipIndex)||clipIndex<0)throw Error('Audio and clip indices must be non-negative integers');
  if(!attributes||typeof attributes!=='object'||Array.isArray(attributes)||!Object.keys(attributes).length||Object.entries(attributes).some(([key,value])=>!allowed.includes(key)||typeof value!=='string'))throw Error('Provide supported attributes as strings');
+ for(const key of ['name','file','wave','grid'])if(Object.hasOwn(attributes,key)&&(attributes[key].length>4096||/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(attributes[key])))throw Error(`Clip ${key} must be at most 4096 characters without control characters`);
  let xml,actual;
  if(format==='skshow'){
   if(!name||!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
@@ -498,6 +499,8 @@ export async function editTimelineAudioClipCopy({source,destination,format,sha25
  const root=parseXmlSpans(xml),lanes=root.children.filter(n=>n.name==='audio');
  const clip=lanes[audioIndex]?.children.filter(n=>n.name==='clip')[clipIndex];
  if(!clip)throw Error('Audio clip index is outside the existing direct clips');
+ // The meaning of wave and grid is unverified; they may describe the previous media.
+ if(Object.hasOwn(attributes,'file')&&attributes.file!==clip.attributes.file)for(const key of ['wave','grid'])if(clip.attributes[key]&&!Object.hasOwn(attributes,key))throw Error(`Changing the clip file requires an explicit ${key} value because the existing nonempty ${key} may describe the previous media`);
  const opening=xml.slice(clip.start,clip.openEnd),replacements=[];
  const attr=/\s+([^\s=/>]+)\s*=\s*(["'])([\s\S]*?)\2/y;let pos='<clip'.length;
  while(pos<opening.length){
@@ -516,7 +519,8 @@ export async function editTimelineAudioClipCopy({source,destination,format,sha25
  if(!checked||Object.entries(attributes).some(([key,value])=>checked.attributes[key]!==value))throw Error('Clip edit did not preserve requested values');
  const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};
  const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
- return {...result,audioIndex,clipIndex,attributes,note:'Changed existing audio clip attributes in an offline copy. Value meanings and ShowKontrol acceptance are not validated.'};
+ const previous=Object.fromEntries(Object.keys(attributes).map(key=>[key,clip.attributes[key]]));
+ return {...result,audioIndex,clipIndex,attributes,previous,note:`Changed existing audio clip attributes in an offline copy.${Object.hasOwn(attributes,'file')?' The new file is not opened; media format, duration against the trims, waveform caches and media.map rows are not checked.':''} Value meanings and ShowKontrol acceptance are not validated.`};
 }
 
 // Add a clip shaped like the R27 imported-WAV fixture to an existing lane.
@@ -560,4 +564,75 @@ export async function addTimelineAudioLaneCopy({source,destination,format,sha256
  const verified=parseTimeline(modified);if(verified.audio.length!==parsed.audio.length+1||verified.audio.at(-1)?.name!==laneName)throw Error('Audio lane could not be preserved');
  const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
  return {...result,audioIndex:lanes.length,laneName,follow,note:'Added an offline lane using an app-saved structure. App acceptance and follow behavior are unverified.'};
+}
+
+// Read one timeline and, for a show, the other XML parts that may hold references (set lists name tracks and sets only).
+async function readTimelineSource({source,format,sha256,name,withParts=false}){
+ if(!['sktl','skshow'].includes(format))throw Error('Format must be sktl or skshow');
+ let xml,actual,parts=[];
+ if(format==='skshow'){
+  if(!name||!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
+  const show=await readShowSnapshot({file:source});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
+  actual=show.sha256;xml=readSnapshotPart({snapshot:show,name}).text;
+  if(withParts)parts=show.parts.filter(p=>p.name!==name&&/\.(?:skf|sktl|sksc|skpr|skcp)$/i.test(p.name)).map(p=>({name:p.name,xml:readSnapshotPart({snapshot:show,name:p.name}).text}));
+ }else ({xml,sha256:actual}=await inspectXml({file:source}));
+ if(actual!==sha256)throw Error('Source changed since inspection');
+ parseTimeline(xml);return {xml,parts};
+}
+const writeTimelineEdit=({format,source,destination,sha256,name,xml,modified})=>{const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};return format==='skshow'?editShowPart({...args,name}):editXmlCopy(args);};
+const descendantsOf=node=>[node,...node.children.flatMap(descendantsOf)];
+// Observed clips and lanes carry no IDs. An id would allow references that cannot be checked here.
+const hasIdentity=node=>descendantsOf(node).some(n=>Object.hasOwn(n.attributes,'id'));
+const directClips=(root,audioIndex)=>root.children.filter(n=>n.name==='audio')[audioIndex]?.children.filter(n=>n.name==='clip');
+const clipList=xml=>parseTimeline(xml).audioClips.map(c=>JSON.stringify([c.audioIndex,c.attributes]));
+
+// Remove one direct audio clip element. Every other byte is unchanged.
+export async function removeTimelineAudioClipCopy({source,destination,format,sha256,name,audioIndex,clipIndex}) {
+ if(!Number.isSafeInteger(audioIndex)||audioIndex<0||!Number.isSafeInteger(clipIndex)||clipIndex<0)throw Error('Audio and clip indices must be non-negative integers');
+ const {xml}=await readTimelineSource({source,format,sha256,name});
+ const clip=directClips(parseXmlSpans(xml),audioIndex)?.[clipIndex];
+ if(!clip)throw Error('Audio clip index is outside the existing direct clips');
+ if(hasIdentity(clip))throw Error('Clip carries an id attribute; references to it cannot be checked');
+ const modified=xml.slice(0,clip.start)+xml.slice(clip.end);
+ const before=clipList(xml),after=clipList(modified),flat=parseTimeline(xml).audioClips.findIndex(c=>c.audioIndex===audioIndex)+clipIndex;
+ before.splice(flat,1);if(after.join('\n')!==before.join('\n'))throw Error('Clip removal did not preserve the other clips');
+ const result=await writeTimelineEdit({format,source,destination,sha256,name,xml,modified});
+ return {...result,audioIndex,clipIndex,removed:clip.attributes,remainingClips:directClips(parseXmlSpans(modified),audioIndex).length,note:'Removed one audio clip in an offline copy. Later clips in the lane move down one index. Media files and media.map rows are unchanged. ShowKontrol acceptance is unverified.'};
+}
+
+// A lane name equal to an attribute value or element text elsewhere may be a reference.
+// Track, lane and clip names are definitions, not references.
+function laneNameReference(xml,laneName){
+ const parser=new SaxesParser(),stack=[];let found=false;
+ parser.on('opentag',tag=>{
+  stack.push({name:tag.name,text:''});const at=stack.map(n=>n.name).join('/');
+  for(const [key,value] of Object.entries(tag.attributes)){
+   if(key==='name'&&(tag.name==='sktimeline'||/(?:^|\/)sktimeline\/audio(?:\/clip)?$/.test(at)))continue;
+   if(value===laneName)found=true;
+  }
+ });
+ parser.on('text',text=>{if(stack.length)stack.at(-1).text+=text;});parser.on('cdata',text=>{if(stack.length)stack.at(-1).text+=text;});
+ parser.on('closetag',()=>{if(stack.pop().text===laneName)found=true;});
+ parser.write(xml).close();return found;
+}
+
+// Remove one direct audio lane. Clips go only with removeClips; any other lane content is rejected.
+export async function removeTimelineAudioLaneCopy({source,destination,format,sha256,name,audioIndex,removeClips=false}) {
+ if(!Number.isSafeInteger(audioIndex)||audioIndex<0)throw Error('Audio index must be a non-negative integer');
+ if(typeof removeClips!=='boolean')throw Error('removeClips must be a boolean');
+ const {xml,parts}=await readTimelineSource({source,format,sha256,name,withParts:true});
+ const lane=parseXmlSpans(xml).children.filter(n=>n.name==='audio')[audioIndex];
+ if(!lane)throw Error('Audio lane does not exist');
+ if(lane.children.some(n=>n.name!=='clip'))throw Error('Audio lane contains unsupported content');
+ if(!lane.selfClosing){let cursor=lane.openEnd;for(const child of [...lane.children,{start:lane.closeStart,end:lane.closeStart}]){if(xml.slice(cursor,child.start).trim())throw Error('Audio lane contains unsupported text');cursor=child.end;}}
+ if(lane.children.length&&!removeClips)throw Error('Audio lane contains clips; set removeClips to true');
+ if(hasIdentity(lane))throw Error('Audio lane or clip carries an id attribute; references to it cannot be checked');
+ const modified=xml.slice(0,lane.start)+xml.slice(lane.end),laneName=lane.attributes.name;
+ if(laneName)for(const item of [{name:format==='skshow'?name:source,xml:modified},...parts])if(laneNameReference(item.xml,laneName))throw Error(`Audio lane name ${JSON.stringify(laneName)} appears literally in ${item.name}; it may be a reference`);
+ const before=parseTimeline(xml),after=parseTimeline(modified);
+ const expected=before.audioClips.filter(c=>c.audioIndex!==audioIndex).map(c=>JSON.stringify([c.audioIndex>audioIndex?c.audioIndex-1:c.audioIndex,c.attributes]));
+ const lanesExpected=before.audio.filter((_,i)=>i!==audioIndex).map(a=>JSON.stringify(a));
+ if(after.audio.map(a=>JSON.stringify(a)).join('\n')!==lanesExpected.join('\n')||clipList(modified).join('\n')!==expected.join('\n'))throw Error('Lane removal did not preserve the other lanes');
+ const result=await writeTimelineEdit({format,source,destination,sha256,name,xml,modified});
+ return {...result,audioIndex,removed:lane.attributes,removedClips:lane.children.map(c=>c.attributes),note:'Removed one audio lane in an offline copy. Later lanes move down one index; whether anything refers to lanes by position is unknown. Literal name references in supported XML were checked. Media files and media.map rows are unchanged. ShowKontrol acceptance is unverified.'};
 }

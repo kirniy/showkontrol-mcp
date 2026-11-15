@@ -18,7 +18,7 @@ test('edits only selected attribute spans and checks failures before output',asy
  assert.equal(output,xml.replace('vol="old" pps="1"','vol="a&amp;&lt;&quot;&apos;&#xA;" pps="1"'));
  assert.equal((await inspectTimeline({file:destination})).audioClips[1].attributes.vol,args.attributes.vol);
  await assert.rejects(editTimelineAudioClipCopy(args));assert.equal(await readFile(destination,'utf8'),output);
- for(const [changes,pattern] of [[{sha256:'0'.repeat(64)},/changed/],[{clipIndex:9},/index/],[{attributes:{fadeInMs:'1'}},/must exist/],[{attributes:{file:'x'}},/supported/],[{attributes:{vol:'\u0000'}},/Invalid XML/]]){
+ for(const [changes,pattern] of [[{sha256:'0'.repeat(64)},/changed/],[{clipIndex:9},/index/],[{attributes:{fadeInMs:'1'}},/must exist/],[{attributes:{deck:'x'}},/supported/],[{attributes:{file:'x'}},/file must exist/],[{attributes:{vol:'\u0000'}},/Invalid XML/]]){
   const target=path.join(dir,`failed-${Math.random()}.sktl`);await assert.rejects(editTimelineAudioClipCopy({...args,...changes,destination:target}),pattern);await assert.rejects(access(target));
  }
  const bad=path.join(dir,'bad.sktl');await writeFile(bad,'<sktimeline>');const target=path.join(dir,'bad-out.sktl');await assert.rejects(editTimelineAudioClipCopy({...args,source:bad,destination:target}));await assert.rejects(access(target));
