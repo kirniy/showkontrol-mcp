@@ -19,7 +19,10 @@ export async function editCueGraphWireCopy({source,destination,format,sha256,nam
  }else ({xml,sha256:actual}=await inspectXml({file:source}));
  if(actual!==sha256)throw Error('Source changed since inspection');
  const before=graphInfo(xml,cueId),from=before.nodes.find(n=>n.attributes.id===fromNode),to=before.nodes.find(n=>n.attributes.id===toNode);if(!from||!to)throw Error('Both connection nodes must exist');
- if(!((from.attributes.type==='groupin'&&to.attributes.type==='trigger')||(from.attributes.type==='trigger'&&to.attributes.type==='action')))throw Error('Only fixture-supported groupin-to-trigger or trigger-to-action connections are supported');
+ const f=from.attributes,t=to.attributes,processor=n=>n.type==='processor'&&n.kind==='',osc=n=>n.type==='generator'&&n.kind==='OSC';
+ const fixture=(f.type==='groupin'&&t.type==='trigger')||(f.type==='trigger'&&t.type==='action');
+ const candidate=(f.type==='trigger'&&processor(t))||(processor(f)&&t.type==='action')||(processor(f)&&osc(t))||(f.type==='trigger'&&osc(t));
+ if(!fixture&&!candidate)throw Error('Only fixture-supported or candidate pin 0 connections are supported');
  const equal=a=>a.fromNode===fromNode&&a.fromPin==='0'&&a.toNode===toNode&&a.toPin==='0',matching=before.connections.filter(c=>equal(c.attributes));let modified;
  if(operation==='add'){
   if(matching.length)throw Error('Connection already exists');if(before.connections.some(c=>c.attributes.toNode===toNode&&c.attributes.toPin==='0'))throw Error('Target input is already connected');
@@ -30,5 +33,5 @@ export async function editCueGraphWireCopy({source,destination,format,sha256,nam
  const after=graphInfo(modified,cueId),actualCount=after.connections.filter(c=>equal(c.attributes)).length;
  if(actualCount!==(operation==='add'?1:0)||after.connections.length!==before.connections.length+(operation==='add'?1:-1)||JSON.stringify(after.nodes.map(n=>n.attributes))!==JSON.stringify(before.nodes.map(n=>n.attributes)))throw Error('Graph wire edit did not produce expected result');
  const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
- return {...result,cueId,operation,fromNode,fromPin:0,toNode,toPin:0,note:'Changed a fixture-supported pin 0 connection in an offline cue graph. Validate operation in ShowKontrol.'};
+ return {...result,cueId,operation,fromNode,fromPin:0,toNode,toPin:0,note:candidate?'Changed a candidate pin 0 connection in an offline cue graph. Cue graph acceptance and execution are unverified in ShowKontrol.':'Changed a fixture-supported pin 0 connection in an offline cue graph. Validate operation in ShowKontrol.'};
 }

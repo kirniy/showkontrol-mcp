@@ -19,3 +19,14 @@ test('reject noncanonical pin values before modifying a cue graph',async t=>{
   await assert.rejects(editCueGraphWireCopy({source,destination,format:'sktl',sha256,cueId:'c1',operation:'add',fromNode:'n1',toNode:'n2'}),/invalid connection/);await assert.rejects(readFile(destination),/ENOENT/);assert.equal(await readFile(source,'utf8'),xml);
  }
 });
+test('candidate wires require the documented processor and generator kinds',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-cue-candidates-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const nodes='<node id="t" type="trigger"/><node id="p" type="processor" kind=""/><node id="a" type="action"/><node id="o" type="generator" kind="OSC"/><node id="badp" type="processor" kind="other"/><node id="missingp" type="processor"/><node id="badg" type="generator" kind="other"/><node id="missingg" type="generator"/><node id="unknown" type="unknown"/>';
+ const source=path.join(dir,'in.sktl'),xml=`<sktimeline version="1"><cue id="c"><graph>${nodes}</graph></cue></sktimeline>`;await writeFile(source,xml);const {sha256}=await inspectTimeline({file:source}),base={source,format:'sktl',sha256,cueId:'c',operation:'add'};
+ for(const [fromNode,toNode] of [['t','p'],['p','a'],['p','o'],['t','o']]){
+  const destination=path.join(dir,`${fromNode}-${toNode}.sktl`),result=await editCueGraphWireCopy({...base,destination,fromNode,toNode});assert.match(result.note,/candidate.*acceptance and execution are unverified/i);const graph=(await inspectCueGraph({file:destination,format:'sktl',cueId:'c'})).graph;assert.equal(graph.connections.length,1);assert.equal(graph.connections[0].fromPin,'0');assert.equal(graph.connections[0].toPin,'0');
+  const next=await inspectTimeline({file:destination}),removed=destination+'.removed';await editCueGraphWireCopy({...base,source:destination,destination:removed,sha256:next.sha256,operation:'remove',fromNode,toNode});assert.equal((await inspectCueGraph({file:removed,format:'sktl',cueId:'c'})).graph.connections.length,0);
+ }
+ for(const [fromNode,toNode] of [['t','badp'],['t','missingp'],['badp','a'],['missingp','a'],['badp','o'],['p','badg'],['p','missingg'],['t','badg'],['t','missingg'],['unknown','a']]){const destination=path.join(dir,`bad-${fromNode}-${toNode}`);await assert.rejects(editCueGraphWireCopy({...base,destination,fromNode,toNode}),/supported/);await assert.rejects(readFile(destination),/ENOENT/);}
+ const occupied=path.join(dir,'occupied');const first=path.join(dir,'t-o.sktl'),next=await inspectTimeline({file:first});await assert.rejects(editCueGraphWireCopy({...base,source:first,destination:occupied,sha256:next.sha256,fromNode:'p',toNode:'o'}),/already connected/);await assert.rejects(readFile(occupied),/ENOENT/);assert.equal(await readFile(source,'utf8'),xml);
+});

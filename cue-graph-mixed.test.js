@@ -6,3 +6,30 @@ test('assemble fixture cue nodes and app-saved patch notification into a new cue
  const result=await assembleMixedCueGraphShowCopy(args);assert.equal(new Set(result.nodeIds).size,3);const graph=(await inspectCueGraph({file:destination,format:'skshow',name,cueId:'dst'})).graph;assert.deepEqual(graph.nodes.map(n=>n.type),['groupin','trigger','action']);assert.equal(graph.connections.length,2);assert.equal(graph.nodes[2].settings.find(s=>s.key==='action.t7').value,'Feedback/Notify');assert.equal(graph.nodes[2].settings.find(s=>s.key==='notify.message').value,'Stored action fixture');assert.equal(await readFile(source,'utf8'),input);assert.equal(await readFile(patchTemplate,'utf8'),patch);
  await assert.rejects(assembleMixedCueGraphShowCopy({...args,destination:failed,nodes:[...nodes.slice(0,2),{...nodes[2],templateSha256:'0'.repeat(64)}]}),/Template changed/);await assert.rejects(readFile(failed),/ENOENT/);assert.deepEqual((await readdir(dir)).sort(),['cue.skshow','out.skshow','patch.skf','target.skshow']);
 });
+
+test('mixed assembly reports patch prototype limits and preserves captured settings',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-mixed-prototype-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'in.skshow'),template=path.join(dir,'patch.skf'),destination=path.join(dir,'out.skshow'),name='content/Track.sktl';
+ const part=(n,text)=>`<part name="${n}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const input=`<skshow>${part(name,'<sktimeline version="1"><cue id="dst"><graph/></cue></sktimeline>')}${part('patch.skf','<showkontrol version="2"/>')}</skshow>`;
+ const donor=`<showkontrol version="2"><graph><node id="n862" type="processor" x="2603.152" y="120" title="fixture" layer="-1" kind="" stopped="1">
+      <settings>
+        <setting key="node.stopped">true</setting>
+      </settings>
+    </node><node id="n864" type="generator" x="2603.152" y="120" title="fixture" layer="-1" kind="OSC" stopped="1">
+      <settings>
+        <setting key="node.stopped">true</setting>
+        <setting key="gen.enabled">false</setting>
+      </settings>
+    </node></graph></showkontrol>`;
+ await writeFile(source,input);await writeFile(template,donor);const templateSha256=createHash('sha256').update(donor).digest('hex');
+ const result=await assembleMixedCueGraphShowCopy({source,destination,sha256:createHash('sha256').update(input).digest('hex'),name,cueId:'dst',nodes:['n862','n864'].map(nodeId=>({kind:'patch',template,templateSha256,templateFormat:'skf',nodeId}))});
+ assert.match(result.note,/patch prototypes only; cue acceptance and execution are unverified/);assert.equal(result.warnings.length,2);
+ const graph=(await inspectCueGraph({file:destination,format:'skshow',name,cueId:'dst'})).graph;
+ assert.equal(graph.nodes[0].settings.find(s=>s.key==='node.stopped').value,'true');assert.equal(graph.nodes[1].settings.find(s=>s.key==='node.stopped').value,'true');assert.equal(graph.nodes[1].settings.find(s=>s.key==='gen.enabled').value,'false');
+});
+test('assemble candidate processor and OSC wires and roll back an occupied input',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-mixed-candidate-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'source.skshow'),template=path.join(dir,'patch.skf'),destination=path.join(dir,'out.skshow'),failed=path.join(dir,'failed.skshow'),name='content/Track.sktl';const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const original=`<skshow>${part(name,'<sktimeline version="1"><cue id="c"/></sktimeline>')}</skshow>`,patch='<showkontrol version="2"><graph><node id="n1" type="trigger" kind=""/><node id="n2" type="processor" kind=""/><node id="n3" type="action" kind=""/><node id="n4" type="generator" kind="OSC"/></graph></showkontrol>';await writeFile(source,original);await writeFile(template,patch);const {sha256}=await inspectShowTimeline({file:source,name}),donor=await inspectXml({file:template}),nodes=['n1','n2','n3','n4'].map(nodeId=>({kind:'patch',template,templateSha256:donor.sha256,templateFormat:'skf',nodeId})),args={source,destination,sha256,name,cueId:'c',nodes,wires:[{from:0,to:1},{from:1,to:2},{from:1,to:3}]};
+ await assembleMixedCueGraphShowCopy(args);assert.equal((await inspectCueGraph({file:destination,format:'skshow',name,cueId:'c'})).graph.connections.length,3);await assert.rejects(assembleMixedCueGraphShowCopy({...args,destination:failed,wires:[...args.wires,{from:0,to:3}]}),/already connected/);await assert.rejects(readFile(failed),/ENOENT/);assert.equal(await readFile(source,'utf8'),original);
+});

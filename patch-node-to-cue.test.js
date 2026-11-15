@@ -8,3 +8,24 @@ test('copy app-saved FeedbackNotify patch node into a cue graph',async t=>{
  const donorShow=path.join(dir,'donor.skshow'),wrapped=`<skshow>${part('patch.skf',donor)}</skshow>`;await writeFile(donorShow,wrapped);const wrappedSha=createHash('sha256').update(wrapped).digest('hex');await copyPatchNodeToCueShowCopy({...args,destination:path.join(dir,'wrapped-out'),template:donorShow,templateFormat:'skshow',templateSha256:wrappedSha});
  const badDonor=donor.replace('Stored action fixture','n<![CDATA[12]]>');await writeFile(template,badDonor);const badInfo=await inspectXml({file:template});await assert.rejects(copyPatchNodeToCueShowCopy({...args,destination:path.join(dir,'ref'),templateSha256:badInfo.sha256}),/unsupported internal references/);
 });
+
+test('copy only the captured processor and OSC generator patch prototypes',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-patch-prototype-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'in.skshow'),template=path.join(dir,'donor.skf'),name='content/Track.sktl';
+ const part=(n,text)=>`<part name="${n}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const timeline='<sktimeline version="1"><cue id="dst"><graph marker="keep"><node id="n900" type="action"/></graph></cue></sktimeline>';
+ const patch=part('patch.skf','<showkontrol version="2"><graph><node id="n950"/></graph></showkontrol>');
+ const original=`<skshow>${part(name,timeline)}${patch}</skshow>`;await writeFile(source,original);
+ const sourceSha=createHash('sha256').update(original).digest('hex');
+ const run=async(node,destination)=>{const donor=`<showkontrol version="2"><graph>${node}<connection fromNode="n1" toNode="n2"/></graph></showkontrol>`;await writeFile(template,donor);return copyPatchNodeToCueShowCopy({source,destination,sha256:sourceSha,name,cueId:'dst',template,templateFormat:'skf',templateSha256:createHash('sha256').update(donor).digest('hex'),nodeId:'n862'});};
+ for(const [type,kind] of [['processor',''],['generator','OSC']]){
+  const node=`<node id="n862" type="${type}" x="2603.152" y="120" title="fixture" layer="-1" kind="${kind}" stopped="1">\n      <settings>\n        <setting key="node.stopped">true</setting>${type==='generator'?'\n        <setting key="gen.enabled">false</setting>':''}\n      </settings>\n    </node>`;
+  const destination=path.join(dir,type);const result=await run(node,destination);assert.equal(result.newNodeId,'n951');assert.match(result.note,/patch prototypes only; cue acceptance and execution are unverified/);assert.equal(result.warnings[0].code,'stored_stopped_cue_node');
+  const {readShowSnapshot,readSnapshotPart}=await import('./xml-copy.js');const output=await readShowSnapshot({file:destination});const actual=readSnapshotPart({snapshot:output,name}).text;
+  assert.equal(actual,timeline.replace('</graph>',node.replace('n862','n951')+'</graph>'));assert.ok((await readFile(destination,'utf8')).includes(patch));assert.equal(await readFile(source,'utf8'),original);
+ }
+ for(const [type,kind] of [['processor','OSC'],['processor','other'],['generator',''],['generator','osc'],['other','OSC']]){
+  const destination=path.join(dir,`bad-${type}-${kind||'empty'}`);await assert.rejects(run(`<node id="n862" type="${type}" kind="${kind}"/>`,destination),/supported/);await assert.rejects(readFile(destination),/ENOENT/);
+ }
+ const failed=path.join(dir,'ref');await assert.rejects(run('<node id="n862" type="processor" kind=""><settings><setting key="ref">n<![CDATA[42]]></setting></settings></node>',failed),/unsupported internal references/);await assert.rejects(readFile(failed),/ENOENT/);
+});

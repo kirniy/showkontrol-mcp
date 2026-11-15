@@ -7,19 +7,19 @@ export async function assembleMixedCueGraphShowCopy({source,destination,sha256,n
  for(const w of wires)if(!w||!Number.isInteger(w.from)||!Number.isInteger(w.to)||w.from<0||w.to<0||w.from>=nodes.length||w.to>=nodes.length)throw Error('Wire indices must identify supplied nodes');
  const snapshot=await readShowSnapshot({file:source});if(snapshot.sha256!==sha256)throw Error('Source changed since inspection');if(!snapshot.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
  const xml=readSnapshotPart({snapshot,name}).text,root=parseXmlSpans(xml),cuePath=['sktimeline',{name:'cue',attributes:{id:cueId}}],cues=selectXmlSpans(root,cuePath),graphs=selectXmlSpans(root,[...cuePath,'graph']);if(root.name!=='sktimeline'||root.attributes.version!=='1'||cues.length!==1||graphs.length>1)throw Error('Target cue must occur exactly once in a version 1 timeline');
- const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-mixed-'));let current=source,currentSha=sha256,published=false,result;const added=[],warnings=[];
+ const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-mixed-'));let current=source,currentSha=sha256,published=false,result;const added=[],warnings=[],prototypeNotes=new Set();
  try{
   if(!graphs.length){const cue=cues[0];let modified;if(cue.selfClosing){const open=xml.slice(cue.start,cue.openEnd).replace(/\s*\/>$/,'>');modified=xml.slice(0,cue.start)+open+'<graph></graph></cue>'+xml.slice(cue.end);}else{if(!/^\s*$/.test(xml.slice(cue.openEnd,cue.closeStart)))throw Error('Graph-free cue must be empty or contain only whitespace');modified=xml.slice(0,cue.closeStart)+'<graph></graph>'+xml.slice(cue.closeStart);}
    if(selectXmlSpans(parseXmlSpans(modified),[...cuePath,'graph']).length!==1)throw Error('Could not create target graph');const next=path.join(dir,'initial.skshow');await editShowPart({source,destination:next,sha256,name,edits:[{find:xml,replace:modified}]});current=next;currentSha=(await inspectShow({file:current})).sha256;}
   for(const [i,n] of nodes.entries()){
    const next=path.join(dir,`node-${i}.skshow`),common={source:current,destination:next,sha256:currentSha,name,cueId,template:n.template,templateSha256:n.templateSha256,nodeId:n.nodeId};
    const copied=n.kind==='cue'?await copyCueGraphNodeShowCopy({...common,templateName:n.templateName,templateCueId:n.templateCueId}):await copyPatchNodeToCueShowCopy({...common,templateFormat:n.templateFormat});
-   const nextSha=(await inspectShow({file:next})).sha256;added.push(copied.newNodeId);warnings.push(...copied.warnings);if(current!==source)await rm(current);current=next;currentSha=nextSha;
+   const nextSha=(await inspectShow({file:next})).sha256;added.push(copied.newNodeId);warnings.push(...copied.warnings);if(n.kind==='patch'&&copied.note.includes('patch prototypes only'))prototypeNotes.add(copied.note);if(current!==source)await rm(current);current=next;currentSha=nextSha;
   }
   for(const [i,w] of wires.entries()){
    const next=path.join(dir,`wire-${i}.skshow`);await editCueGraphWireCopy({source:current,destination:next,format:'skshow',sha256:currentSha,name,cueId,operation:'add',fromNode:added[w.from],toNode:added[w.to]});const nextSha=(await inspectShow({file:next})).sha256;if(current!==source)await rm(current);current=next;currentSha=nextSha;
   }
-  await link(current,destination);published=true;result={destination,sha256:currentSha,nodeIds:added,warnings,wires:wires.map(w=>({fromNode:added[w.from],toNode:added[w.to]})),note:'Assembled an offline cue graph from existing nodes. Behavior in cue graphs, dependencies and ShowKontrol acceptance are not validated.'};
+  await link(current,destination);published=true;result={destination,sha256:currentSha,nodeIds:added,warnings,wires:wires.map(w=>({fromNode:added[w.from],toNode:added[w.to]})),note:['Assembled an offline cue graph from existing nodes. Behavior in cue graphs, dependencies and ShowKontrol acceptance are not validated.',...prototypeNotes].join(' ')};
  }finally{try{await rm(dir,{recursive:true,force:true});}catch(error){if(!published)throw error;result.cleanupWarning=`Published copy is valid, but temporary directory cleanup failed: ${dir}: ${error.message}`;}}
  return result;
 }
