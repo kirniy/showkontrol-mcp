@@ -7,6 +7,7 @@ import {hasXmlReference} from './xml-references.js';
 import {inspectProgram,inspectProgramBytes} from './program.js';
 import {parseTimeline} from './timeline.js';
 import {SaxesParser} from 'saxes';
+import {programGraphWarnings} from './program-graph-warnings.js';
 
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const idPattern=/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/;
@@ -45,6 +46,6 @@ export async function copyProgramItemGraphRemappedCopy({source,destination,sha25
  const edits=[];for(const n of nodes)edits.push({...attribute(timeline.xml,n,'id'),value:mapping[n.attributes.id]});for(const c of connections)for(const key of ['fromNode','toNode'])edits.push({...attribute(timeline.xml,c,key),value:mapping[c.attributes[key]]});
  let sanitized=element,remapped=element;for(const e of edits.sort((a,b)=>b.start-a.start)){const a=e.start-graph.start,b=e.end-graph.start;sanitized=sanitized.slice(0,a)+'REMAPPED'+sanitized.slice(b);remapped=remapped.slice(0,a)+e.value+remapped.slice(b);}if(hasXmlReference(sanitized,idPattern))throw Error('Graph contains unsupported internal references');
  let xml=program.xml;if(existing)xml=xml.slice(0,existing.start)+remapped+xml.slice(existing.end);else if(item.selfClosing)xml=xml.slice(0,item.start)+xml.slice(item.start,item.openEnd).replace(/\/\s*>$/, '>')+remapped+'</item>'+xml.slice(item.end);else xml=xml.slice(0,item.closeStart)+remapped+xml.slice(item.closeStart);
- const bytes=Buffer.from(xml);const result=inspectProgramBytes(bytes);const temp=path.join(path.dirname(destination),`.showkontrol-graph-${randomUUID()}.tmp`);let created=false;try{await writeFile(temp,bytes,{flag:'wx'});created=true;const [p,d,t]=await Promise.all([inspectProgram({file:source}),donorSnapshot(donor,donorName),readShowSnapshot({file:target})]);if(p.sha256!==sha256||d.sha256!==donorSha256||t.sha256!==targetSha256)throw Error('Source, donor or target changed since inspection');await link(temp,destination);}finally{if(created)await unlink(temp);}
- return {destination,sha256:hash(bytes),index,mapping,items:result.items,warnings:['Inspect trigger settings and dependencies; settings and media were not changed.','Static ID remapping only; runtime semantics and ShowKontrol acceptance are unverified.']};
+ const bytes=Buffer.from(xml),outputHash=hash(bytes);const result=inspectProgramBytes(bytes);const temp=path.join(path.dirname(destination),`.showkontrol-graph-${randomUUID()}.skpr`);let created=false,graphWarnings;try{await writeFile(temp,bytes,{flag:'wx'});created=true;const [p,d,t,w]=await Promise.all([inspectProgram({file:source}),donorSnapshot(donor,donorName),readShowSnapshot({file:target}),programGraphWarnings(temp,outputHash,index)]);graphWarnings=w;if(p.sha256!==sha256||d.sha256!==donorSha256||t.sha256!==targetSha256)throw Error('Source, donor or target changed since inspection');await link(temp,destination);}finally{if(created)await unlink(temp);}
+ return {destination,sha256:outputHash,index,mapping,items:result.items,warnings:['Inspect trigger settings and dependencies; settings and media were not changed.','Static ID remapping only; runtime semantics and ShowKontrol acceptance are unverified.',...graphWarnings]};
 }

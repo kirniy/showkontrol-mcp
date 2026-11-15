@@ -14,7 +14,7 @@ const part=(name,text)=>`<part name="${name}" md5="${hash('md5',text)}">${Buffer
 async function fixture(t){
  const dir=await mkdtemp(path.join(os.tmpdir(),'full-show-'));t.after(()=>rm(dir,{recursive:true,force:true}));const f=n=>path.join(dir,n);
  const source=`<skshow>${part('Empty.sktl','<sktimeline version="1" name="Empty"><layers><layer/></layers></sktimeline>')}${part('Set.skls','<sksetlist version="2"><set name="Main"/></sksetlist>')}${part('patch.skf','<showkontrol version="2"><graph/><appSettings/></showkontrol>')}</skshow>`;
- const donor=`<skshow>${part('Donor.sktl','<sktimeline version="1"><cue id="d"><graph><node id="n1" type="trigger"><settings><setting key="trigger.path">old</setting></settings></node></graph></cue></sktimeline>')}</skshow>`;
+ const donor=`<skshow>${part('Donor.sktl','<sktimeline version="1"><cue id="d"><graph><node id="n1" type="trigger"><settings><setting key="trigger.path">old</setting></settings></node><node id="n2" type="trigger"><settings><setting key="trigger.path">second</setting></settings></node></graph></cue></sktimeline>')}</skshow>`;
  await writeFile(f('in.skshow'),source);await writeFile(f('donor.skshow'),donor);
  const cue={layer:0,startMs:0,lengthMs:100,label:'Go'};
  const tracks=[{templateName:'Empty.sktl',trackName:'First',partName:'content/First.sktl',cues:[cue],donor:{file:f('donor.skshow'),sha256:hash('sha256',donor),name:'Donor.sktl',cueId:'d'},set:{name:'Set.skls',setName:'Main'}},{templateName:'Empty.sktl',trackName:'Second',partName:'content/Second.sktl',cues:[cue],set:{name:'Set.skls',setName:'Main'}}];
@@ -24,6 +24,18 @@ test('composes tracks, set and Program from staged donors',async t=>{
  const {args,f}=await fixture(t);const r=await compose(args);assert.equal(r.sha256,(await inspectShow({file:args.destination})).sha256);assert.deepEqual((await inspectShowSetlist({file:args.destination,name:'Set.skls'})).sets[0].tracks,['First','Second']);
  const cue=r.tracks[0].cues[0];assert.ok(r.program.mappings[0].timeline.cues[cue.id]);assert.notEqual(r.program.mappings[0].timeline.cues[cue.id],cue.id);assert.ok(r.program.mappings[0].graph.nodes[cue.idMap.n1]);
  const graph=await inspectProgramItemGraph({file:args.destination,sha256:r.sha256,index:0});assert.match(JSON.stringify(graph),/old/);await extractProgramTimelineCopy({source:args.destination,destination:f('extracted.sktl'),sha256:r.sha256,index:0});assert.match(await readFile(f('extracted.sktl'),'utf8'),/Go/);
+ assert.equal(r.validation.file,args.destination);assert.match(r.validation.note,/before publication/);
+});
+test('resolves staged graph setting node indices against the composed cue graph',async t=>{
+ const {args}=await fixture(t);args.program.items[0].graph.settings=[{nodeIndex:1,key:'trigger.path',value:'item.active'}];
+ const r=await compose(args);const graph=await inspectProgramItemGraph({file:args.destination,sha256:r.sha256,index:0});
+ assert.equal(graph.graph.nodes[0].settings.find(s=>s.key==='trigger.path').value,'old');assert.equal(graph.graph.nodes[1].settings.find(s=>s.key==='trigger.path').value,'item.active');
+});
+test('rejects invalid or ambiguous staged graph node selectors',async t=>{
+ const {args}=await fixture(t);
+ for(const setting of [{nodeIndex:2,key:'trigger.path',value:'x'},{nodeIndex:-1,key:'trigger.path',value:'x'},{nodeIndex:0,nodeId:'n1',key:'trigger.path',value:'x'},{key:'trigger.path',value:'x'}]){
+  args.program.items[0].graph.settings=[setting];await assert.rejects(compose(args),/node (index|selector)/);await assert.rejects(readFile(args.destination),{code:'ENOENT'});
+ }
 });
 test('external Program donor, failures, stale input and existing destination',async t=>{
  const {args,f,source,donor,dir}=await fixture(t);const external={donor:f('donor.skshow'),donorName:'Donor.sktl',donorSha256:hash('sha256',donor),donorCueId:'d'};

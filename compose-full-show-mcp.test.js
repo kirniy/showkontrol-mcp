@@ -30,3 +30,15 @@ test('MCP composes a staged track and graph into a Program and rolls back failur
  ]){const response=await call(tool,{...args,destination:bad,program});assert.equal(response.isError,true,JSON.stringify(response));await assert.rejects(readFile(bad),{code:'ENOENT'});assert.deepEqual((await readdir(dir)).filter(name=>name.startsWith('.showkontrol-')),[]);}
  assert.equal(await readFile(f('in.skshow'),'utf8'),input);assert.equal(await readFile(f('donor.skshow'),'utf8'),donor);
 });
+
+test('MCP resolves a staged cue graph node index for Program settings',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'full-show-setting-mcp-'));t.after(()=>rm(dir,{recursive:true,force:true}));const f=name=>path.join(dir,name);
+ const input=`<skshow>${part('Empty.sktl','<sktimeline version="1" name="Empty"><layers><layer/></layers></sktimeline>')}${part('patch.skf','<showkontrol version="2"><graph/><appSettings/></showkontrol>')}</skshow>`;
+ const donor=`<skshow>${part('Donor.sktl','<sktimeline version="1"><cue id="d"><graph><node id="n1" type="trigger"><settings><setting key="trigger.path">cue.active</setting></settings></node></graph></cue></sktimeline>')}</skshow>`;
+ await writeFile(f('in.skshow'),input);await writeFile(f('donor.skshow'),donor);
+ const client=new Client({name:'full-show-setting-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const call=(name,args)=>client.callTool({name,arguments:args});const parse=response=>{assert.equal(response.isError,undefined,JSON.stringify(response));return JSON.parse(response.content[0].text);};
+ const args={source:f('in.skshow'),destination:f('out.skshow'),sha256:hash('sha256',input),tracks:[{templateName:'Empty.sktl',trackName:'First',partName:'content/First.sktl',donor:{file:f('donor.skshow'),sha256:hash('sha256',donor),name:'Donor.sktl',cueId:'d'},cues:[{layer:0,startMs:0,lengthMs:100,label:'Cue'}]}],program:{items:[{start:0,name:'Item',notes:'',graph:{stagedShow:{trackIndex:0,cueIndex:0},settings:[{nodeIndex:0,key:'trigger.path',value:'item.active'}]}}]}};
+ const result=parse(await call('showkontrol_compose_full_show_copy',args));assert.equal(result.validation.file,args.destination);assert.match(result.validation.note,/before publication/);
+ const graph=parse(await call('showkontrol_inspect_program_item_graph',{file:args.destination,sha256:result.sha256,index:0}));assert.equal(graph.graph.nodes[0].settings.find(s=>s.key==='trigger.path').value,'item.active');
+});

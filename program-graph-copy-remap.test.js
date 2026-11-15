@@ -36,3 +36,11 @@ test('replacement rejects references in target parts but ignores the replaced Pr
  await assert.rejects(copy({...args,destination:f('rejected.skpr'),targetSha256:hash('sha256',unsafe)}),/referenced outside/);
  await assert.rejects(readFile(f('rejected.skpr')),{code:'ENOENT'});assert.ok(!(await readdir(dir)).some(n=>n.endsWith('.tmp')));
 });
+
+test('reports a cue.active trigger in the copied direct graph',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'graph-warning-'));t.after(()=>rm(dir,{recursive:true,force:true}));const f=n=>path.join(dir,n);
+ const program='<skprogram version="1"><item start="0" name="A" notes=""/></skprogram>',show=`<skshow><part name="note.txt" md5="${hash('md5','hello')}">${Buffer.from('hello').toString('base64')}</part></skshow>`,donor='<sktimeline version="1"><layers/><cue id="c"><graph><node id="n1" type="trigger"><settings><setting key="trigger.path">cue.active</setting></settings></node></graph></cue></sktimeline>';
+ await Promise.all([writeFile(f('in.skpr'),program),writeFile(f('target.skshow'),show),writeFile(f('donor.sktl'),donor)]);
+ const result=await copy({source:f('in.skpr'),destination:f('out.skpr'),sha256:hash('sha256',program),index:0,donor:f('donor.sktl'),donorSha256:hash('sha256',donor),donorCueId:'c',target:f('target.skshow'),targetSha256:hash('sha256',show)});
+ assert.ok(result.warnings.some(w=>w.includes('trigger.path cue.active')));
+});

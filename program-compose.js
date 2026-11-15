@@ -6,6 +6,7 @@ import {copyProgramItemGraphRemappedCopy} from './program-graph-copy-remap.js';
 import {inspectXml,readShowSnapshot,readSnapshotPart} from './xml-copy.js';
 import {editCueGraphSettingCopy} from './timeline.js';
 import {validateShow} from './validate-show.js';
+import {cueActiveWarning,programGraphWarnings} from './program-graph-warnings.js';
 
 const checksum=s=>typeof s==='string'&&/^[a-f0-9]{64}$/.test(s);
 function object(value,required,optional=[]){
@@ -47,10 +48,11 @@ export async function composeProgramScheduleCopy(args){
      staged={donor:file,donorSha256:hash,remapCueIds:timeline.remapCueIds};
     }
     const destination=next();const r=await embedProgramTimelineRemappedCopy({source:program,destination,sha256:current.sha256,index,...staged,target:source,targetSha256:sha256});program=destination;current=r;mapping.timeline={nodes:r.mapping,cues:r.cueMapping};r.warnings.forEach(w=>warnings.add(w));}
-   if(item.graph){const {settings=[],...graph}=item.graph;const destination=next();const r=await copyProgramItemGraphRemappedCopy({source:program,destination,sha256:current.sha256,index,...graph,target:source,targetSha256:sha256});program=destination;current=r;mapping.graph={nodes:r.mapping};r.warnings.forEach(w=>warnings.add(w));
+   if(item.graph){const {settings=[],...graph}=item.graph;const destination=next();const r=await copyProgramItemGraphRemappedCopy({source:program,destination,sha256:current.sha256,index,...graph,target:source,targetSha256:sha256});program=destination;current=r;mapping.graph={nodes:r.mapping};r.warnings.filter(w=>w!==cueActiveWarning).forEach(w=>warnings.add(w));
     for(const s of settings){if(!Object.hasOwn(r.mapping,s.nodeId))throw Error('Setting donor node ID is absent from copied graph');const destination=next();current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index,nodeId:r.mapping[s.nodeId],key:s.key,value:s.value});program=destination;warnings.add(current.note);}
    }mappings.push(mapping);
   }
+  for(const [index,item] of items.entries())if(item.graph)(await programGraphWarnings(program,current.sha256,index)).forEach(w=>warnings.add(w));
   const candidate=path.join(dir,'candidate.skshow');const attached=await attachShowProgramCopy({source,destination:candidate,sha256,program,programSha256:current.sha256,replaceExisting});
   const validation=await validateShow({file:candidate});if(validation.diagnostics.some(d=>d.severity==='error'))throw Error(`Final show validation failed: ${validation.diagnostics.filter(d=>d.severity==='error').map(d=>d.code).join(', ')}`);
   const final=await inspectShowProgram({file:candidate});if(final.sha256!==attached.sha256||final.programSha256!==current.sha256)throw Error('Final show checksum mismatch');

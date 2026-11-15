@@ -25,3 +25,10 @@ test('timeline settings reject stale donors and roll back later invalid edits',a
  const {args,dir,donor,f}=await fixture(t);const setting=(key,value)=>({cueId:'c1',nodeId:'n1',key,value});const timeline=args.items[0].timeline;
  for(const patch of [{donorSha256:'0'.repeat(64),settings:[setting('trigger.path','x')]},{settings:[setting('trigger.path','x'),setting('missing','y')]}]){await assert.rejects(compose({...args,items:[{...args.items[0],timeline:{...timeline,...patch}}]}));await assert.rejects(readFile(args.destination),{code:'ENOENT'});assert.deepEqual((await readdir(dir)).sort(),['donor.sktl','in.skshow']);assert.equal(await readFile(f('donor.sktl'),'utf8'),donor);}
 });
+test('warns only when the final direct item graph retains cue.active',async t=>{
+ const {args,f}=await fixture(t);const donor='<sktimeline version="1"><layers/><cue id="c1"><graph><node id="n1" type="trigger"><settings><setting key="trigger.path">cue.active</setting></settings></node></graph></cue></sktimeline>';await writeFile(f('donor.sktl'),donor);
+ const graph={donor:f('donor.sktl'),donorSha256:hash('sha256',donor),donorCueId:'c1'};const item={start:0,name:'A',notes:'',graph};
+ const unchanged=await compose({...args,items:[item]});assert.ok(unchanged.warnings.some(w=>w.includes('trigger.path cue.active')));
+ const edited=await compose({...args,destination:f('edited.skshow'),items:[{...item,graph:{...graph,settings:[{nodeId:'n1',key:'trigger.path',value:'item.active'}]}}]});assert.ok(!edited.warnings.some(w=>w.includes('trigger.path cue.active')));
+ const inspected=await inspectProgramItemGraph({file:f('edited.skshow'),sha256:edited.sha256,index:0});assert.equal(inspected.graph.nodes[0].settings[0].value,'item.active');
+});

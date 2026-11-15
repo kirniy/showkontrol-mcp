@@ -4,6 +4,7 @@ import {inspectShow,inspectXml} from './xml-copy.js';
 import {validateShow} from './validate-show.js';
 import {composeMultiTrackShowCopy} from './compose-multi-show.js';
 import {composeProgramScheduleCopy} from './program-compose.js';
+import {inspectCueGraph} from './timeline.js';
 
 const checksum=s=>typeof s==='string'&&/^[a-f0-9]{64}$/.test(s);
 const object=x=>x&&typeof x==='object'&&!Array.isArray(x);
@@ -40,7 +41,8 @@ export async function composeFullShowCopy(args){
   if(hasComposition){multi=await composeMultiTrackShowCopy({source,destination:path.join(dir,'composed.skshow'),sha256,tracks,patchOperations,setlistOperations});current=path.join(dir,'composed.skshow');hash=multi.sha256;}
   let programResult;
   if(program!==undefined){
-   const items=program.items.map(item=>{
+   const items=[];
+   for(const item of program.items){
     if(!object(item))throw Error('Invalid Program item');
     const converted={...item};
     for(const kind of ['timeline','graph']){
@@ -54,17 +56,30 @@ export async function composeFullShowCopy(args){
       if(selector.cueIndex!==undefined){if(!Number.isSafeInteger(selector.cueIndex)||selector.cueIndex<0||!track?.cues?.[selector.cueIndex])throw Error('Invalid staged cue index');cueId=track.cues[selector.cueIndex].id;}
       else {if(typeof selector.cueId!=='string'||!selector.cueId||selector.cueId.length>4096)throw Error('Invalid staged cue ID');cueId=selector.cueId;}
      }
-     const {stagedShow,...options}=donor;converted[kind]={...options,donor:current,donorSha256:hash,donorName:name,...(kind==='graph'?{donorCueId:cueId}:{})};
+     const {stagedShow,...options}=donor;
+     if(kind==='graph'&&options.settings!==undefined){
+      if(!Array.isArray(options.settings))throw Error('Settings must be an array');
+      let nodes;
+      options.settings=await Promise.all(options.settings.map(async setting=>{
+       if(!object(setting)||(Object.hasOwn(setting,'nodeIndex')===Object.hasOwn(setting,'nodeId')))throw Error('Graph setting requires exactly one node selector');
+       if(!Object.hasOwn(setting,'nodeIndex'))return setting;
+       if(!Number.isSafeInteger(setting.nodeIndex)||setting.nodeIndex<0)throw Error('Invalid staged graph node index');
+       if(!nodes){const inspected=await inspectCueGraph({file:current,format:'skshow',name,cueId});if(inspected.sha256!==hash)throw Error('Staged show changed since composition');nodes=inspected.graph.nodes;}
+       const nodeId=nodes[setting.nodeIndex]?.id;if(typeof nodeId!=='string'||!nodeId)throw Error('Invalid staged graph node index');
+       const {nodeIndex,...rest}=setting;return {...rest,nodeId};
+      }));
+     }
+     converted[kind]={...options,donor:current,donorSha256:hash,donorName:name,...(kind==='graph'?{donorCueId:cueId}:{})};
     }
-    return converted;
-   });
+    items.push(converted);
+   }
    programResult=await composeProgramScheduleCopy({source:current,destination:path.join(dir,'program.skshow'),sha256:hash,items,replaceExisting:program.replaceExisting});current=path.join(dir,'program.skshow');hash=programResult.sha256;
   }
   const final=await inspectShow({file:current});if(final.sha256!==hash)throw Error('Final show checksum mismatch');if(hash===sha256)throw Error('Composition must make a change');
   const validation=await validateShow({file:current});if(validation.diagnostics.some(d=>d.severity==='error'))throw Error(`Final show validation failed: ${validation.diagnostics.filter(d=>d.severity==='error').map(d=>d.code).join(', ')}`);
   if((await inspectShow({file:source})).sha256!==sha256)throw Error('Source changed since inspection');await checkReferences(refs);
   await link(current,destination);published=true;
-  result={destination,sha256:hash,tracks:multi?.tracks??[],setlistOperations:multi?.setlistOperations??[],warnings:multi?.warnings??[],...(multi?.cleanupWarnings?{cleanupWarnings:multi.cleanupWarnings}:{}),...(programResult?{program:{programSha256:programResult.programSha256,items:programResult.items,mappings:programResult.mappings,warnings:programResult.warnings}}:{}),validation};
+  result={destination,sha256:hash,tracks:multi?.tracks??[],setlistOperations:multi?.setlistOperations??[],warnings:multi?.warnings??[],...(multi?.cleanupWarnings?{cleanupWarnings:multi.cleanupWarnings}:{}),...(programResult?{program:{programSha256:programResult.programSha256,items:programResult.items,mappings:programResult.mappings,warnings:programResult.warnings}}:{}),validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
  }finally{try{await rm(dir,{recursive:true,force:true});}catch(error){if(!published)throw error;result.cleanupWarnings=[...(result.cleanupWarnings??[]),`Published copy is valid, but temporary directory cleanup failed: ${dir}: ${error.message}`];}}
  return result;
 }
