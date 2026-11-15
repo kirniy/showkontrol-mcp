@@ -141,6 +141,7 @@ export async function composeProgramEditsCopy(args){
   else if(op.action==='remove'){keys(op,['action','index'],['allowContentRemoval']);if(op.allowContentRemoval!==undefined&&typeof op.allowContentRemoval!=='boolean')throw Error('allowContentRemoval must be a boolean');}
   else if(op.action==='edit_graph_setting')keys(op,['action','index','nodeId','key','value']);
   else if(op.action==='edit_timeline_graph_setting')keys(op,['action','index','cueId','nodeId','key','value']);
+  else if(op.action==='edit_copied_timeline_graph_setting')keys(op,['action','index','graphFromOperation','donorNodeId','key','value']);
   else if(op.action==='add_timeline_cue')keys(op,['action','index','layer','startMs','lengthMs','label']);
   else if(op.action==='copy_timeline_cue_graph')keys(op,['action','index','cueFromOperation','donor','donorSha256','donorCueId'],['donorName']);
   else if(op.action==='delete_timeline_cue'){keys(op,['action','index','cueId'],['deleteGraph']);if(op.deleteGraph!==undefined&&typeof op.deleteGraph!=='boolean')throw Error('deleteGraph must be a boolean');}
@@ -163,9 +164,18 @@ export async function composeProgramEditsCopy(args){
    if(operation.action==='edit_graph_setting'){
     const {index,nodeId,key,value}=operation;
     current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index,nodeId,key,value});
-   }else if(['edit_timeline_cue','edit_timeline_graph_setting','add_timeline_cue','delete_timeline_cue','copy_timeline_cue_graph'].includes(operation.action)){
+   }else if(['edit_timeline_cue','edit_timeline_graph_setting','edit_copied_timeline_graph_setting','add_timeline_cue','delete_timeline_cue','copy_timeline_cue_graph'].includes(operation.action)){
     const {index,layer,startMs,lengthMs,label}=operation;
-    const cueId=operation.action==='copy_timeline_cue_graph'?resolveCreatedCue(await readFile(program,'utf8'),index,createdCues,operation.cueFromOperation):operation.cueId;
+    let cueId=operation.cueId,nodeId=operation.nodeId;
+    if(operation.action==='copy_timeline_cue_graph')cueId=resolveCreatedCue(await readFile(program,'utf8'),index,createdCues,operation.cueFromOperation);
+    if(operation.action==='edit_copied_timeline_graph_setting'){
+     const reference=operation.graphFromOperation;
+     const graph=Number.isInteger(reference)&&reference>=0&&reference<operationIndex?copiedCueGraphs.find(g=>g.operationIndex===reference):undefined;
+     if(!graph)throw Error('graphFromOperation must identify a prior copy_timeline_cue_graph');
+     if(typeof operation.donorNodeId!=='string'||!Object.hasOwn(graph.idMap,operation.donorNodeId)||typeof graph.idMap[operation.donorNodeId]!=='string'||!graph.idMap[operation.donorNodeId])throw Error('donorNodeId must identify a node in the copied graph');
+     cueId=resolveCreatedCue(await readFile(program,'utf8'),index,[{operationIndex:reference,id:graph.cueId}],reference);
+     nodeId=graph.idMap[operation.donorNodeId];
+    }
     const timeline=path.join(dir,`${step++}.sktl`),edited=path.join(dir,`${step++}.sktl`);
     const extracted=await extractProgramTimelineCopy({source:program,destination:timeline,sha256:current.sha256,index});
     collect(extracted);
@@ -178,7 +188,7 @@ export async function composeProgramEditsCopy(args){
      ?await deleteTimelineCueCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,deleteGraph:operation.deleteGraph})
      :operation.action==='edit_timeline_cue'
      ?await editTimelineCueCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,layer,startMs,lengthMs,label})
-     :await editCueGraphSettingCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,nodeId:operation.nodeId,key:operation.key,value:operation.value});
+     :await editCueGraphSettingCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,nodeId,key:operation.key,value:operation.value});
     if(operation.action==='delete_timeline_cue')collect({...changed,note:'Deleted a cue from an offline Program copy. Literal XML references were checked; binary, encoded and external references may be missed. Validate in ShowKontrol.'});
     else collect(changed);
     if(operation.action==='copy_timeline_cue_graph'){copiedCueGraphs.push({operationIndex,cueId,idMap:changed.idMap});donors.push({file:operation.donor,sha256:operation.donorSha256});}
