@@ -199,6 +199,8 @@ Use `copy_timeline_cue_node` to add a supported node from an inspected cue or pa
 
 Use `copy_patch_setting_to_timeline_cue` to copy an existing setting from an inspected patch node into a same-type Program cue node. Select the cue with `cueId` or `cueFromOperation`, and the node with `nodeId` or `nodeFromOperation`. Supply the donor path, format, SHA-256, node ID, and setting key. An existing setting is replaced. Router targets are checked against the destination patch; action compatibility and execution remain unverified.
 
+To select a node from an earlier graph assembly, use `graphFromOperation` and `nodeIndex`. To select one from an earlier whole-graph copy, use `copiedGraphFromOperation` and `copiedGraphDonorNodeId`. Supply exactly one node selector. The patch donor's `donorNodeId` is a separate field.
+
 For `copy_timeline_cue_node` and `edit_timeline_graph_wire_mapped`, select the cue with either `cueId` or the zero-based `cueFromOperation` index of an earlier `add_timeline_cue`. A new cue must first have a graph. Then a later operation can copy and wire nodes into it.
 
 For an item timeline, `settings` can contain ordered `{cueId, nodeId, key, value}` entries. Use the IDs from the donor timeline. The tool edits a private donor copy before it remaps IDs and embeds the timeline. The total limit is 100 timeline and item-graph setting edits per composition.

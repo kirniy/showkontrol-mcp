@@ -276,9 +276,14 @@ export async function composeProgramEditsCopy(args){
    }
   }
   else if(op.action==='copy_patch_setting_to_timeline_cue'){
-   keys(op,['action','index','donor','donorFormat','donorSha256','donorNodeId','key'],['cueId','cueFromOperation','nodeId','nodeFromOperation']);
+   keys(op,['action','index','donor','donorFormat','donorSha256','donorNodeId','key'],['cueId','cueFromOperation','nodeId','nodeFromOperation','graphFromOperation','nodeIndex','copiedGraphFromOperation','copiedGraphDonorNodeId']);
    if(Object.hasOwn(op,'cueFromOperation')===Object.hasOwn(op,'cueId'))throw Error('Provide exactly one of cueId or cueFromOperation');
-   if(Object.hasOwn(op,'nodeFromOperation')===Object.hasOwn(op,'nodeId'))throw Error('Provide exactly one of nodeId or nodeFromOperation');
+   const forms=['nodeId','nodeFromOperation','graphFromOperation','copiedGraphFromOperation'].filter(k=>Object.hasOwn(op,k));
+   if(forms.length!==1||Object.hasOwn(op,'nodeIndex')!==Object.hasOwn(op,'graphFromOperation')||Object.hasOwn(op,'copiedGraphDonorNodeId')!==Object.hasOwn(op,'copiedGraphFromOperation'))throw Error('Provide exactly one node selector: nodeId, nodeFromOperation, graphFromOperation with nodeIndex, or copiedGraphFromOperation with copiedGraphDonorNodeId');
+   if(Object.hasOwn(op,'nodeId')&&(typeof op.nodeId!=='string'||!op.nodeId))throw Error('nodeId must be a nonempty string');
+   if(Object.hasOwn(op,'nodeFromOperation')&&(!Number.isInteger(op.nodeFromOperation)||op.nodeFromOperation<0))throw Error('Invalid nodeFromOperation');
+   if(Object.hasOwn(op,'graphFromOperation')&&(!Number.isInteger(op.graphFromOperation)||op.graphFromOperation<0||!Number.isInteger(op.nodeIndex)||op.nodeIndex<0))throw Error('Invalid graphFromOperation or nodeIndex');
+   if(Object.hasOwn(op,'copiedGraphFromOperation')&&(!Number.isInteger(op.copiedGraphFromOperation)||op.copiedGraphFromOperation<0||typeof op.copiedGraphDonorNodeId!=='string'||!op.copiedGraphDonorNodeId))throw Error('Invalid copiedGraphFromOperation or copiedGraphDonorNodeId');
    if(typeof op.donor!=='string'||!path.isAbsolute(op.donor)||!['skf','skshow'].includes(op.donorFormat)||!/^[a-f0-9]{64}$/.test(op.donorSha256||'')||!/^n\d+$/.test(op.donorNodeId||''))throw Error('Absolute donor path, donor format, donor SHA-256 and node ID are required');
   }
   else if(op.action==='copy_timeline_cue_node'){
@@ -341,6 +346,17 @@ export async function composeProgramEditsCopy(args){
      const ref=operation.nodeFromOperation,entry=Number.isInteger(ref)&&ref>=0&&ref<operationIndex?copiedCueNodes.find(n=>n.operationIndex===ref):undefined;
      if(!entry||invalidatedGraphs.has(ref)||entry.cueId!==cueId)throw Error('nodeFromOperation must identify an active prior copy_timeline_cue_node in the selected cue');
      nodeId=entry.nodeId;
+    }
+    if(operation.action==='copy_patch_setting_to_timeline_cue'&&Object.hasOwn(operation,'graphFromOperation')){
+     const ref=operation.graphFromOperation,entry=ref<operationIndex?assembledCueGraphs.find(g=>g.operationIndex===ref):undefined;
+     if(!entry||invalidatedGraphs.has(ref)||entry.cueId!==cueId||operation.nodeIndex>=entry.nodeIds.length)throw Error('graphFromOperation and nodeIndex must identify an active prior assemble_timeline_cue_graph node in the selected cue');
+     nodeId=entry.nodeIds[operation.nodeIndex];
+    }
+    if(operation.action==='copy_patch_setting_to_timeline_cue'&&Object.hasOwn(operation,'copiedGraphFromOperation')){
+     const ref=operation.copiedGraphFromOperation,entry=ref<operationIndex?copiedCueGraphs.find(g=>g.operationIndex===ref):undefined;
+     if(!entry||invalidatedGraphs.has(ref)||entry.cueId!==cueId)throw Error('copiedGraphFromOperation must identify an active prior copy_timeline_cue_graph in the selected cue');
+     if(!Object.hasOwn(entry.idMap,operation.copiedGraphDonorNodeId)||typeof entry.idMap[operation.copiedGraphDonorNodeId]!=='string'||!entry.idMap[operation.copiedGraphDonorNodeId])throw Error('copiedGraphDonorNodeId must identify a node in the copied graph');
+     nodeId=entry.idMap[operation.copiedGraphDonorNodeId];
     }
     if(operation.action==='edit_timeline_graph_wire_mapped'){
      const resolveEndpoint=endpoint=>{
