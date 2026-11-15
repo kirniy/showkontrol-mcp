@@ -5,7 +5,7 @@ import {validateRouterTarget} from './patch-setting-to-cue.js';
 import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';
 import {SaxesParser} from 'saxes';
 import {inspectXml,editXmlCopy,readShowSnapshot,readSnapshotPart,editShowPart,addShowPart} from './xml-copy.js';
-import {randomInt} from 'node:crypto';
+import {createHash,randomInt} from 'node:crypto';
 import path from 'node:path';
 export function parseTimeline(xml) {
  const parser=new SaxesParser();const stack=[];const result={attributes:{},layers:[],audio:[],audioClips:[],cueElements:[]};
@@ -389,7 +389,17 @@ export async function editCueGraphSettingCopy({source,destination,format,sha256,
  return {...result,cueId,nodeId,key,value,note:'Changed an existing cue graph setting in an offline copy. Value semantics and ShowKontrol acceptance are not validated.'};
 }
 
-export async function copyCueGraphBetweenTimelines({source,destination,sha256,template,templateSha256,sourceCueId,targetCueId}){
+export async function copyCueGraphBetweenTimelines(args){
+ return copyCueGraphBetweenTimelinesInternal(args,null);
+}
+
+// Internal composition helper: the caller supplies the destination show's snapshot.
+export async function copyCueGraphBetweenTimelinesWithShow(args,targetShow){
+ if(!targetShow||!Array.isArray(targetShow.parts)||!targetShow.parts.length||!targetShow.parts.every(p=>p&&p.valid===true&&Buffer.isBuffer(p.bytes)&&typeof p.md5==='string'&&/^[a-fA-F0-9]{32}$/.test(p.md5)&&createHash('md5').update(p.bytes).digest('hex')===p.md5.toLowerCase()))throw Error('A validated destination show snapshot is required');
+ return copyCueGraphBetweenTimelinesInternal(args,targetShow);
+}
+
+async function copyCueGraphBetweenTimelinesInternal({source,destination,sha256,template,templateSha256,sourceCueId,targetCueId},targetShow){
  const [target,donor]=await Promise.all([inspectXml({file:source}),inspectXml({file:template})]);
  if(target.sha256!==sha256)throw Error('Source changed since inspection');if(donor.sha256!==templateSha256)throw Error('Template changed since inspection');
  const src=cueGraph(donor.xml,sourceCueId),dst=cueGraph(target.xml,targetCueId);if(!src.graph||!src.graph.nodes.length)throw Error('Source cue has no graph');if(dst.graph)throw Error('Target cue already has a graph');
@@ -401,7 +411,7 @@ export async function copyCueGraphBetweenTimelines({source,destination,sha256,te
  const donorRoot=parseXmlSpans(donor.xml),targetRoot=parseXmlSpans(target.xml);
  const graphs=selectXmlSpans(donorRoot,['sktimeline',{name:'cue',attributes:{id:sourceCueId}},'graph']);if(graphs.length!==1||graphs[0].selfClosing)throw Error('Unsupported source graph serialization');
  const cues=selectXmlSpans(targetRoot,['sktimeline',{name:'cue',attributes:{id:targetCueId}}]);if(cues.length!==1)throw Error('Target cue must occur exactly once');
- validateGraphReferences(donor.xml,graphs[0],null);
+ validateGraphReferences(donor.xml,graphs[0],targetShow);
  const graph=remapCueGraph(donor.xml,graphs[0],idMap);
  const modified=insertCueGraph(target.xml,cues[0],graph);
  const expected={nodes:src.graph.nodes.map(node=>({...node,id:idMap[node.id]})),connections:src.graph.connections.map(c=>({...c,fromNode:idMap[c.fromNode],toNode:idMap[c.toNode]}))};

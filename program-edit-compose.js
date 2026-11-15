@@ -2,7 +2,7 @@ import {mkdtemp,rm,link,readFile,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {extractShowProgramCopy,createProgramCopy,attachShowProgramCopy,inspectShowProgram,editProgramItemGraphSettingCopy,extractProgramTimelineCopy,embedProgramTimelineCopy} from './program.js';
-import {addTimelineCueCopy,deleteTimelineCueCopy,editTimelineCueCopy,editCueGraphSettingCopy,copyCueGraphBetweenTimelines} from './timeline.js';
+import {addTimelineCueCopy,deleteTimelineCueCopy,editTimelineCueCopy,editCueGraphSettingCopy,copyCueGraphBetweenTimelinesWithShow} from './timeline.js';
 import {inspectXml,readShowSnapshot,readSnapshotPart} from './xml-copy.js';
 import {validateShow} from './validate-show.js';
 import {parseXmlSpans} from './xml-spans.js';
@@ -89,7 +89,7 @@ async function graphAllocationMaximum(program,source,sha256){
   if(names.has(part.name))throw Error('Duplicate supported XML part name');names.add(part.name);
   try{scan(readSnapshotPart({snapshot:show,name:part.name}).text);}catch(e){throw Error(`A supported XML part could not be scanned: ${part.name}: ${e.message}`);}
  }
- return max;
+ return {max,show};
 }
 function resolveCreatedCue(xml,index,created,operationIndex){
  if(!Number.isInteger(operationIndex)||operationIndex<0)throw Error('cueFromOperation must identify a prior add_timeline_cue');
@@ -101,9 +101,19 @@ function resolveCreatedCue(xml,index,created,operationIndex){
  return entry.id;
 }
 const digest=text=>createHash('sha256').update(text).digest('hex');
-async function copyCreatedCueGraph({timeline,edited,program,source,sha256,index,cueId,donor,donorSha256,donorCueId,dir,step}){
- if(typeof donor!=='string'||!path.isAbsolute(donor)||path.extname(donor).toLowerCase()!=='.sktl'||typeof donorSha256!=='string'||!/^[a-f0-9]{64}$/.test(donorSha256)||typeof donorCueId!=='string'||!donorCueId)throw Error('An absolute .sktl donor, donor SHA-256 and donor cue ID are required');
- const max=await graphAllocationMaximum(program,source,sha256);
+async function copyCreatedCueGraph({timeline,edited,program,source,sha256,index,cueId,donor,donorName,donorSha256,donorCueId,dir,step}){
+ if(typeof donor!=='string'||!path.isAbsolute(donor)||!['.sktl','.skshow'].includes(path.extname(donor).toLowerCase())||typeof donorSha256!=='string'||!/^[a-f0-9]{64}$/.test(donorSha256)||typeof donorCueId!=='string'||!donorCueId)throw Error('An absolute .sktl or .skshow donor, donor SHA-256 and donor cue ID are required');
+ let template=donor,templateSha256=donorSha256;
+ if(path.extname(donor).toLowerCase()==='.skshow'){
+  if(typeof donorName!=='string'||!donorName.toLowerCase().endsWith('.sktl'))throw Error('A .sktl donor part name is required');
+  const show=await readShowSnapshot({file:donor});
+  if(show.sha256!==donorSha256)throw Error('Donor changed since inspection');
+  if(show.parts.some(p=>!p.valid))throw Error('A part MD5 does not match');
+  const names=new Set();for(const part of show.parts){const key=part.name.toLowerCase();if(names.has(key))throw Error('Duplicate part name');names.add(key);}
+  const xml=readSnapshotPart({snapshot:show,name:donorName}).text;
+  template=path.join(dir,`graph-donor-${step}.sktl`);await writeFile(template,xml,{flag:'wx'});templateSha256=digest(xml);
+ }else if(donorName!==undefined)throw Error('Donor part name is only supported for a show');
+ const {max,show}=await graphAllocationMaximum(program,source,sha256);
  const target=await inspectXml({file:timeline});const root=parseXmlSpans(target.xml);
  if(root.name!=='sktimeline'||root.selfClosing)throw Error('Unsupported timeline serialization');
  // The sentinel makes the existing copier allocate beyond the complete show and Program.
@@ -112,10 +122,10 @@ async function copyCreatedCueGraph({timeline,edited,program,source,sha256,index,
  const augmented=target.xml.slice(0,root.closeStart)+marker+target.xml.slice(root.closeStart);
  const augmentedFile=path.join(dir,`graph-augmented-${step}.sktl`),copiedFile=path.join(dir,`graph-copied-${step}.sktl`);
  await writeFile(augmentedFile,augmented,{flag:'wx'});
- const result=await copyCueGraphBetweenTimelines({source:augmentedFile,destination:copiedFile,sha256:digest(augmented),template:donor,templateSha256:donorSha256,sourceCueId:donorCueId,targetCueId:cueId});
+ const result=await copyCueGraphBetweenTimelinesWithShow({source:augmentedFile,destination:copiedFile,sha256:digest(augmented),template,templateSha256,sourceCueId:donorCueId,targetCueId:cueId},show);
  const output=await readFile(copiedFile,'utf8');if(output.split(marker).length!==2)throw Error('Allocation sentinel was not preserved');
  const final=output.replace(marker,'');parseXmlSpans(final);await writeFile(edited,final,{flag:'wx'});
- return {...result,sha256:digest(final),note:'Copied a fixture-supported graph. Router targets and other unsupported references are rejected; application acceptance is unverified.'};
+ return {...result,sha256:digest(final),note:'Copied a fixture-supported graph. Router targets were checked against the destination show; application acceptance is unverified.'};
 }
 
 // Each index addresses the current Program file order after all preceding operations.
@@ -132,7 +142,7 @@ export async function composeProgramEditsCopy(args){
   else if(op.action==='edit_graph_setting')keys(op,['action','index','nodeId','key','value']);
   else if(op.action==='edit_timeline_graph_setting')keys(op,['action','index','cueId','nodeId','key','value']);
   else if(op.action==='add_timeline_cue')keys(op,['action','index','layer','startMs','lengthMs','label']);
-  else if(op.action==='copy_timeline_cue_graph')keys(op,['action','index','cueFromOperation','donor','donorSha256','donorCueId']);
+  else if(op.action==='copy_timeline_cue_graph')keys(op,['action','index','cueFromOperation','donor','donorSha256','donorCueId'],['donorName']);
   else if(op.action==='delete_timeline_cue'){keys(op,['action','index','cueId'],['deleteGraph']);if(op.deleteGraph!==undefined&&typeof op.deleteGraph!=='boolean')throw Error('deleteGraph must be a boolean');}
   else if(op.action==='edit_timeline_cue'){
    keys(op,['action','index','cueId'],['layer','startMs','lengthMs','label']);
@@ -163,7 +173,7 @@ export async function composeProgramEditsCopy(args){
     const changed=operation.action==='add_timeline_cue'
      ?await addTimelineCueCopy({source:timeline,destination:edited,sha256:extracted.sha256,layer,startMs,lengthMs,label})
      :operation.action==='copy_timeline_cue_graph'
-     ?await copyCreatedCueGraph({timeline,edited,program,source,sha256,index,cueId,donor:operation.donor,donorSha256:operation.donorSha256,donorCueId:operation.donorCueId,dir,step})
+     ?await copyCreatedCueGraph({timeline,edited,program,source,sha256,index,cueId,donor:operation.donor,donorName:operation.donorName,donorSha256:operation.donorSha256,donorCueId:operation.donorCueId,dir,step})
      :operation.action==='delete_timeline_cue'
      ?await deleteTimelineCueCopy({source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256,cueId,deleteGraph:operation.deleteGraph})
      :operation.action==='edit_timeline_cue'

@@ -87,3 +87,43 @@ test('rejects stale donors, unsupported references, wrong item and later failure
   await assert.rejects(run(args,operations));await assert.rejects(readFile(args.destination),{code:'ENOENT'});assert.equal(await readFile(args.source,'utf8'),args.show);
  }
 });
+test('copies a graph from an exact show part and rejects invalid donor archives atomically',async t=>{
+ const xml='<sktimeline version="1"><layers/><cue id="donor"><graph><node id="n1" type="groupin"/><node id="n2" type="action"/><connection fromNode="n1" fromPin="0" toNode="n2" toPin="0"/></graph></cue></sktimeline>';
+ for(const variant of ['valid','missing','duplicate','checksum','stale','later','router']){
+  const args=await fixture(t,{extra:part('patch.skf','<showkontrol version="2"><appSettings/><graph><node id="n900" type="router"/></graph></showkontrol>')});
+  const donor=path.join(args.dir,'donor.skshow');
+  const timeline=variant==='router'?xml.replace('<node id="n2" type="action"/>','<node id="n2" type="action"><settings><setting key="route.router_target">n77</setting></settings></node>'):xml;
+  let show=`<skshow>${part('content/Program.skpr','<skprogram version="1"/>')}${part('content/Timeline.sktl',timeline)}${part('content/Other.skcp','<root/>')}${variant==='duplicate'?part('CONTENT/timeline.sktl',timeline):''}</skshow>`;
+  if(variant==='checksum')show=show.replace(hash('md5','<root/>'),'0'.repeat(32));
+  await writeFile(donor,show);
+  const op={action:'copy_timeline_cue_graph',index:1,cueFromOperation:0,donor,donorName:variant==='missing'?'content/missing.sktl':'content/Timeline.sktl',donorSha256:variant==='stale'?'0'.repeat(64):hash('sha256',show),donorCueId:'donor'};
+  const operations=[{...add,index:1},op,...(variant==='later'?[{action:'edit',index:99,name:'x'}]:[])];
+  if(variant==='valid'){
+   const result=await run(args,operations);assert.deepEqual(result.copiedCueGraphs[0].idMap,{n1:'n901',n2:'n902'});
+   const program=(await readShowPart({file:args.destination,name:'content/Program.skpr'})).text;
+   assert.match(program,/fromNode="n901"/);assert.match(program,/toNode="n902"/);
+  }else{
+   await assert.rejects(run(args,operations));await assert.rejects(readFile(args.destination),{code:'ENOENT'});
+  }
+  assert.equal(await readFile(args.source,'utf8'),args.show);assert.equal(await readFile(donor,'utf8'),show);
+ }
+});
+test('validates copied router targets against the target show and rolls back failures',async t=>{
+ const router=(id,name)=>`<node id="${id}" type="router"><settings><setting key="router.name">${name}</setting></settings></node>`;
+ const donorXml='<sktimeline version="1"><layers/><cue id="donor"><graph><node id="n1" type="action"><settings><setting key="route.router_target">A</setting></settings></node></graph></cue></sktimeline>';
+ for(const variant of ['valid','missing','ambiguous','later']){
+  const routers=variant==='missing'?'':router('n20','A')+(variant==='ambiguous'?router('n21','A'):'');
+  const args=await fixture(t,{extra:part('patch.skf',`<showkontrol version="2"><appSettings/><graph>${routers}</graph></showkontrol>`)});
+  const donor=path.join(args.dir,'donor.sktl');await writeFile(donor,donorXml);
+  const op={action:'copy_timeline_cue_graph',index:1,cueFromOperation:0,donor,donorSha256:hash('sha256',donorXml),donorCueId:'donor'};
+  const operations=[{...add,index:1},op,...(variant==='later'?[{action:'edit',index:99,name:'x'}]:[])];
+  if(variant==='valid'){
+   const result=await run(args,operations);assert.equal(result.copiedCueGraphs[0].idMap.n1,'n21');
+   const program=(await readShowPart({file:args.destination,name:'content/Program.skpr'})).text;
+   assert.match(program,/<setting key="route.router_target">A<\/setting>/);
+  }else{
+   await assert.rejects(run(args,operations));await assert.rejects(readFile(args.destination),{code:'ENOENT'});
+  }
+  assert.equal(await readFile(args.source,'utf8'),args.show);assert.equal(await readFile(donor,'utf8'),donorXml);
+ }
+});
