@@ -67,6 +67,13 @@ test('RPP media tracks encode distinct source types and complete item timing',()
  assert.throws(()=>renderRpp({mediaTracks:[{name:'A',kind:'audio',items:[{file:'x.aac',seconds:0,duration:1}]}]}),/Audio source/);
 });
 
+test('RPP generation warns when take volume may be lost on import',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-rpp-level-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const mediaTracks=[{name:'Audio',kind:'audio',items:[{file:'/audio.wav',seconds:0,duration:1,takeVolume:0.5}]}];
+ const result=await writeRpp({file:path.join(dir,'show.rpp'),mediaTracks,projectName:'Show'});
+ assert.equal(result.warnings.length,2);assert.match(result.warnings[1],/take volume.*not preserved/);
+});
+
 test('MCP returns exact binary bytes and bounds event samples', async t => {
  const bytes=Buffer.from([0,255,13,10,42,128]);
  const mock=http.createServer((req,res)=>{
