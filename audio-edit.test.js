@@ -45,8 +45,9 @@ test('MCP edits a show part and rejects duplicate part names',async t=>{
  const failure=await client.callTool({name:'showkontrol_edit_timeline_audio_clip_copy',arguments:{...args,source:dupFile,destination:out,sha256:hash(dup)}});assert.equal(failure.isError,true);await assert.rejects(access(out));
 });
 test('edits the app-reserialized fixture when available',async t=>{
- const fixture='/Users/kirniy/Documents/Codex/2026-11-15/we-have-this-showkontrol-live-thing/work/MCP-audio-experiment/TIMELINE/Composed_Test.sktl';
- let text;try{text=await readFile(fixture,'utf8')}catch{t.skip('fixture not available');return;}
+ const fixture=process.env.SHOWKONTROL_AUDIO_FIXTURE;
+ if(!fixture){t.skip('set SHOWKONTROL_AUDIO_FIXTURE to an app-reserialized timeline');return;}
+ const text=await readFile(fixture,'utf8');
  const dir=await setup(t),info=await inspectTimeline({file:fixture}),clip=info.audioClips.find(c=>Object.hasOwn(c.attributes,'vol'));assert.ok(clip);
  const index=info.audioClips.filter(c=>c.audioIndex===clip.audioIndex).indexOf(clip),destination=path.join(dir,'fixture.sktl');
  await editTimelineAudioClipCopy({source:fixture,destination,format:'sktl',sha256:hash(text),audioIndex:clip.audioIndex,clipIndex:index,attributes:{vol:'0.25'}});
