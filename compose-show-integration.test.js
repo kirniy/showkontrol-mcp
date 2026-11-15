@@ -65,3 +65,30 @@ test('MCP composes ordered layer edits on single and multiple tracks', async t =
  assert.deepEqual((await readdir(dir)).sort(),['multi.skshow','single.skshow','source.skshow']);
  assert.equal(await readFile(source,'utf8'),sourceText);
 });
+
+test('MCP composes tracks with optional atomic set creation', async t => {
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-compose-set-mcp-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skshow'), ambiguous=path.join(dir,'ambiguous.skshow');
+ const show=sets=>`<skshow>${part('content/Empty.sktl','<sktimeline version="1" name="Empty"><layers><layer name="Base"/></layers></sktimeline>')}${part('content/Setlist.skls',`<sksetlist version="2" active="0">${sets}</sksetlist>`)}${part('patch.skf','<showkontrol version="2"><graph/></showkontrol>')}</skshow>`;
+ const original=show('<set name="Existing"/>');await writeFile(source,original);await writeFile(ambiguous,show('<set name="Dup"/><set name="Dup"/>'));
+ const client=new Client({name:'compose-set-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const call=(name,args)=>client.callTool({name,arguments:args});const parse=r=>{assert.equal(r.isError,undefined,JSON.stringify(r));return JSON.parse(r.content[0].text);};
+ const hash=async file=>parse(await call('showkontrol_inspect_show',{file})).sha256;
+ const set=(setName,createIfMissing)=>({name:'content/Setlist.skls',setName,...(createIfMissing===undefined?{}:{createIfMissing})});
+ const track=(name,selectedSet)=>({templateName:'content/Empty.sktl',trackName:name,partName:`content/${name}.sktl`,cues:[{layer:0,startMs:0,lengthMs:40,label:name}],set:selectedSet});
+ const sha256=await hash(source), single=path.join(dir,'single.skshow');
+ parse(await call('showkontrol_compose_show_copy',{source,destination:single,sha256,...track('One',set('New',true))}));
+ assert.deepEqual(parse(await call('showkontrol_inspect_show_setlist',{file:single,name:'content/Setlist.skls'})).sets,[{name:'Existing',tracks:[]},{name:'New',tracks:['One']}]);
+ const multi=path.join(dir,'multi.skshow');parse(await call('showkontrol_compose_multi_track_show_copy',{source,destination:multi,sha256,tracks:[track('One',set('New',true)),track('Two',set('New',true)),track('Three',set('Existing',true))]}));
+ assert.deepEqual(parse(await call('showkontrol_inspect_show_setlist',{file:multi,name:'content/Setlist.skls'})).sets,[{name:'Existing',tracks:['Three']},{name:'New',tracks:['One','Two']}]);
+ for(const [name,input,tracks] of [
+  ['missing',source,[track('One',set('Missing'))]],
+  ['ambiguous',ambiguous,[track('One',set('Dup',true))]],
+  ['invalid-name',source,[track('One',set('   ',true))]],
+  ['later-failure',source,[track('One',set('New',true)),{...track('Two',set('New',true)),cues:[{layer:9,startMs:0,lengthMs:40,label:'Bad'}]}]]
+ ]){
+  const destination=path.join(dir,`failed-${name}.skshow`),result=await call('showkontrol_compose_multi_track_show_copy',{source:input,destination,sha256:await hash(input),tracks});
+  assert.equal(result.isError,true,JSON.stringify(result));await assert.rejects(readFile(destination),/ENOENT/);
+ }
+ assert.equal(await readFile(source,'utf8'),original);assert.deepEqual((await readdir(dir)).filter(name=>name.startsWith('.showkontrol-')),[]);
+});

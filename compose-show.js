@@ -2,7 +2,7 @@ import {mkdtemp, link, rm} from 'node:fs/promises';
 import path from 'node:path';
 import {inspectShow} from './xml-copy.js';
 import {createShowTrackCopy, addShowTimelineCueCopy, copyCueGraphInShow, editCueGraphSettingCopy} from './timeline.js';
-import {addShowSetlistTrackCopy} from './setlist.js';
+import {addShowSetlistTrackCopy, editShowSetlistCopy, inspectShowSetlist} from './setlist.js';
 import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
 import {editTimelineLayerCopy} from './layers.js';
 import {copyPatchSettingToCueShowCopy} from './patch-setting-to-cue.js';
@@ -21,6 +21,7 @@ export async function composeShowCopy({source, destination, sha256, templateName
   if ((cue?.settings?.length || cue?.patchSettings?.length) && cue.mixedGraph === undefined && !(cue.donor === undefined ? donor : cue.donor)) throw Error('Cue settings require a donor or mixed graph');
  }
  if (set && (!set.name || !set.setName)) throw Error('Set requires a set list part name and set name');
+ if (set?.createIfMissing !== undefined && typeof set.createIfMissing !== 'boolean') throw Error('createIfMissing must be a boolean');
  const initial = await inspectShow({file: source});
  if (initial.sha256 !== sha256) throw Error('Source changed since inspection');
  const dir = await mkdtemp(path.join(path.dirname(destination), '.showkontrol-compose-'));
@@ -71,7 +72,15 @@ export async function composeShowCopy({source, destination, sha256, templateName
    }
    added.push(item);
   }
-  if (set) await step(next => addShowSetlistTrackCopy({source: current, destination: next, sha256: currentHash, name: set.name, setName: set.setName, trackName}));
+  if (set) {
+   if (set.createIfMissing) {
+    const {sets} = await inspectShowSetlist({file: current, name: set.name});
+    const matches = sets.filter(item => item.name === set.setName);
+    if (matches.length > 1) throw Error('Set name must occur exactly once');
+    if (matches.length === 0) await step(next => editShowSetlistCopy({source: current, destination: next, sha256: currentHash, name: set.name, operation: 'create_set', newSetName: set.setName}));
+   }
+   await step(next => addShowSetlistTrackCopy({source: current, destination: next, sha256: currentHash, name: set.name, setName: set.setName, trackName}));
+  }
   await link(current, destination); published = true;
   result = {destination, sha256: currentHash, trackName, partName, cues: added, ...(set ? {set} : {}), note: 'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};
  } finally {
