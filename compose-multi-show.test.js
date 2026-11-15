@@ -43,3 +43,16 @@ test('applies independent ordered layer operations to both tracks and cleans a l
  await assert.rejects(composeMultiTrackShowCopy({source,destination:bad,sha256,tracks:[tracks[0],{...tracks[1],layerOperations:[...tracks[1].layerOperations,{operation:'rename',layerName:'Missing',newName:'Bad'}]}]}),/exactly one/);
  assert.equal(await readFile(source,'utf8'),input);assert.deepEqual((await readdir(dir)).sort(),['out.skshow','source.skshow']);
 });
+
+test('multi-track warnings reflect later edits to the same cue',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-multitrack-stopped-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skshow'),destination=path.join(dir,'out.skshow');
+ const input=`<skshow>${part('content/Track.sktl','<sktimeline version="1" name="Track"><layers><layer/></layers><cue id="c1" layer="0" startMs="0" lenMs="40"><graph><node id="n1" type="trigger" stopped="1"><settings><setting key="node.stopped">true</setting></settings></node></graph></cue></sktimeline>')}</skshow>`;
+ await writeFile(source,input);const sha256=(await inspectShow({file:source})).sha256;
+ const edit=value=>({existingPartName:'content/Track.sktl',graphSettingEdits:[{cueId:'c1',nodeId:'n1',key:'node.stopped',value}]});
+ const result=await composeMultiTrackShowCopy({source,destination,sha256,tracks:[edit('true'),edit('false')]});
+ assert.deepEqual(result.warnings,[]);assert.equal(result.sha256,(await inspectShow({file:destination})).sha256);
+ const second=await composeMultiTrackShowCopy({source,destination:path.join(dir,'second.skshow'),sha256,tracks:[edit('false'),edit('true')]});
+ assert.deepEqual(second.warnings.map(w=>[w.scope.part,w.scope.cueId,w.scope.nodeId]),[['content/Track.sktl','c1','n1']]);
+ const bad=path.join(dir,'bad.skshow');await assert.rejects(composeMultiTrackShowCopy({source,destination:bad,sha256,tracks:[edit('false'),edit('invalid')]}));await assert.rejects(readFile(bad),/ENOENT/);assert.equal(await readFile(source,'utf8'),input);
+});

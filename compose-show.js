@@ -6,6 +6,7 @@ import {addShowSetlistTrackCopy, editShowSetlistCopy, inspectShowSetlist} from '
 import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
 import {editTimelineLayerCopy} from './layers.js';
 import {copyPatchSettingToCueShowCopy} from './patch-setting-to-cue.js';
+import {compositionWarnings} from './composition-warnings.js';
 
 // Compose only structures supported by the existing offline writers.
 export async function composeShowCopy({source, destination, sha256, templateName, trackName, partName, existingPartName, cues, donor, set, layerOperations, audioClipEdits, cueEdits, graphSettingEdits}) {
@@ -95,8 +96,9 @@ export async function composeShowCopy({source, destination, sha256, templateName
    }
    await step(next => addShowSetlistTrackCopy({source: current, destination: next, sha256: currentHash, name: set.name, setName: set.setName, trackName}));
   }
+  const warnings = await compositionWarnings(current, currentHash, [partName]);
   await link(current, destination); published = true;
-  result = {destination, sha256: currentHash, ...(existing ? {existingPartName} : {trackName, partName}), cues: added, ...(set ? {set} : {}), note: 'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};
+  result = {destination, sha256: currentHash, ...(existing ? {existingPartName} : {trackName, partName}), cues: added, warnings, ...(set ? {set} : {}), note: 'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};
  } finally {
   try { await rm(dir, {recursive: true, force: true}); }
   catch (error) { if (!published) throw error; result.cleanupWarning = `Published copy is valid, but temporary directory cleanup failed: ${dir}: ${error.message}`; }

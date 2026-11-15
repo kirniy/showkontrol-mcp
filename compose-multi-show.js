@@ -3,6 +3,7 @@ import path from 'node:path';
 import {inspectShow} from './xml-copy.js';
 import {composeShowCopy} from './compose-show.js';
 import {editPatchBatchCopy} from './batch-patch.js';
+import {compositionWarnings} from './composition-warnings.js';
 
 export async function composeMultiTrackShowCopy({source,destination,sha256,tracks,patchOperations}){
  if(!path.isAbsolute(source)||!path.isAbsolute(destination)||path.resolve(source)===path.resolve(destination))throw Error('Source and destination must be different absolute paths');
@@ -26,8 +27,9 @@ export async function composeMultiTrackShowCopy({source,destination,sha256,track
    if(current!==source)await rm(current);
    current=next;currentHash=track.sha256;
   }
+  const storedWarnings=await compositionWarnings(current,currentHash,tracks.map(track=>track.existingPartName ?? track.partName));
   await link(current,destination);published=true;
-  result={destination,sha256:currentHash,tracks:composed,note:'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};
+  result={destination,sha256:currentHash,tracks:composed,warnings:storedWarnings,note:'Offline copy uses fixture-supported structures only. Media authoring and ShowKontrol compatibility are not validated.'};
  }finally{
   try{await rm(dir,{recursive:true,force:true});}
   catch(error){if(!published)throw error;warnings.push(`Published copy is valid, but temporary directory cleanup failed: ${dir}: ${error.message}`);}

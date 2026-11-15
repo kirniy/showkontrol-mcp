@@ -79,3 +79,19 @@ test('applies ordered layer operations before adding cues and cleans failures', 
  assert.equal(await readFile(source,'utf8'),input);
  assert.deepEqual((await readdir(dir)).sort(),['out.skshow','source.skshow']);
 });
+
+test('reports stored stopped nodes after cue settings are applied', async t => {
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-compose-stopped-')); t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skshow'), donorFile=path.join(dir,'donor.skshow'), destination=path.join(dir,'out.skshow');
+ const input=`<skshow>${part('Empty.sktl','<sktimeline version="1" name="Empty"><layers><layer/></layers></sktimeline>')}${part('patch.skf','<showkontrol version="2"><graph/></showkontrol>')}</skshow>`;
+ const donorText=`<skshow>${part('Donor.sktl','<sktimeline version="1"><cue id="d"><graph><node id="n1" type="trigger" stopped="1"><settings><setting key="node.stopped">true</setting></settings></node></graph></cue></sktimeline>')}</skshow>`;
+ await writeFile(source,input); await writeFile(donorFile,donorText);
+ const sha256=(await inspectShow({file:source})).sha256, donor={file:donorFile,sha256:(await inspectShow({file:donorFile})).sha256,name:'Donor.sktl',cueId:'d'};
+ const cue={layer:0,startMs:0,lengthMs:40,label:'Cue'};
+ const args={source,destination,sha256,templateName:'Empty.sktl',trackName:'New',partName:'content/New.sktl',donor,cues:[cue,{...cue,settings:[{nodeId:'n1',key:'node.stopped',value:'false'}]},{...cue,settings:[{nodeId:'n1',key:'node.stopped',value:'true'}]}]};
+ const result=await composeShowCopy(args);
+ assert.deepEqual(result.warnings.map(w=>[w.scope.part,w.scope.cueId,w.scope.nodeId]),[0,2].map(i=>['content/New.sktl',result.cues[i].id,result.cues[i].idMap.n1]));
+ assert.equal(result.sha256,(await inspectShow({file:destination})).sha256);
+ const bad=path.join(dir,'bad.skshow'); await assert.rejects(composeShowCopy({...args,destination:bad,cues:[cue,{...cue,settings:[{nodeId:'n1',key:'node.stopped',value:'invalid'}]}]}));
+ await assert.rejects(readFile(bad),/ENOENT/); assert.equal(await readFile(source,'utf8'),input); assert.equal(await readFile(donorFile,'utf8'),donorText);
+});
