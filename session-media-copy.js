@@ -1,6 +1,6 @@
 import path from 'node:path';
 import {constants} from 'node:fs';
-import {open,lstat,mkdir,mkdtemp,readdir,rename,rm,rmdir,realpath,link,statfs,writeFile} from 'node:fs/promises';
+import {open,lstat,mkdir,readdir,realpath,link,statfs,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {inspectShow,readShowSnapshot,readSnapshotPart,writeShowMediaMapCopy} from './xml-copy.js';
 import {inspectShowMedia} from './media-inventory.js';
@@ -9,6 +9,8 @@ import {parseXmlSpans} from './xml-spans.js';
 import {composeFullShowCopy} from './compose-full-show.js';
 import {validateShow} from './validate-show.js';
 import {planMappingOperations,editMappingText,vanishingValues,findReferences,assertUnreferenced,mappingReceipts} from './media-map-rows.js';
+import {createStaging,publicationMode,publishStaged,findSessionStaging,staleClaimOf} from './session-publication.js';
+export {claimDestination,publishDirectory} from './session-publication.js';
 
 const MAX_MEDIA=100, MAX_REPORTED=100, CHUNK=1024*1024, DEFAULT_MAX_COPY_BYTES=4*1024**3, MAX_WORKING_ENTRIES=10000, MAX_WORKING_DEPTH=32, MAX_COMPARE_BYTES=128*1024*1024;
 export const MAP_DIAGNOSTICS=['duplicate_media_map','invalid_media_map_checksum','invalid_media_map_utf8','malformed_mapping','duplicate_source'];
@@ -42,22 +44,6 @@ async function checkSourceParents(file){
   try{info=await lstat(current);}catch(error){throw Error(`Media source ${error.code==='ENOENT'?'not found':'cannot be checked'}: ${file}`);}
   if(info.isSymbolicLink()){let resolved;try{resolved=await realpath(file);}catch{}throw Error(`Media source path passes through symlinked directory ${current}${resolved?`; supply the resolved path ${resolved}`:''}: ${file}`);}
   if(!info.isDirectory())throw Error(`Media source parent is not a directory: ${current}`);
- }
-}
-// rename(2) replaces an empty directory. Claim the name with mkdir(2), which fails if anything exists, and rename over the claim only if it is still that directory.
-export async function claimDestination(target){
- try{await mkdir(target);}catch(error){throw error.code==='EEXIST'?Error('Destination session already exists'):error;}
- return lstat(target);
-}
-export async function publishDirectory(stage,target,claim){
- claim??=await claimDestination(target);
- const ours=async()=>{try{const now=await lstat(target);return now.isDirectory()&&now.dev===claim.dev&&now.ino===claim.ino;}catch{return false;}};
- // Another process can still swap the claim between this check and rename(2).
- if(!await ours())throw Error('Destination session changed during publication');
- try{await rename(stage,target);}
- catch(error){
-  if(await ours())await rmdir(target).catch(()=>{});
-  throw ['ENOTEMPTY','EEXIST','ENOTDIR','EISDIR'].includes(error.code)?Error('Destination session changed during publication'):error;
  }
 }
 async function fileSha256(file){
@@ -223,12 +209,13 @@ function planWorkingFiles({walk,before,after,sourceName,omit}){
 }
 
 // Create a new session directory: composed session.skshow, extended media.map and verified MEDIA sidecar copies.
-export async function composeSessionMediaCopy({source,destination,sha256,media=[],tracks,patchOperations,setlistOperations,program,mediaMapOperations=[],removedSidecars,allowMissingSidecars=false,omitUnverifiedWorkingFiles=false}){
+export async function composeSessionMediaCopy({source,destination,sha256,media=[],tracks,patchOperations,setlistOperations,program,mediaMapOperations=[],removedSidecars,allowMissingSidecars=false,omitUnverifiedWorkingFiles=false,requireAtomicPublication=false}){
  if(typeof source!=='string'||!path.isAbsolute(source)||typeof destination!=='string'||!path.isAbsolute(destination))throw Error('Source and destination session directories must be absolute paths');
  if(typeof sha256!=='string')throw Error('Supply the inspected session.skshow SHA-256');
  if(!Array.isArray(media)||media.length>MAX_MEDIA)throw Error(`Media must be an array of at most ${MAX_MEDIA} entries`);
  if(typeof allowMissingSidecars!=='boolean')throw Error('allowMissingSidecars must be a boolean');
  if(typeof omitUnverifiedWorkingFiles!=='boolean')throw Error('omitUnverifiedWorkingFiles must be a boolean');
+ if(typeof requireAtomicPublication!=='boolean')throw Error('requireAtomicPublication must be a boolean');
  if(!Array.isArray(mediaMapOperations))throw Error('mediaMapOperations must be an array');
  if(removedSidecars!==undefined&&!['keep','omit'].includes(removedSidecars))throw Error('removedSidecars must be "keep" or "omit"');
  if(tracks!==undefined&&!Array.isArray(tracks))throw Error('Tracks must be an array');
@@ -240,7 +227,13 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
  if(!name||name==='.'||name==='..')throw Error('Destination must name a new session directory');
  const parent=await realpath(path.dirname(destination)),target=path.join(parent,name);
  if(target===root||target.startsWith(root+path.sep))throw Error('Destination must be outside the source session');
- await absent(target);
+ try{await absent(target);}
+ catch(error){
+  const owner=error.message==='Destination session already exists'&&await staleClaimOf(parent,name);
+  throw owner?Error(`Destination session already exists as the empty claim of an interrupted call (staging ${owner}); remove both with showkontrol_remove_stale_session_staging`):error;
+ }
+ // Staging left by interrupted calls in the same parent is reported, never removed here.
+ const stale=(await findSessionStaging({directory:parent})).entries.filter(e=>e.status==='stale');
  const inventory=await inspectShowMedia({file:show});
  if(inventory.sha256!==sha256)throw Error('Source changed since inspection');
  const mapProblems=[...new Set(inventory.diagnostics.filter(d=>MAP_DIAGNOSTICS.includes(d.code)).map(d=>d.code))];
@@ -248,6 +241,7 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
  // Rows kept, removed or re-pointed by mediaMapOperations; a re-pointed sidecar is copied from its old name.
  const mapPlan=planMappingOperations(inventory,mediaMapOperations),oldArchive=new Map(inventory.mappings.map(m=>[m.line,m.archivePath]));
  const warnings=[],keys=new Map(),existing=new Map();
+ if(stale.length)warnings.push({code:'stale_session_staging',directory:parent,names:stale.map(e=>e.name),bytes:stale.reduce((sum,e)=>sum+e.bytes,0),message:'Staging directories of interrupted calls remain beside the destination. They were verified as left by this tool; inspect them with showkontrol_find_session_staging and remove them with showkontrol_remove_stale_session_staging.'});
  for(const row of mapPlan.rows){
   const entry=existing.get(row.archivePath);if(entry){entry.lines.push(row.line);continue;}
   const key=nameKey(row.archivePath);
@@ -337,10 +331,12 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
  const limit=copyLimit(),checkLimit=bytes=>{if(bytes>limit)throw Error(`Session copies total ${bytes} bytes, above the ${limit}-byte limit (SHOWKONTROL_SESSION_MEDIA_MAX_BYTES)`);};checkLimit(total);
  const space=await statfs(parent);if(total+2*(await lstat(show)).size>space.bavail*space.bsize)throw Error('Destination volume does not have enough free space for the session copy');
  const mapChanged=added.length>0||mediaMapOperations.length>0;
- const work=await mkdtemp(path.join(parent,'.showkontrol-session-work-'));
- let stage,published=false,result;const cleanupWarnings=[];
+ const staging=await createStaging(parent,name),{work,stage}=staging;
+ let published=false,result;const cleanupWarnings=[];
  try{
-  stage=await mkdtemp(path.join(parent,'.showkontrol-session-'));
+  // Detected on the destination volume before anything is copied.
+  const publication=await publicationMode(staging.dir);
+  if(requireAtomicPublication&&!publication.atomicNoReplace)throw Error(`Atomic no-replace publication is unavailable: ${publication.reason}`);
   let current=show,currentHash=sha256,composition;
   if(composing){
    const next=path.join(work,'composed.skshow');
@@ -450,7 +446,7 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
   const recheck=await walkSession(root),key=e=>`${e.rel}\0${e.planned?.dev}:${e.planned?.ino}`;
   const seen=[...recheck.files.filter(f=>!isSidecar(f.rel,f.planned)),...recheck.dirs,...recheck.rejected].map(key).sort(),planned=[...walk.files,...walk.dirs,...walk.rejected].map(key).sort();
   if(seen.join('\n')!==planned.join('\n')||walk.files.some(f=>!sameEntry(f.planned,recheck.files.find(r=>r.rel===f.rel).planned)))throw Error('Source session working files changed during session copy');
-  await publishDirectory(stage,target);published=true;
+  await publishStaged(staging,target,publication);published=true;
   const sessionFile=path.join(target,'session.skshow');
   result={source:root,destination:target,sessionFile,sourceSha256:sha256,sha256:currentHash,
    mediaMap:{created:added.length>0&&!inventory.mapParts.length,preservedRows:inventory.mappings.length-mapPlan.changes.length,addedRows:added.map(({mediaIndex,sourcePath,archivePath,line})=>({mediaIndex,line,sourcePath,archivePath})),
@@ -459,18 +455,19 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
    sidecars,missingSidecars:missing.map(({archivePath,lines})=>({archivePath,lines})),
    ...(composition?{tracks:composition.tracks.map(t=>t.mediaClone?{...t,mediaClone:{...t.mediaClone,destination:sessionFile}}:t),setlistOperations:composition.setlistOperations}:{}),
    ...(composition?.program?{program:composition.program}:{}),
+   publication:{method:publication.method,atomicNoReplace:publication.atomicNoReplace,...(publication.reason?{fallbackReason:publication.reason}:{}),
+    note:publication.atomicNoReplace?'The staged session was renamed to the destination with a no-replace rename, which fails if anything exists there, after the primitive was checked on this volume.':'The destination was claimed with mkdir and the staged session renamed over the claim after an identity check. A process that replaces the empty claim with its own empty directory between the check and the rename has that directory replaced without detection.'},
    clipLinks,...(programClipLinks?{programClipLinks}:{}),workingFiles:{count:workingFiles.length,directories:walk.dirs.length,entries:workingFiles.slice(0,MAX_REPORTED),truncated:workingFiles.length>MAX_REPORTED},
    warnings:[...warnings,...working.warnings,...(composition?.warnings??[])],
    ...(validation?{validation:{...validation,file:sessionFile,note:`${validation.note.replace(/ Validation was performed before publication\.$/,'')} Validation was performed on the staged session.skshow before publication.`}}:{}),
    limitations:['Follows one observed R27 session layout: media.map rows map an original absolute path to a MEDIA/ sidecar beside session.skshow. ShowKontrol has not opened, played or relinked a generated session.','Working files are related to archive parts by path, exact content or file name. Only session.skf to patch.skf (equal except the root name) is backed by app evidence; whether ShowKontrol reads working files or session.skshow when it opens a session directory is unverified. File permissions and timestamps are not preserved.','Sidecars are byte-verified copies. Media format, duration, waveform caches and clip timing against the media are not checked.',...(program!==undefined?['The Program follows static R27 format evidence only. ShowKontrol has not loaded a generated Program, sorted its items, run item graphs or resolved Program item clips through media.map.']:[])]};
   if(composition?.cleanupWarnings)cleanupWarnings.push(...composition.cleanupWarnings);
  }finally{
-  const failures=[];
-  for(const dir of published?[work]:[work,stage].filter(Boolean)){
-   try{await rm(dir,{recursive:true,force:true});}
-   catch(error){failures.push(error);cleanupWarnings.push(`Published session is valid, but temporary directory cleanup failed: ${dir}: ${error.message}`);}
+  try{await staging.release();}
+  catch(error){
+   if(!published)throw error;
+   cleanupWarnings.push(`Published session is valid, but staging directory cleanup failed: ${staging.dir}: ${error.message}. showkontrol_remove_stale_session_staging can remove it once its record has been idle for two minutes.`);
   }
-  if(failures.length&&!published)throw failures[0];
  }
  if(cleanupWarnings.length)result.cleanupWarnings=cleanupWarnings;
  return result;

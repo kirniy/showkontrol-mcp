@@ -186,7 +186,7 @@ test('a destination that appears during the call is kept, and staging is rolled 
  // A 32 MiB sidecar keeps the call busy long enough for the watcher to create the destination before publication.
  const s=await session(t,{big:true}),before=await tree(s.root);let created=false;
  const watcher=watch(s.dir,async(event,name)=>{
-  if(created||!String(name).startsWith('.showkontrol-session-work-'))return;created=true;
+  if(created||!String(name).startsWith('.showkontrol-session-staging-'))return;created=true;
   await mkdir(s.destination);await writeFile(path.join(s.destination,'foreign.txt'),'not ours');
  });
  t.after(()=>watcher.close());
