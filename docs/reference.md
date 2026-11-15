@@ -11,6 +11,7 @@ Common rules for offline tools:
 - Write tools create a new destination and do not replace an existing file. Many publish with a hard link, so the destination filesystem must support hard links.
 - A failed call publishes nothing, and the source is not modified.
 - Indices are zero-based unless stated otherwise.
+- Argument errors come from the schema. When a value matches none of the forms of an object union but exactly one form accepts its keys, the error lists that form's issues with their paths, for example an unknown Program `action` with the valid actions; otherwise the error can be only `Invalid input` at the union's path.
 
 Contents:
 

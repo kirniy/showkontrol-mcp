@@ -49,6 +49,7 @@ import {inspectProgram,createProgramCopy,inspectShowProgram,extractShowProgramCo
 import {remapProgramItemGraphCopy} from './program-graph-remap.js';
 import {registerActionSearch} from './action-search.js';
 import {toolFilter} from './toolsets.js';
+import {unionFormError} from './union-errors.js';
 import {copyProgramItemGraphRemappedCopy} from './program-graph-copy-remap.js';
 import {embedProgramTimelineRemappedCopy} from './program-timeline-copy-remap.js';
 import {composeProgramScheduleCopy} from './program-compose.js';
@@ -57,6 +58,7 @@ import {createShowSetlistCopy} from './setlist-create.js';
 import {composeFullShowCopy} from './compose-full-show.js';
 import {composeProgramEditsCopy} from './program-edit-compose.js';
 
+z.config({customError:unionFormError});
 const base = new URL(process.env.SHOWKONTROL_URL || 'http://127.0.0.1:8090');
 if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash || !['', '/'].includes(base.pathname)) throw Error('SHOWKONTROL_URL must be an HTTP(S) origin without credentials or a path');
 const timeout = Number(process.env.SHOWKONTROL_TIMEOUT_MS || 5000);
