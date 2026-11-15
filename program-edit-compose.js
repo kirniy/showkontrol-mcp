@@ -376,9 +376,11 @@ export async function composeProgramEditsCopy(args){
    keys(op,['action','index','operation','from','to']);
    if(!['add','remove'].includes(op.operation))throw Error('Operation must be add or remove');
    for(const endpoint of [op.from,op.to]){
-    keys(endpoint,[],['nodeId','graphFromOperation','nodeIndex']);
-    if(Object.hasOwn(endpoint,'nodeId')===Object.hasOwn(endpoint,'graphFromOperation')||Object.hasOwn(endpoint,'nodeIndex')!==Object.hasOwn(endpoint,'graphFromOperation'))throw Error('Endpoint must contain nodeId or graphFromOperation with nodeIndex');
+    keys(endpoint,[],['nodeId','nodeFromOperation','graphFromOperation','nodeIndex']);
+    const forms=Number(Object.hasOwn(endpoint,'nodeId'))+Number(Object.hasOwn(endpoint,'nodeFromOperation'))+Number(Object.hasOwn(endpoint,'graphFromOperation'));
+    if(forms!==1||Object.hasOwn(endpoint,'nodeIndex')!==Object.hasOwn(endpoint,'graphFromOperation'))throw Error('Endpoint must contain exactly one of nodeId, nodeFromOperation, or graphFromOperation with nodeIndex');
     if(Object.hasOwn(endpoint,'nodeId')&&(typeof endpoint.nodeId!=='string'||!endpoint.nodeId))throw Error('nodeId must be a nonempty string');
+    if(Object.hasOwn(endpoint,'nodeFromOperation')&&(!Number.isInteger(endpoint.nodeFromOperation)||endpoint.nodeFromOperation<0))throw Error('nodeFromOperation must identify an active prior copy_item_graph_node');
     if(Object.hasOwn(endpoint,'graphFromOperation')&&(!Number.isInteger(endpoint.graphFromOperation)||endpoint.graphFromOperation<0||!Number.isInteger(endpoint.nodeIndex)||endpoint.nodeIndex<0))throw Error('Invalid graphFromOperation or nodeIndex');
    }
   }
@@ -500,6 +502,11 @@ export async function composeProgramEditsCopy(args){
     const xml=await readFile(program,'utf8');
     const resolveEndpoint=endpoint=>{
      if(Object.hasOwn(endpoint,'nodeId'))return endpoint.nodeId;
+     if(Object.hasOwn(endpoint,'nodeFromOperation')){
+      const ref=endpoint.nodeFromOperation,entry=ref<operationIndex?copiedItemNodes.find(n=>n.operationIndex===ref):undefined;
+      if(!entry||invalidatedGraphs.has(ref)||!itemGraphContains(xml,operation.index,[entry.nodeId]))throw Error('nodeFromOperation must identify an active prior copy_item_graph_node in the selected item');
+      return entry.nodeId;
+     }
      const ref=endpoint.graphFromOperation,graph=ref<operationIndex?assembledItemGraphs.find(g=>g.operationIndex===ref):undefined;
      if(!graph||invalidatedGraphs.has(ref)||!itemGraphContains(xml,operation.index,graph.nodeIds)||endpoint.nodeIndex>=graph.nodeIds.length)throw Error('graphFromOperation and nodeIndex must identify an active prior assemble_item_graph node in the selected item');
      return graph.nodeIds[endpoint.nodeIndex];

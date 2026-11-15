@@ -191,7 +191,7 @@ Use `assemble_timeline_cue_graph` to assemble supported nodes from cue and patch
 
 Use `assemble_item_graph` to assemble the same supported donor nodes directly into a Program item graph. Supply the current item `index`, `nodes`, and optional `wires`. Replacing an existing graph requires `replaceExisting: true` and passes reference checks. Use `edit_assembled_item_graph_setting` with the earlier `graphFromOperation` and `nodeIndex` to configure a node in the same transaction. Program item activity uses `item.active`; its runtime behavior remains unverified.
 
-Use `edit_item_graph_wire` to add or remove a supported pin-0 wire in an existing item graph. Each `from` or `to` endpoint selects an existing `nodeId` or an earlier assembled graph with `graphFromOperation` and `nodeIndex`. Other pins and runtime behavior remain unverified.
+Use `edit_item_graph_wire` to add or remove a supported pin-0 wire in an existing item graph. Each `from` or `to` endpoint selects an existing `nodeId`, an earlier copied node with `nodeFromOperation`, or an earlier assembled graph with `graphFromOperation` and `nodeIndex`. Other pins and runtime behavior remain unverified.
 
 Use `copy_item_graph_node` to add a supported node from a cue or patch donor to an existing item graph. Select the donor with `donorType`, its path and SHA-256, and `donorNodeId`; cue donors also need `donorName` and `donorCueId`, while patch donors need `donorFormat`. The result returns a node receipt. Use `edit_copied_item_node_setting` with `nodeFromOperation` to configure it in the same transaction. `remove_item_graph_node` removes an unreferenced node. Copied nodes have no wires; runtime behavior and external references remain unverified.
 
