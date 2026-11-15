@@ -37,7 +37,7 @@ import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
 import {copyPatchSettingToCueShowCopy} from './patch-setting-to-cue.js';
 import {inspectShowSetlist,addShowSetlistTrackCopy,editShowSetlistCopy} from './setlist.js';
 import {renameShowTrackCopy} from './track-rename.js';
-import {inspectProgram,createProgramCopy} from './program.js';
+import {inspectProgram,createProgramCopy,inspectShowProgram,attachShowProgramCopy} from './program.js';
 
 const base = new URL(process.env.SHOWKONTROL_URL || 'http://127.0.0.1:8090');
 if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash || !['', '/'].includes(base.pathname)) throw Error('SHOWKONTROL_URL must be an HTTP(S) origin without credentials or a path');
@@ -244,6 +244,8 @@ const programOperation=z.discriminatedUnion('action',[
  z.object({action:z.literal('edit'),index:z.number().int().nonnegative(),start:programTime.optional(),name:programText.optional(),notes:programText.optional()}).strict(),
  z.object({action:z.literal('remove'),index:z.number().int().nonnegative(),allowContentRemoval:z.boolean().optional()}).strict()
 ]);
+add('showkontrol_inspect_show_program','Inspect the canonical Program part in an offline show archive. App acceptance is unverified.',{file:z.string()},inspectShowProgram,readOnly);
+add('showkontrol_attach_show_program_copy','Attach an inspected standalone Program to a new offline show copy. Existing Program replacement requires replaceExisting. App acceptance is unverified.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),program:z.string(),programSha256:z.string().length(64),replaceExisting:z.boolean().optional()},attachShowProgramCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
 add('showkontrol_inspect_program','Inspect a standalone version 1 .skpr Program and return its SHA-256 and items in file order. App acceptance and sorting are unverified.',{file:z.string()},inspectProgram,readOnly);
 add('showkontrol_create_program_copy','Create a new standalone .skpr or edit an inspected copy. Source edits require SHA-256 and one operation; item indices use file order. Removing graph or timeline content requires allowContentRemoval. App acceptance and sorting are unverified.',{destination:z.string(),source:z.string().optional(),sha256:z.string().length(64).optional(),operation:programOperation.optional()},createProgramCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
 add('showkontrol_inspect_timeline','Inspect a version 1 offline .sktl timeline. Returns root attributes, layer and audio metadata, direct audio clip attributes, and discovered cue elements and paths. This does not modify the file.',{file:z.string()},inspectTimeline,readOnly);

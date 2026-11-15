@@ -3,6 +3,7 @@ import {constants} from 'node:fs';
 import {createHash, randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {parseXmlSpans} from './xml-spans.js';
+import {prepareShowProgram} from './xml-copy.js';
 
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const escape=s=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&apos;').replaceAll('\t','&#x9;').replaceAll('\n','&#xA;').replaceAll('\r','&#xD;');
@@ -29,7 +30,7 @@ async function snapshot(file){
   while(total<=limit){const buffer=Buffer.allocUnsafe(Math.min(65536,limit-total+1));const {bytesRead}=await handle.read(buffer,0,buffer.length,null);if(!bytesRead)break;total+=bytesRead;if(total>limit)throw Error('Program exceeds 10 MiB');chunks.push(buffer.subarray(0,bytesRead));}
   bytes=Buffer.concat(chunks,total);
  }finally{await handle.close();}
- const xml=new TextDecoder('utf-8',{fatal:true}).decode(bytes);return {xml,sha256:hash(bytes),...parse(xml)};
+ const xml=new TextDecoder('utf-8',{fatal:true}).decode(bytes);return {xml,bytes,sha256:hash(bytes),...parse(xml)};
 }
 const publicItems=items=>items.map(({node,...item})=>item);
 export async function inspectProgram({file}){const s=await snapshot(file);return {file,sha256:s.sha256,items:publicItems(s.items),note:'Static format evidence only; application acceptance, item sorting, cues and media are not verified.'};}
@@ -57,4 +58,27 @@ export async function createProgramCopy({destination,source,sha256,operation}){
  parse(xml);if(Buffer.byteLength(xml,'utf8')>10*1024*1024)throw Error('Program exceeds 10 MiB');const temp=path.join(path.dirname(destination),`.showkontrol-program-${randomUUID()}.tmp`);let created=false;
  try{await writeFile(temp,xml,{flag:'wx'});created=true;if(sourceSnapshot&&(await snapshot(source)).sha256!==sha256)throw Error('Source changed since inspection');await link(temp,destination);}finally{if(created)await unlink(temp);}
  return {destination,sha256:hash(Buffer.from(xml)),items:publicItems(parse(xml).items),note:'Static format evidence only; application acceptance, item sorting, cues and media are not verified.'};
+}
+
+const note='Static format evidence only; application acceptance, item sorting, cues and media are not verified.';
+export async function inspectShowProgram({file}){
+ const show=await prepareShowProgram({file});if(!show.bytes)return {file,sha256:show.sha256,present:false,note};
+ if(show.bytes.length>10*1024*1024)throw Error('Program exceeds 10 MiB');
+ const xml=new TextDecoder('utf-8',{fatal:true}).decode(show.bytes);
+ return {file,sha256:show.sha256,present:true,programSha256:hash(show.bytes),items:publicItems(parse(xml).items),note};
+}
+export async function attachShowProgramCopy({source,destination,sha256,program,programSha256,replaceExisting=false}){
+ if(!path.isAbsolute(destination)||path.extname(destination).toLowerCase()!=='.skshow'||path.resolve(source)===path.resolve(destination)||path.resolve(program)===path.resolve(destination))throw Error('Destination must be a different absolute .skshow path');
+ if(!/^[a-f0-9]{64}$/.test(sha256||'')||!/^[a-f0-9]{64}$/.test(programSha256||''))throw Error('Source and Program SHA-256 values are required');
+ const input=await snapshot(program);if(input.sha256!==programSha256)throw Error('Program changed since inspection');
+ const bytes=input.bytes,show=await prepareShowProgram({file:source,bytes,replaceExisting});if(show.sha256!==sha256)throw Error('Source changed since inspection');
+ const temp=path.join(path.dirname(destination),`.showkontrol-program-${randomUUID()}.tmp`);let created=false;
+ try{
+  await writeFile(temp,show.output,{flag:'wx'});created=true;
+  const verify=await prepareShowProgram({file:temp});if(verify.sha256!==hash(Buffer.from(show.output))||!verify.bytes?.equals(bytes))throw Error('Program roundtrip verification failed');
+  if((await prepareShowProgram({file:source})).sha256!==sha256)throw Error('Source changed since inspection');
+  if((await snapshot(program)).sha256!==programSha256)throw Error('Program changed since inspection');
+  await link(temp,destination);
+ }finally{if(created)await unlink(temp);}
+ return {destination,name:'content/Program.skpr',sha256:hash(Buffer.from(show.output)),programSha256,md5:show.md5,note};
 }

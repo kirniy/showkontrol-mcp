@@ -119,3 +119,31 @@ export async function addShowPart({source,destination,sha256,name,text}) {
  checkSize(Buffer.byteLength(output),maxBytes(),'XML output');
  await writeFile(destination,output,{encoding:'utf8',flag:'wx'});return {destination,name,md5};
 }
+
+// Build a Program replacement while retaining the original wrapper and unrelated parts.
+export async function prepareShowProgram({file,bytes,replaceExisting=false}) {
+ const xml=await load(file), entries=parts(xml), root=parseXmlSpans(xml);
+ if(!entries.length||!entries.every(p=>p.valid))throw Error('Missing parts or a part MD5 does not match');
+ const names=new Set();for(const entry of entries){const key=entry.name.toLowerCase();if(names.has(key))throw Error('Duplicate part name');names.add(key);}
+ const name='content/Program.skpr', existing=entries.find(p=>p.name.toLowerCase()===name.toLowerCase());
+ if(existing&&existing.name!==name)throw Error('Program part name is not canonical');
+ if(bytes===undefined)return {sha256:createHash('sha256').update(xml).digest('hex'),bytes:existing?.bytes};
+ if(existing&&!replaceExisting)throw Error('Program part already exists; set replaceExisting to true');
+ const md5=createHash('md5').update(bytes).digest('hex');
+ let attrs=` name="${name}" md5="${md5}"`;
+ if(existing){
+  const md5Attr=/(\smd5\s*=\s*["'])[a-fA-F0-9]{32}(["'])/g;
+  if([...existing.attrs.matchAll(md5Attr)].length!==1)throw Error('Unsupported part checksum serialization');
+  attrs=existing.attrs.replace(md5Attr,(_,a,b)=>a+md5+b);
+  let parsedAttrs;const parser=new SaxesParser();parser.on('opentag',tag=>{parsedAttrs=tag.attributes});parser.write(`<part${attrs}/>`).close();
+  if(parsedAttrs.md5!==md5||parsedAttrs.name!==name)throw Error('Unsupported part checksum serialization');
+ }
+ const entry=`<part${attrs}>${bytes.toString('base64')}</part>`;
+ if(root.selfClosing)throw Error('Unsupported show wrapper');
+ const output=existing?xml.slice(0,existing.start)+entry+xml.slice(existing.end):xml.slice(0,root.closeStart)+entry+xml.slice(root.closeStart);
+ validate(output);checkSize(Buffer.byteLength(output),maxBytes(),'XML output');
+ const roundtrip=parts(output);if(!roundtrip.every(p=>p.valid)||roundtrip.length!==entries.length+(existing?0:1))throw Error('Program roundtrip verification failed');
+ const actual=roundtrip.find(p=>p.name===name);if(!actual||!actual.bytes.equals(bytes))throw Error('Program roundtrip verification failed');
+ for(const old of entries.filter(p=>p!==existing)){const next=roundtrip.find(p=>p.name===old.name);if(!next||next.md5!==old.md5||!next.bytes.equals(old.bytes))throw Error('Unrelated part changed');}
+ return {sha256:createHash('sha256').update(xml).digest('hex'),output,md5};
+}
