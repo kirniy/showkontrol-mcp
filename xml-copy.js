@@ -3,6 +3,7 @@ import {constants} from 'node:fs';
 import {SaxesParser} from 'saxes';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
+import {parseXmlSpans} from './xml-spans.js';
 const DEFAULT_MAX_BYTES=128*1024*1024;
 function maxBytes(){
  const value=process.env.SHOWKONTROL_OFFLINE_MAX_BYTES;
@@ -49,22 +50,23 @@ export async function editXmlCopy({source,destination,sha256,edits}) {
  return {destination,sha256:createHash('sha256').update(xml).digest('hex'),edits:edits.length,note:'XML syntax checked; ShowKontrol compatibility has not been checked.'};
 }
 function parts(xml) {
- const out=[];const re=/<part\b([^>]*)>([A-Za-z0-9+/=\s]*)<\/part\s*>/g;let m;
- while((m=re.exec(xml))){
-  let attrs;const parser=new SaxesParser();parser.on('opentag',tag=>{attrs=tag.attributes});parser.write(`<part${m[1]}/>`).close();
-  const name=attrs.name,md5=attrs.md5;
+ const root=parseXmlSpans(xml);if(root.name!=='skshow')throw Error('Not a supported skshow wrapper');
+ const out=[];
+ for(const node of root.children.filter(child=>child.name==='part')){
+  const {name,md5}=node.attributes;
   if(typeof name!=='string'||/[&<>]/.test(name)||typeof md5!=='string'||!/^[a-fA-F0-9]{32}$/.test(md5))throw Error('Unsupported part attributes');
-  const encoded=m[2].replace(/\s/g,'');const bytes=Buffer.from(encoded,'base64');
+  const content=xml.slice(node.openEnd,node.closeStart);
+  if(node.selfClosing||node.children.length||!/^[A-Za-z0-9+/=\s]*$/.test(content))throw Error('Unsupported part encoding or structure');
+  const encoded=content.replace(/\s/g,'');const bytes=Buffer.from(encoded,'base64');
   if(bytes.toString('base64')!==encoded)throw Error(`Invalid base64 in ${name}`);
   const actual=createHash('md5').update(bytes).digest('hex');
-  out.push({name,md5,valid:actual===md5.toLowerCase(),bytes,start:m.index,end:re.lastIndex,full:m[0],attrs:m[1]});
+  out.push({name,md5,valid:actual===md5.toLowerCase(),bytes,start:node.start,end:node.end,attrs:xml.slice(node.start+5,node.openEnd-1)});
  }
- if ((xml.match(/<part(?:\s|>)/g)||[]).length !== out.length) throw Error('Unsupported part encoding or structure');
  return out;
 }
 export async function readShowSnapshot({file}) {
  const xml=await load(file);const entries=parts(xml);
- if(!/^\s*(?:<\?xml[^>]*>\s*)?<skshow(?:\s|>)/.test(xml)||!entries.length)throw Error('Not a supported skshow wrapper');
+ if(!entries.length)throw Error('Not a supported skshow wrapper');
  return {file,sha256:createHash('sha256').update(xml).digest('hex'),parts:entries.map(({name,md5,valid,bytes})=>({name,md5,valid,bytes}))};
 }
 export async function inspectShow({file}) {

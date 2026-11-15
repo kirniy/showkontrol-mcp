@@ -38,7 +38,22 @@ test('patch operations select real XML attributes, not lookalike attribute names
  const edited=path.join(dir,'edited.skf');
  await editPatchSettingCopy({source,destination:edited,format:'skf',sha256:targetInfo.sha256,nodeId:'n1',key:'level',value:'new'});
  assert.deepEqual((await inspectPatch({file:edited,format:'skf'})).nodes[0].settings.map(s=>s.value),['new','untouched']);
- await assert.rejects(copyPatchNode({source,destination:path.join(dir,'copy.skf'),format:'skf',sha256:targetInfo.sha256,template:donor,templateFormat:'skf',templateSha256:donorInfo.sha256,nodeId:'n1',newNodeId:'n3'}),/node ID attribute/);
+ const copied=path.join(dir,'copy.skf');
+ await copyPatchNode({source,destination:copied,format:'skf',sha256:targetInfo.sha256,template:donor,templateFormat:'skf',templateSha256:donorInfo.sha256,nodeId:'n1',newNodeId:'n3'});
+ const result=await inspectPatch({file:copied,format:'skf'});assert.equal(result.nodes.find(n=>n.id==='n3').type,'correct');assert.equal(result.nodes.some(n=>n.id==='n2'),false);
+ assert.equal(await readFile(donor,'utf8'),template);assert.equal((await inspectPatch({file:donor,format:'skf'})).nodes.find(n=>n.id==='n2').type,'wrong');
+});
+
+test('setting edit targets the real element when a comment contains a lookalike',async t=>{
+ const {editPatchSettingCopy}=await import('./patch.js');
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-setting-comment-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skf'),destination=path.join(dir,'out.skf');
+ const fake='<!-- <setting key="level">decoy</setting> -->';
+ const original=`<showkontrol version="2"><graph><node id="n1"><settings>${fake}<setting data-key="other" key="level"><![CDATA[old < value]]></setting></settings></node></graph><appSettings/></showkontrol>`;
+ await writeFile(source,original);const {sha256}=await inspectPatch({file:source,format:'skf'});
+ await editPatchSettingCopy({source,destination,format:'skf',sha256,nodeId:'n1',key:'level',value:'new & value'});
+ assert.equal(await readFile(destination,'utf8'),original.replace('<![CDATA[old < value]]>','new &amp; value'));
+ assert.equal((await inspectPatch({file:destination,format:'skf'})).nodes[0].settings[0].value,'new & value');
 });
 
 test('show snapshots keep the inspected hash and node XML from the same file read',async t=>{

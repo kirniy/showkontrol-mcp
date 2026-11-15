@@ -12,6 +12,21 @@ export function parseSetlist(xml) {
  if(!root)throw Error('Expected a version 2 set list');return sets;
 }
 function escapeAttr(s){return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&apos;');}
+function setEntrySpans(xml){
+ const parser=new SaxesParser(),stack=[],sets=[];let current,entry;
+ parser.on('opentag',tag=>{
+  stack.push(tag.name);const path=stack.join('/');
+  if(path==='sksetlist/set'){current={entries:[]};sets.push(current);}
+  if(path==='sksetlist/set/entry')entry={start:xml.lastIndexOf('<',parser.position-1)};
+ });
+ parser.on('closetag',tag=>{
+  const path=stack.join('/');
+  if(path==='sksetlist/set/entry'){entry.end=parser.position;current.entries.push(entry);entry=null;}
+  if(path==='sksetlist/set')current=null;
+  stack.pop();
+ });
+ parser.write(xml).close();return sets;
+}
 async function loadShow(file,name){
  if(!name||!name.toLowerCase().endsWith('.skls'))throw Error('Select a .skls part');
  const show=await readShowSnapshot({file});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
@@ -45,9 +60,7 @@ export async function addShowSetlistTrackCopy({source,destination,sha256,name,se
 export async function editShowSetlistCopy({source,destination,sha256,name,operation,setName,newSetName,index,toIndex}){
  const {show,xml,sets}=await loadShow(source,name);if(show.sha256!==sha256)throw Error('Source changed since inspection');
  if(!['create_set','remove_set','move_set','remove_track','move_track'].includes(operation))throw Error('Unsupported set list operation');
- const setElements=[...xml.matchAll(/<set\b(?:[^"'<>]|"[^"]*"|'[^']*')*?(?:\/>|>[\s\S]*?<\/set\s*>)/g)];
- if(setElements.length!==sets.length)throw Error('Unsupported set serialization');
- let modified;
+ let modified,expectedSets;
  if(operation==='create_set'){
   if(typeof newSetName!=='string'||!newSetName.trim()||/[\x00-\x1f\ufffe\uffff]/u.test(newSetName))throw Error('A valid new set name is required');
   if(sets.some(s=>s.name===newSetName))throw Error('Set name already exists');
@@ -55,28 +68,31 @@ export async function editShowSetlistCopy({source,destination,sha256,name,operat
   modified=xml.slice(0,close[0].index)+`<set name="${escapeAttr(newSetName)}"></set>`+xml.slice(close[0].index);
  }else{
   if(typeof setName!=='string'||sets.filter(s=>s.name===setName).length!==1)throw Error('Set name must occur exactly once');
-  const selectedIndex=sets.findIndex(s=>s.name===setName),selected=setElements[selectedIndex];
+  const selectedIndex=sets.findIndex(s=>s.name===setName);
   if(operation==='remove_set'){
    // Active is a positional index; changing set positions would alter its meaning.
    throw Error('Removing sets is unsupported until active-set index behavior is verified');
   }else if(operation==='move_set'){
    throw Error('Reordering sets is unsupported until active-set index behavior is verified');
   }else{
-   const entries=[...selected[0].matchAll(/<entry\b(?:[^"'<>]|"[^"]*"|'[^']*')*?\/>/g)];
+   const spans=setEntrySpans(xml);if(spans.length!==sets.length)throw Error('Unsupported set serialization');
+   const entries=spans[selectedIndex].entries;
    if(entries.length!==sets[selectedIndex].tracks.length)throw Error('Unsupported entry serialization');
    if(!Number.isInteger(index)||index<0||index>=entries.length)throw Error('Entry index is outside the set');
-   const values=entries.map(m=>m[0]);const [entry]=values.splice(index,1);
+   const values=entries.map(m=>xml.slice(m.start,m.end));const [entry]=values.splice(index,1);
+   expectedSets=structuredClone(sets);const [track]=expectedSets[selectedIndex].tracks.splice(index,1);
    if(operation==='move_track'){
     if(!Number.isInteger(toIndex)||toIndex<0||toIndex>=entries.length)throw Error('Destination index is outside the set');
-    values.splice(toIndex,0,entry);
+    values.splice(toIndex,0,entry);expectedSets[selectedIndex].tracks.splice(toIndex,0,track);
    }
    // Preserve whitespace or other untouched material between entry elements.
-   let body=selected[0], cursor=0, changed='';
-   for(let i=0;i<entries.length;i++){changed+=body.slice(cursor,entries[i].index)+(values[i]??'');cursor=entries[i].index+entries[i][0].length;}
-   changed+=body.slice(cursor);modified=xml.slice(0,selected.index)+changed+xml.slice(selected.index+selected[0].length);
+   let cursor=0,changed='';
+   for(let i=0;i<entries.length;i++){changed+=xml.slice(cursor,entries[i].start)+(values[i]??'');cursor=entries[i].end;}
+   modified=changed+xml.slice(cursor);
   }
  }
- parseSetlist(modified);
+ const resultSets=parseSetlist(modified);
+ if(expectedSets&&JSON.stringify(resultSets)!==JSON.stringify(expectedSets))throw Error('Set list edit did not produce the expected track order');
  const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});
  return {...result,operation,note:'Changed an offline set list copy. Validate in ShowKontrol.'};
 }

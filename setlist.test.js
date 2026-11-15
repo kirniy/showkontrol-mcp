@@ -86,3 +86,17 @@ test('set and track edits handle greater-than signs in attribute values',async t
  await editShowSetlistCopy({source:added,destination:removed,sha256:before.sha256,...args,operation:'remove_track',setName:'New > Set',index:0});
  assert.deepEqual((await info(removed)).sets[1],{name:'New > Set',tracks:[]});
 });
+test('remove and move target direct entries instead of commented decoys',async t=>{
+ const {editShowSetlistCopy}=await import('./setlist.js');const {readShowPart}=await import('./xml-copy.js');
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-set-comment-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'in.skshow'),removed=path.join(dir,'removed.skshow'),moved=path.join(dir,'moved.skshow'),name='Setlist.skls';
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const xml='<sksetlist version="2"><!-- <set name="fake"><entry track="fake"/></set> --><set name="Set 1"><!-- <entry track="decoy"/> --><entry track="A"></entry><entry track="B"/></set></sksetlist>';
+ await writeFile(source,`<skshow>${part(name,xml)}</skshow>`);const before=await inspectShowSetlist({file:source,name});
+ await editShowSetlistCopy({source,destination:removed,sha256:before.sha256,name,operation:'remove_track',setName:'Set 1',index:0});
+ assert.deepEqual((await inspectShowSetlist({file:removed,name})).sets,[{name:'Set 1',tracks:['B']}]);
+ assert.match((await readShowPart({file:removed,name})).text,/<!-- <entry track="decoy"\/> -->/);
+ await editShowSetlistCopy({source,destination:moved,sha256:before.sha256,name,operation:'move_track',setName:'Set 1',index:0,toIndex:1});
+ assert.deepEqual((await inspectShowSetlist({file:moved,name})).sets,[{name:'Set 1',tracks:['B','A']}]);
+ assert.match((await readShowPart({file:moved,name})).text,/<!-- <entry track="decoy"\/> -->/);
+});

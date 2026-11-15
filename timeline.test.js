@@ -174,3 +174,35 @@ test('cue graph copy ignores comment, CDATA and nested cue decoys',async t=>{
  await copyCueGraphInShow({source,destination,sha256,name,sourceCueId:'source',targetCueId:'target'});
  const target=(await inspectCueGraph({file:destination,format:'skshow',name,cueId:'target'})).graph;assert.equal(target.nodes.length,2);assert.equal(target.connections.length,1);assert.equal(await readFile(source,'utf8'),original);
 });
+test('copy fixture cue graph from a separately checked template show',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-graph-template-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'target.skshow'),template=path.join(dir,'template.skshow'),destination=path.join(dir,'out.skshow');
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const graph='<graph><node id="n154" type="groupin"><settings/></node><node id="n155" type="trigger"><settings><setting key="trigger.path">cue.active</setting><setting key="trigger.on">State On</setting></settings></node><node id="n156" type="action"><settings><setting key="action.category">Application</setting></settings></node><connection fromNode="n154" fromPin="0" toNode="n155" toPin="0"/><connection fromNode="n155" fromPin="0" toNode="n156" toPin="0"/></graph>';
+ const donorXml=`<skshow>${part('content/Donor.sktl',`<sktimeline version="1"><layers><layer name="L"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Cue">${graph}</cue></sktimeline>`)}${part('patch.skf','<showkontrol version="2"/>')}</skshow>`;
+ const patch=part('patch.skf','<showkontrol version="2"><graph><node id="n700"/></graph></showkontrol>');const targetXml=`<skshow>${part('content/Track.sktl','<sktimeline version="1"><layers><layer name="L"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Target"/></sktimeline>')}${patch}</skshow>`;await writeFile(template,donorXml);await writeFile(source,targetXml);
+ const name='content/Track.sktl',sourceName='content/Donor.sktl';const targetInfo=await inspectShowTimeline({file:source,name}),donorInfo=await inspectShowTimeline({file:template,name:sourceName});const args={source,destination,sha256:targetInfo.sha256,template,templateSha256:donorInfo.sha256,name,sourceName,sourceCueId:'c1',targetCueId:'c1'};
+ const result=await copyCueGraphInShow(args);assert.deepEqual(result.idMap,{n154:'n701',n155:'n702',n156:'n703'});const copied=(await inspectCueGraph({file:destination,format:'skshow',name,cueId:'c1'})).graph;assert.deepEqual(copied.connections.map(c=>[c.fromNode,c.toNode]),[['n701','n702'],['n702','n703']]);assert.equal(copied.nodes[1].settings[0].value,'cue.active');assert.ok((await readFile(destination,'utf8')).includes(patch));assert.equal(await readFile(source,'utf8'),targetXml);assert.equal(await readFile(template,'utf8'),donorXml);
+ await assert.rejects(copyCueGraphInShow({...args,destination:path.join(dir,'bad'),templateSha256:'0'.repeat(64)}),/Template changed/);await assert.rejects(copyCueGraphInShow({...args,destination:path.join(dir,'bad2'),templateSha256:undefined}),/both template/);
+});
+test('cue edit rejects attribute-like label text when requested field is absent',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-cue-attr-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.sktl'),destination=path.join(dir,'out.sktl');
+ const xml=`<sktimeline version="1"><layers><layer name="L"/></layers><cue id="c1" layer="0" lenMs="40" label=" startMs='0'"/></sktimeline>`;await writeFile(source,xml);const {sha256}=await inspectTimeline({file:source});
+ await assert.rejects(editTimelineCueCopy({source,destination,format:'sktl',sha256,cueId:'c1',startMs:5}),/field startMs/);await assert.rejects(readFile(destination),/ENOENT/);assert.equal(await readFile(source,'utf8'),xml);
+});
+test('cue graph setting edit skips comment decoy and replaces actual CDATA value',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-setting-cdata-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.sktl'),destination=path.join(dir,'out.sktl');
+ const xml='<sktimeline version="1"><layers><layer name="L"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Cue"><graph><node id="n1" type="trigger"><settings><!-- <setting key="trigger.path">fake</setting> --><setting key="trigger.path"><![CDATA[cue.active]]></setting></settings></node></graph></cue></sktimeline>';await writeFile(source,xml);const {sha256}=await inspectTimeline({file:source});
+ await editCueGraphSettingCopy({source,destination,format:'sktl',sha256,cueId:'c1',nodeId:'n1',key:'trigger.path',value:'cue.other'});const output=await readFile(destination,'utf8');assert.ok(output.includes('<!-- <setting key="trigger.path">fake</setting> -->'));assert.equal((await inspectCueGraph({file:destination,format:'sktl',cueId:'c1'})).graph.nodes[0].settings[0].value,'cue.other');
+});
+test('external graph copying allocates above donor IDs when target IDs are lower',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-low-ids-'));t.after(()=>rm(dir,{recursive:true,force:true}));const template=path.join(dir,'donor.skshow');
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const donor=ids=>`<skshow>${part('content/Donor.sktl',`<sktimeline version="1"><layers><layer name="L"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Cue"><graph>${ids.map(id=>`<node id="${id}" type="groupin"><settings/></node>`).join('')}</graph></cue></sktimeline>`)}${part('patch.skf','<showkontrol version="2"/>')}</skshow>`;
+ const target=patchNode=>`<skshow>${part('content/Track.sktl','<sktimeline version="1"><layers><layer name="L"/></layers><cue id="c2" layer="0" startMs="0" lenMs="40" label="Target"/></sktimeline>')}${part('patch.skf',`<showkontrol version="2"><graph>${patchNode}</graph></showkontrol>`)}</skshow>`;
+ for(const [i,donorIds,patchNode,expected] of [[1,['n1'],'',{n1:'n2'}],[2,['n1','n2'],'<node id="n1"/>',{n1:'n3',n2:'n4'}]]){
+  const source=path.join(dir,`target${i}.skshow`),destination=path.join(dir,`out${i}.skshow`);await writeFile(template,donor(donorIds));await writeFile(source,target(patchNode));
+  const name='content/Track.sktl',sourceName='content/Donor.sktl',targetInfo=await inspectShowTimeline({file:source,name}),donorInfo=await inspectShowTimeline({file:template,name:sourceName});
+  const result=await copyCueGraphInShow({source,destination,sha256:targetInfo.sha256,template,templateSha256:donorInfo.sha256,name,sourceName,sourceCueId:'c1',targetCueId:'c2'});assert.deepEqual(result.idMap,expected);
+  assert.deepEqual((await inspectCueGraph({file:destination,format:'skshow',name,cueId:'c2'})).graph.nodes.map(n=>n.id),Object.values(expected));
+ }
+});

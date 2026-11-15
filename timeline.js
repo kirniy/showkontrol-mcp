@@ -91,12 +91,16 @@ function cueElements(xml,cueId){
   parser.write(opening.replace(/\s*\/?>$/,'/>')).close();return attributes.id===cueId;
  });
 }
-export async function copyCueGraphInShow({source,destination,sha256,name,sourceName=name,sourceCueId,targetCueId}){
- if(sourceName===name&&sourceCueId===targetCueId)throw Error('Select two different cues');
+export async function copyCueGraphInShow({source,destination,sha256,name,sourceName=name,sourceCueId,targetCueId,template,templateSha256}){
+ if((template===undefined)!==(templateSha256===undefined))throw Error('Provide both template and templateSha256');
+ if(template===undefined&&sourceName===name&&sourceCueId===targetCueId)throw Error('Select two different cues');
  if(!name?.toLowerCase().endsWith('.sktl')||!sourceName?.toLowerCase().endsWith('.sktl'))throw Error('Select .sktl parts');
  const show=await readShowSnapshot({file:source});if(show.sha256!==sha256)throw Error('Source changed since inspection');
  if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
- const xml=readSnapshotPart({snapshot:show,name}).text,sourceXml=readSnapshotPart({snapshot:show,name:sourceName}).text;
+ const donor=template===undefined?show:await readShowSnapshot({file:template});
+ if(template!==undefined&&donor.sha256!==templateSha256)throw Error('Template changed since inspection');
+ if(!donor.parts.every(p=>p.valid))throw Error('A template part MD5 does not match');
+ const xml=readSnapshotPart({snapshot:show,name}).text,sourceXml=readSnapshotPart({snapshot:donor,name:sourceName}).text;
  const src=cueGraph(sourceXml,sourceCueId),target=cueGraph(xml,targetCueId);
  if(!src.graph||!src.graph.nodes.length)throw Error('Source cue has no graph');
  if(target.graph)throw Error('Target cue already has a graph');
@@ -109,6 +113,7 @@ export async function copyCueGraphInShow({source,destination,sha256,name,sourceN
   const txt=(readSnapshotPart({snapshot:show,name:entry.name})).text;
   for(const id of xmlNodeIds(txt)){if(/^n\d+$/.test(id)){const n=Number(id.slice(1));if(!Number.isSafeInteger(n)||n>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,n)}}
  }
+ for(const id of ids){const n=Number(id.slice(1));if(!Number.isSafeInteger(n)||n>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,n);}
  if(max+ids.length>1000000000)throw Error('No node IDs remain in the supported range');
  const idMap=Object.fromEntries(ids.map(id=>[id,`n${++max}`]));
  const sourceRoot=parseXmlSpans(sourceXml),targetRoot=sourceXml===xml?sourceRoot:parseXmlSpans(xml);
@@ -149,18 +154,23 @@ export async function editTimelineCueCopy({source,destination,format,sha256,name
  if(label!==undefined&&(typeof label!=='string'||!label.trim()))throw Error('Cue label is required');
  const updates={layer,startMs,lenMs:lengthMs,label};
  if(Object.values(updates).every(v=>v===undefined))throw Error('Provide at least one cue field');
- const openingRe=/<cue\b(?:[^>"']|"[^"]*"|'[^']*')*>/g;
- const openings=[...xml.matchAll(openingRe)].filter(m=>{
-  let attrs;const p=new SaxesParser();p.on('opentag',t=>attrs=t.attributes);p.write(m[0].replace(/\s*\/?>$/,'/>')).close();return attrs.id===cueId;
- });
- if(openings.length!==1)throw Error('Cannot uniquely locate cue serialization');
- const match=openings[0];let changed=match[0];
- for(const [key,value] of Object.entries(updates))if(value!==undefined){
-  const re=new RegExp('(\\s'+key+'\\s*=\\s*)(["\'])(.*?)\\2','g');
-  if([...changed.matchAll(re)].length!==1)throw Error(`Cue field ${key} must exist exactly once`);
-  changed=changed.replace(re,(_,prefix,quote)=>prefix+quote+xmlAttr(String(value)).replaceAll("'",'&apos;')+quote);
+ const root=parseXmlSpans(xml),matches=selectXmlSpans(root,['sktimeline',{name:'cue',attributes:{id:cueId}}]);
+ if(matches.length!==1)throw Error('Cannot uniquely locate cue serialization');
+ const match=matches[0],opening=xml.slice(match.start,match.openEnd);
+ const replacements=[];let pos=4;const attr=/\s+([^\s=/>]+)\s*=\s*(["'])([^"']*(?:(?!\2)["'][^"']*)*)\2/y;
+ while(pos<opening.length){
+  if(/^\s*\/?>$/.test(opening.slice(pos)))break;
+  attr.lastIndex=pos;const m=attr.exec(opening);if(!m)throw Error('Unsupported cue attribute serialization');
+  const key=m[1];if(Object.hasOwn(updates,key)&&updates[key]!==undefined){
+   const valueStart=pos+m[0].indexOf(m[2])+1;replacements.push({key,start:valueStart,end:valueStart+m[3].length,value:xmlAttr(String(updates[key])).replaceAll("'",'&apos;')});
+  }
+  pos=attr.lastIndex;
  }
- const modified=xml.slice(0,match.index)+changed+xml.slice(match.index+match[0].length);parseTimeline(modified);
+ for(const [key,value] of Object.entries(updates))if(value!==undefined&&!replacements.some(r=>r.key===key))throw Error(`Cue field ${key} must exist exactly once`);
+ let changed=opening;for(const r of replacements.reverse())changed=changed.slice(0,r.start)+r.value+changed.slice(r.end);
+ const modified=xml.slice(0,match.start)+changed+xml.slice(match.openEnd);
+ const checked=parseTimeline(modified).cueElements.filter(c=>c.path==='sktimeline/cue'&&c.attributes.id===cueId);
+ if(checked.length!==1||Object.entries(updates).some(([key,value])=>value!==undefined&&checked[0].attributes[key]!==String(value)))throw Error('Cue edit did not produce requested values');
  const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};
  const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
  return {...result,cueId,note:'Cue fields changed in an offline copy; existing graph was preserved. Validate in ShowKontrol.'};
@@ -228,24 +238,14 @@ export async function editCueGraphSettingCopy({source,destination,format,sha256,
  const graph=cueGraph(xml,cueId).graph;if(!graph)throw Error('Cue has no action graph');
  const nodes=graph.nodes.filter(n=>n.id===nodeId);if(nodes.length!==1)throw Error('Node ID must occur exactly once in cue graph');
  if(nodes[0].settings.filter(s=>s.key===key).length!==1)throw Error('Setting must exist exactly once in selected node');
- const cueMatches=[...xml.matchAll(/<cue\b(?:[^>"']|"[^"]*"|'[^']*')*?(?:\/>|>[\s\S]*?<\/cue\s*>)/g)].filter(m=>{
-  let attrs;const p=new SaxesParser();p.on('opentag',t=>{if(!attrs)attrs=t.attributes});p.write(m[0]).close();return attrs.id===cueId;
- });
- if(cueMatches.length!==1)throw Error('Unsupported or ambiguous cue serialization');
- const cue=cueMatches[0];
- const nodeMatches=[...cue[0].matchAll(/<node\b(?:[^>"']|"[^"]*"|'[^']*')*>[\s\S]*?<\/node\s*>/g)].filter(m=>{
-  let attrs;const p=new SaxesParser();p.on('opentag',t=>{if(!attrs)attrs=t.attributes});p.write(m[0]).close();return attrs.id===nodeId;
- });
- if(nodeMatches.length!==1)throw Error('Unsupported or ambiguous node serialization');
- const node=nodeMatches[0];
- const settings=[...node[0].matchAll(/(<setting\b(?:[^>"']|"[^"]*"|'[^']*')*?)(?:\/>|>([^<]*)<\/setting\s*>)/g)].filter(m=>{
-  let attrs;const p=new SaxesParser();p.on('opentag',t=>{if(!attrs)attrs=t.attributes});p.write(m[0]).close();return attrs.key===key;
- });
+ const root=parseXmlSpans(xml),settings=selectXmlSpans(root,['sktimeline',{name:'cue',attributes:{id:cueId}},'graph',{name:'node',attributes:{id:nodeId}},'settings',{name:'setting',attributes:{key}}]);
  if(settings.length!==1)throw Error('Unsupported or ambiguous setting serialization');
  const setting=settings[0],encoded=value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
- const newNode=node[0].slice(0,setting.index)+setting[1]+ '>'+encoded+'</setting>'+node[0].slice(setting.index+setting[0].length);
- const newCue=cue[0].slice(0,node.index)+newNode+cue[0].slice(node.index+node[0].length);
- const modified=xml.slice(0,cue.index)+newCue+xml.slice(cue.index+cue[0].length);cueGraph(modified,cueId);
+ const opening=xml.slice(setting.start,setting.openEnd);
+ const replacement=setting.selfClosing?opening.replace(/\s*\/>$/,'>')+encoded+'</setting>':opening+encoded+xml.slice(setting.closeStart,setting.end);
+ const modified=xml.slice(0,setting.start)+replacement+xml.slice(setting.end);
+ const checked=cueGraph(modified,cueId).graph?.nodes.filter(n=>n.id===nodeId);
+ if(checked?.length!==1||checked[0].settings.filter(s=>s.key===key&&s.value===value).length!==1)throw Error('Cue graph setting edit did not produce requested value');
  const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
  return {...result,cueId,nodeId,key,value,note:'Changed an existing cue graph setting in an offline copy. Value semantics and ShowKontrol acceptance are not validated.'};
 }

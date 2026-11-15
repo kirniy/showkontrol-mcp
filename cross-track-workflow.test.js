@@ -16,4 +16,7 @@ test('MCP creates a track and cue, copies a graph across tracks, and edits a set
  const inspectedGraph=await call('showkontrol_inspect_cue_graph',{file:file(3),format:'skshow',name:timelineName,cueId:cue.id});assert.equal(inspectedGraph.graph.connections.length,2);
  await call('showkontrol_edit_cue_graph_setting_copy',{source:file(3),destination:file(4),sha256:inspectedGraph.sha256,format:'skshow',name:timelineName,cueId:cue.id,nodeId:'n202',key:'trigger.on',value:'State Off'});
  const result=await call('showkontrol_inspect_cue_graph',{file:file(4),format:'skshow',name:timelineName,cueId:cue.id});assert.equal(result.graph.nodes.find(n=>n.id==='n202').settings.find(s=>s.key==='trigger.on').value,'State Off');assert.equal(result.graph.connections.length,2);
+ const donorInfo=await call('showkontrol_inspect_show',{file:file(0)}), targetInfo=await call('showkontrol_inspect_show',{file:file(2)});
+ await call('showkontrol_copy_cue_graph_show_copy',{source:file(2),destination:file(5),sha256:targetInfo.sha256,name:timelineName,template:file(0),templateSha256:donorInfo.sha256,sourceName:'content/Track.sktl',sourceCueId:'c1',targetCueId:cue.id});
+ const externalGraph=await call('showkontrol_inspect_cue_graph',{file:file(5),format:'skshow',name:timelineName,cueId:cue.id});assert.equal(externalGraph.graph.nodes.length,3);assert.equal(externalGraph.graph.connections.length,2);
 });

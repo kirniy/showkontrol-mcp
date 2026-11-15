@@ -6,6 +6,21 @@ import path from 'node:path';
 import os from 'node:os';
 import {inspectShow,readShowPart,editShowPart} from './xml-copy.js';
 
+test('show part operations ignore part markup in comments',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-comment-part-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'in.skshow'),destination=path.join(dir,'out.skshow'),fakeOnly=path.join(dir,'fake.skshow');
+ const part=(text)=>`<part name="patch.skf" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const comment=`<!-- ${part('<root>decoy</root>')} -->`,real=part('<root>old</root>');
+ const original=`<skshow>${comment}${real}</skshow>`;await writeFile(source,original);await writeFile(fakeOnly,`<skshow>${comment}</skshow>`);
+ const show=await inspectShow({file:source});assert.deepEqual(show.parts.map(p=>p.name),['patch.skf']);
+ await editShowPart({source,destination,sha256:show.sha256,name:'patch.skf',edits:[{find:'old',replace:'new'}]});
+ assert.equal((await readShowPart({file:destination,name:'patch.skf'})).text,'<root>new</root>');
+ assert.ok((await readFile(destination,'utf8')).includes(comment));
+ await assert.rejects(inspectShow({file:fakeOnly}),/supported skshow wrapper/);
+ const sha256=createHash('sha256').update(await readFile(fakeOnly)).digest('hex');
+ await assert.rejects(editShowPart({source:fakeOnly,destination:path.join(dir,'fake-out'),sha256,name:'patch.skf',edits:[{find:'decoy',replace:'new'}]}),/exactly one part/);
+});
+
 test('show parts use actual name and md5 attributes when lookalikes exist',async t=>{
  const dir=await mkdtemp(path.join(os.tmpdir(),'sk-xml-parts-'));t.after(()=>rm(dir,{recursive:true,force:true}));
  const source=path.join(dir,'in.skshow'),destination=path.join(dir,'out.skshow');
