@@ -119,7 +119,7 @@ test('selects rows only by line with both exact values and fails on any ambiguit
 test('refuses to orphan a value still named by a track or Program clip or by any other part',async t=>{
  const cases=[
   // Track clip file, reported by position.
-  [{},[remove(3,'/orig/c.wav','MEDIA/c.wav')],/sourcePath "\/orig\/c\.wav" of media\.map line 3 referenced without a mapping: content\/T\.sktl audio 0 clip 0 file; part content\/T\.sktl/],
+  [{},[remove(3,'/orig/c.wav','MEDIA/c.wav')],/sourcePath "\/orig\/c\.wav" of media\.map line 3 referenced without a mapping: content\/T\.sktl audio 0 clip 0 file; part content\/T\.sktl.*\. This tool changes only media\.map: first re-point or remove those references in another copy \(for example with showkontrol_edit_timeline_audio_clip_copy\), or keep the row$/],
   [{},[{action:'repoint_mapping',...row(3,'/orig/c.wav','MEDIA/c.wav'),newSourcePath:'/lib/c.wav'}],/content\/T\.sktl audio 0 clip 0 file/],
   // Program item clip.
   [{parts:programPart('/orig/a.wav')},[remove(1,'/orig/a.wav','MEDIA/a.wav')],/content\/Program\.skpr item 1 audio 0 clip 0 file/],

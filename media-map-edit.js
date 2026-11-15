@@ -72,7 +72,7 @@ export async function editMediaMappingsCopy({source,destination,sha256,operation
  const plan=planMappingOperations(inventory,operations);
  const snapshot=await readShowSnapshot({file:source});if(snapshot.sha256!==sha256)throw Error('Source changed since inspection');
  // Only media.map changes, so references are checked in the source parts.
- assertUnreferenced(findReferences({snapshot,inventory,targets:vanishingValues(plan,plan.rows)}));
+ assertUnreferenced(findReferences({snapshot,inventory,targets:vanishingValues(plan,plan.rows)}),'This tool changes only media.map: first re-point or remove those references in another copy (for example with showkontrol_edit_timeline_audio_clip_copy), or keep the row');
  const text=editMappingText(readSnapshotPart({snapshot,name:'media.map'}).text,plan.edits);
  const dir=await mkdtemp(path.join(path.dirname(destination),'.showkontrol-media-map-'));let published=false,result;
  try{

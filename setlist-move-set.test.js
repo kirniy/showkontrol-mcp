@@ -86,7 +86,7 @@ test('move_set rejects unsafe or ambiguous input and publishes nothing',async t=
   [base,{setName:'A',toIndex:3},/outside the set list/],
   [base,{setName:'A',toIndex:-1},/outside the set list/],
   [base,{setName:'A',toIndex:1.5},/outside the set list/],
-  [base,{setName:'A'},/outside the set list/],
+  [base,{setName:'A'},/move_set requires toIndex/],
   [base,{setName:'Z',toIndex:1},/exactly once/],
   [base,{setName:'',toIndex:1},/exactly once/],
   [base,{setName:'A',toIndex:1,index:0},/setName and toIndex only/],

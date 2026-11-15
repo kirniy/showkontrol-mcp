@@ -155,7 +155,10 @@ export async function preflightSessionAudio({directory,sha256,probeDurations=tru
   probe:{enabled:probeDurations,ffprobe,budgetMs:probeBudgetMs},
   trimComparison:TRIM_COMPARISON,
   files:files.map(({open:_o,follow:_f,identity:_i,...entry})=>entry),
-  clips,diagnostics:session.diagnostics,
+  clips,
+  // A clip whose sidecar and source path both failed to open for reading; the per-clip statuses say why.
+  summary:{clips:clips.length,withoutReadableMedia:clips.filter(c=>c.sidecar.status!=='readable'&&c.sourcePath.status!=='readable').map(({part,itemIndex,audioIndex,clipIndex})=>({part,...(itemIndex!==undefined?{itemIndex}:{}),audioIndex,clipIndex}))},
+  diagnostics:session.diagnostics,
   limitations:[
    'Two candidates are checked per clip: the media.map sidecar whose source path equals the clip file, and the clip file as a path on this computer. Which one ShowKontrol uses, and whether it searches elsewhere, is unverified.',
    'Readable means the file opened for reading at the time of the call. Sidecar symlinks are not followed; source path symlinks are.',

@@ -152,10 +152,11 @@ export function findReferences({snapshot,inventory,targets,files=[]}){
  return targets.filter(t=>found.get(t).length).map(t=>({...t,locations:found.get(t)}));
 }
 
-export function assertUnreferenced(hits){
+// The session composer can re-point references in the same call; the standalone tool passes its own remedy.
+export function assertUnreferenced(hits,remedy='Re-point or remove the references in the same composition, or keep the row'){
  if(!hits.length)return;
  const [first]=hits;
- throw Error(`Mapping operation ${first.operationIndex} would leave ${first.column} ${JSON.stringify(first.value)} of media.map line ${first.line} referenced without a mapping: ${first.locations.slice(0,MAX_LOCATIONS).join('; ')}${first.locations.length>MAX_LOCATIONS?`; and ${first.locations.length-MAX_LOCATIONS} more`:''}${hits.length>1?`. ${hits.length-1} more changed value${hits.length>2?'s are':' is'} also referenced`:''}. Re-point or remove the references in the same composition, or keep the row`);
+ throw Error(`Mapping operation ${first.operationIndex} would leave ${first.column} ${JSON.stringify(first.value)} of media.map line ${first.line} referenced without a mapping: ${first.locations.slice(0,MAX_LOCATIONS).join('; ')}${first.locations.length>MAX_LOCATIONS?`; and ${first.locations.length-MAX_LOCATIONS} more`:''}${hits.length>1?`. ${hits.length-1} more changed value${hits.length>2?'s are':' is'} also referenced`:''}. ${remedy}`);
 }
 
 export const mappingReceipts=plan=>plan.changes.map(({operationIndex,action,row,next})=>{

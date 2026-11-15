@@ -109,7 +109,7 @@ test('one call re-points a clip to new media and removes the row it no longer ne
 test('refuses a removal while the composed archive or a carried working file still names the value',async t=>{
  const s=await session(t),before=await tree(s.root);
  for(const [args,pattern] of [
-  [{mediaMapOperations:[remove(1,'a')]},/sourcePath "\/orig\/a\.wav" of media\.map line 1 referenced without a mapping: content\/A\.sktl audio 0 clip 0 file/],
+  [{mediaMapOperations:[remove(1,'a')]},/sourcePath "\/orig\/a\.wav" of media\.map line 1 referenced without a mapping: content\/A\.sktl audio 0 clip 0 file.*\. Re-point or remove the references in the same composition, or keep the row$/],
   [{mediaMapOperations:[remove(3,'c')]},/content\/Program\.skpr item 0 audio 0 clip 0 file/],
   [{mediaMapOperations:[{action:'repoint_mapping',line:1,sourcePath:'/orig/a.wav',archivePath:'MEDIA/a.wav',newSourcePath:'/lib/a.wav'}]},/content\/A\.sktl audio 0 clip 0 file/],
   // A clip edit that keeps the old file does not help.

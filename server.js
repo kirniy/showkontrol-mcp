@@ -5,7 +5,7 @@ import {setNodeBypass} from './node-bypass.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import {writeRpp, preflightRppMedia} from './rpp.js';
@@ -191,8 +191,14 @@ function add(name, description, schema, handler, annotations) {
  if (toolEnabled && !toolEnabled(name, annotations)) return;
  server.registerTool(name,{description,inputSchema:schema,annotations},async args=>{
   try { const data = await handler(args); return {content:[{type:'text',text:JSON.stringify(data,null,2)}]}; }
-  catch(e) { return {isError:true,content:[{type:'text',text:e.message}]}; }
+  catch(e) { return {isError:true,content:[{type:'text',text:await missingDestinationMessage(e,args) ?? e.message}]}; }
  });
+}
+// Writers stage beside the destination, so a missing parent directory surfaces as ENOENT on a temporary name.
+async function missingDestinationMessage(error,args){
+ if(error?.code!=='ENOENT'||typeof args?.destination!=='string'||!path.isAbsolute(args.destination))return undefined;
+ const parent=path.dirname(args.destination);
+ try{await stat(parent);return undefined;}catch(e){return e.code==='ENOENT'?`Destination directory does not exist: ${parent}`:undefined;}
 }
 // z.json() is recursive and emits $ref/$defs, which some MCP clients do not resolve; this emits {} and checks the same values.
 const isJsonValue=value=>value===null||['string','boolean'].includes(typeof value)||(typeof value==='number'&&Number.isFinite(value))||(Array.isArray(value)?value.every(isJsonValue):typeof value==='object'&&Object.getPrototypeOf(value)===Object.prototype&&Object.values(value).every(isJsonValue));

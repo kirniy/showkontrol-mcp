@@ -116,6 +116,7 @@ export async function editShowSetlistCopy({source,destination,sha256,name,operat
    expectedSets=structuredClone(sets);expectedSets.splice(selectedIndex,1);
   }else if(operation==='move_set'){
    if(index!==undefined||newSetName!==undefined||allowContentRemoval!==undefined)throw Error('move_set takes setName and toIndex only');
+   if(toIndex===undefined)throw Error('move_set requires toIndex');
    if(!Number.isInteger(toIndex)||toIndex<0||toIndex>=sets.length)throw Error('Destination index is outside the set list');
    if(toIndex===selectedIndex)throw Error('The set is already at the destination index');
    const activeSet=readActiveSet(xml,sets.length);
@@ -136,10 +137,12 @@ export async function editShowSetlistCopy({source,destination,sha256,name,operat
    const spans=setEntrySpans(xml);if(spans.length!==sets.length)throw Error('Unsupported set serialization');
    const entries=spans[selectedIndex].entries;
    if(entries.length!==sets[selectedIndex].tracks.length)throw Error('Unsupported entry serialization');
+   if(index===undefined)throw Error(`${operation} requires index`);
    if(!Number.isInteger(index)||index<0||index>=entries.length)throw Error('Entry index is outside the set');
    const values=entries.map(m=>xml.slice(m.start,m.end));const [entry]=values.splice(index,1);
    expectedSets=structuredClone(sets);const [track]=expectedSets[selectedIndex].tracks.splice(index,1);
    if(operation==='move_track'){
+    if(toIndex===undefined)throw Error('move_track requires toIndex');
     if(!Number.isInteger(toIndex)||toIndex<0||toIndex>=entries.length)throw Error('Destination index is outside the set');
     values.splice(toIndex,0,entry);expectedSets[selectedIndex].tracks.splice(toIndex,0,track);
    }

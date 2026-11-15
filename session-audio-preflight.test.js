@@ -120,6 +120,10 @@ test('candidates: unmapped, ambiguous, symlinked, special, unreadable, relative 
  assert.deepEqual(long.observedTrim.trimEndMs,{length:300,valueOmitted:true});
  assert.equal((await readFile(process.env.COUNT,'utf8')).length,r.files.filter(f=>f.status==='readable').length);
  assert.ok(r.diagnostics.some(d=>d.code==='duplicate_source'));
+ // Only the hard-linked file opens for every candidate path that reaches it; the locked sidecar opens as root.
+ assert.equal(r.summary.clips,13);
+ assert.deepEqual(r.summary.withoutReadableMedia.map(c=>c.clipIndex),[0,1,...(asRoot?[]:[3]),4,5,6,7,8,10,12]);
+ assert.deepEqual(r.summary.withoutReadableMedia[0],{part:dup.part,audioIndex:0,clipIndex:0});
  // Readability is checked by opening even when probing is off.
  const off=await preflightSessionAudio({directory:dir,probeDurations:false});
  if(!asRoot)assert.equal(off.clips[3].sidecar.status,'not_readable');
