@@ -29,9 +29,9 @@ export async function composeShowCopy({source, destination, sha256, templateName
  if (!validDonor(donor) || cues.some(cue => !validDonor(cue?.donor))) throw Error('Donor requires an absolute file path, SHA-256, timeline name and cue ID');
  for (const cue of cues) {
   if (cue?.mixedGraph !== undefined && cue.donor !== undefined) throw Error('A cue cannot specify both a donor and mixed graph');
-  if (cue?.settings !== undefined && (!Array.isArray(cue.settings) || cue.settings.some(setting => !setting || typeof setting.key !== 'string' || !setting.key || typeof setting.value !== 'string' || (cue.mixedGraph !== undefined ? !Number.isInteger(setting.nodeIndex) || setting.nodeIndex < 0 || setting.nodeId !== undefined : typeof setting.nodeId !== 'string' || !setting.nodeId || setting.nodeIndex !== undefined)))) throw Error('Cue settings require a graph node reference, key and string value');
+  for (const settings of [cue?.settings, cue?.postPatchSettings]) if (settings !== undefined && (!Array.isArray(settings) || settings.some(setting => !setting || typeof setting.key !== 'string' || !setting.key || typeof setting.value !== 'string' || (cue.mixedGraph !== undefined ? !Number.isInteger(setting.nodeIndex) || setting.nodeIndex < 0 || setting.nodeId !== undefined : typeof setting.nodeId !== 'string' || !setting.nodeId || setting.nodeIndex !== undefined)))) throw Error('Cue settings require a graph node reference, key and string value');
   if (cue?.patchSettings !== undefined && (!Array.isArray(cue.patchSettings) || cue.patchSettings.some(setting => !setting || typeof setting.key !== 'string' || !setting.key || typeof setting.template !== 'string' || !path.isAbsolute(setting.template) || !['skf', 'skshow'].includes(setting.templateFormat) || typeof setting.templateSha256 !== 'string' || !/^[a-fA-F0-9]{64}$/.test(setting.templateSha256) || typeof setting.templateNodeId !== 'string' || !setting.templateNodeId || (cue.mixedGraph !== undefined ? !Number.isInteger(setting.nodeIndex) || setting.nodeIndex < 0 || setting.nodeId !== undefined : typeof setting.nodeId !== 'string' || !setting.nodeId || setting.nodeIndex !== undefined)))) throw Error('Cue patch settings require a graph node reference and patch template');
-  if ((cue?.settings?.length || cue?.patchSettings?.length) && cue.mixedGraph === undefined && !(cue.donor === undefined ? donor : cue.donor)) throw Error('Cue settings require a donor or mixed graph');
+  if ((cue?.settings?.length || cue?.patchSettings?.length || cue?.postPatchSettings?.length) && cue.mixedGraph === undefined && !(cue.donor === undefined ? donor : cue.donor)) throw Error('Cue settings require a donor or mixed graph');
  }
  if (set && (!set.name || !set.setName)) throw Error('Set requires a set list part name and set name');
  if (set?.createIfMissing !== undefined && typeof set.createIfMissing !== 'boolean') throw Error('createIfMissing must be a boolean');
@@ -87,6 +87,17 @@ export async function composeShowCopy({source, destination, sha256, templateName
     }
     const {template, templateFormat, templateSha256, templateNodeId, key} = setting;
     await step(next => copyPatchSettingToCueShowCopy({source: current, destination: next, sha256: currentHash, name: partName, cueId: created.id, nodeId, template, templateFormat, templateSha256, templateNodeId, key}));
+   }
+   for (const setting of cue.postPatchSettings || []) {
+    let nodeId;
+    if (cue.mixedGraph !== undefined) {
+     if (setting.nodeIndex >= item.nodeIds.length) throw Error(`Mixed graph has no node at index: ${setting.nodeIndex}`);
+     nodeId = item.nodeIds[setting.nodeIndex];
+    } else {
+     if (!Object.hasOwn(item.idMap, setting.nodeId)) throw Error(`Donor graph has no node ID: ${setting.nodeId}`);
+     nodeId = item.idMap[setting.nodeId];
+    }
+    await step(next => editCueGraphSettingCopy({source: current, destination: next, format: 'skshow', sha256: currentHash, name: partName, cueId: created.id, nodeId, key: setting.key, value: setting.value}));
    }
    added.push(item);
   }
