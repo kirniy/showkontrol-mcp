@@ -140,7 +140,7 @@ test('a session without working files gains none',async t=>{
  assert.deepEqual(r.workingFiles.entries,[]);assert.deepEqual((await readdir(f.destination)).sort(),['MEDIA','session.skshow']);
 });
 
-test('publication never replaces a directory that appeared at the destination',async t=>{
+test('publication rejects an existing destination and a claim changed before the identity check',async t=>{
  const dir=await realpath(await mkdtemp(path.join(os.tmpdir(),'sk-publish-')));t.after(()=>rm(dir,{recursive:true,force:true}));
  const stage=path.join(dir,'stage'),target=path.join(dir,'target');
  await mkdir(stage);await writeFile(path.join(stage,'session.skshow'),'x');

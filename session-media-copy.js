@@ -43,7 +43,7 @@ async function checkSourceParents(file){
   if(!info.isDirectory())throw Error(`Media source parent is not a directory: ${current}`);
  }
 }
-// rename(2) replaces an empty directory. Claim the name with mkdir(2), which fails if anything exists, and replace only that claim.
+// rename(2) replaces an empty directory. Claim the name with mkdir(2), which fails if anything exists, and rename over the claim only if it is still that directory.
 export async function claimDestination(target){
  try{await mkdir(target);}catch(error){throw error.code==='EEXIST'?Error('Destination session already exists'):error;}
  return lstat(target);
