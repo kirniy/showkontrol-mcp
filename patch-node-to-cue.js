@@ -8,7 +8,8 @@ function withNewId(xml,node,id){
  if(!found)throw Error('Node ID is missing');return opening.slice(0,found.start)+id+opening.slice(found.end)+xml.slice(node.openEnd,node.end);
 }
 export async function copyPatchNodeToCueShowCopy({source,destination,sha256,name,cueId,template,templateFormat,templateSha256,nodeId,allowOpaqueNodeText}){
- if(!name?.toLowerCase().endsWith('.sktl')||typeof cueId!=='string'||!cueId||!/^n\d+$/.test(nodeId||''))throw Error('Select a timeline, cue and supported node ID');
+ if(!name?.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
+ if(typeof cueId!=='string'||!cueId||!/^n\d+$/.test(nodeId||''))throw Error('Select a cue and a supported node ID');
  if(!['skf','skshow'].includes(templateFormat))throw Error('Template format must be skf or skshow');
  const target=await readShowSnapshot({file:source});if(target.sha256!==sha256)throw Error('Source changed since inspection');if(!target.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
  let donorXml,donorSha;if(templateFormat==='skf'){const d=await inspectXml({file:template});donorXml=d.xml;donorSha=d.sha256;}else{const d=await readShowSnapshot({file:template});if(!d.parts.every(p=>p.valid))throw Error('A template part MD5 does not match');donorXml=readSnapshotPart({snapshot:d,name:'patch.skf'}).text;donorSha=d.sha256;}

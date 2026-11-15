@@ -205,14 +205,19 @@ function add(name, description, schema, handler, annotations) {
   try { const data = await handler(args); return {content:[{type:'text',text:JSON.stringify(data,null,2)}]}; }
   catch(e) {
    const hint=await partNameHint(e,args);
-   return {isError:true,content:[{type:'text',text:await missingDestinationMessage(e,args) ?? (hint ? `${e.message}. ${hint}` : e.message)}]};
+   return {isError:true,content:[{type:'text',text:await destinationMessage(e,args,name) ?? (hint ? `${e.message}. ${hint}` : e.message)}]};
   }
  });
 }
 // Writers stage beside the destination, so a missing parent directory surfaces as ENOENT on a temporary name.
-async function missingDestinationMessage(error,args){
- if(error?.code!=='ENOENT'||typeof args?.destination!=='string'||!path.isAbsolute(args.destination))return undefined;
- const parent=path.dirname(args.destination);
+// The REAPER and marker writers name their output file in `file`.
+const FILE_WRITERS=new Set(['showkontrol_create_rpp','showkontrol_create_marker_csv']);
+async function destinationMessage(error,args,tool){
+ const destination=FILE_WRITERS.has(tool)?args?.file:args?.destination;
+ if(typeof destination!=='string'||!path.isAbsolute(destination))return undefined;
+ if(error?.code==='EEXIST'&&FILE_WRITERS.has(tool))return `Destination already exists: ${destination}; no existing file is overwritten`;
+ if(error?.code!=='ENOENT')return undefined;
+ const parent=path.dirname(destination);
  try{await stat(parent);return undefined;}catch(e){return e.code==='ENOENT'?`Destination directory does not exist: ${parent}`:undefined;}
 }
 // z.json() is recursive and emits $ref/$defs, which some MCP clients do not resolve; this emits {} and checks the same values.

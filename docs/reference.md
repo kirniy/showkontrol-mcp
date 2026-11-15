@@ -11,7 +11,7 @@ Common rules for offline tools:
 - Write tools create a new destination and do not replace an existing file. Many publish with a hard link, so the destination filesystem must support hard links.
 - A failed call publishes nothing, and the source is not modified.
 - Indices are zero-based unless stated otherwise.
-- Timeline tools select a show part by its path, such as `content/Intro.sktl`; set-list and rename tools take track names. When a part name does not match, the error names the part whose track has that name, a part that differs only in case, or the show's timeline parts.
+- Timeline tools select a show part by its path, such as `content/Intro.sktl`; set-list and rename tools take track names. When a part name (`name`, `sourceName`, `templateName` or `donorName`) does not match, the error names, for that argument, the part whose track has that name, a part that differs only in case, or the show's timeline parts.
 - Argument errors come from the schema. When a value matches none of the forms of an object union but exactly one form accepts its keys, the error lists that form's issues with their paths, for example an unknown Program `action` with the valid actions; otherwise the error can be only `Invalid input` at the union's path.
 
 Contents:

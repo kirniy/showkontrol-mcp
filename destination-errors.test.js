@@ -33,3 +33,16 @@ test('a destination in a missing directory is named instead of a temporary-file 
  const response=await client.callTool({name:'showkontrol_edit_show_part_copy',arguments:{source:path.join(dir,'absent.skshow'),destination:path.join(dir,'out.skshow'),sha256,name,edits:[{find:'a',replace:'b'}]}});
  assert.equal(response.isError,true);assert.match(response.content[0].text,/ENOENT.*absent\.skshow/);
 });
+
+test('the REAPER and marker writers name a missing directory or an existing file',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-file-destination-errors-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const client=new Client({name:'file-destination-errors-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const missing=path.join(dir,'missing');
+ for(const [tool,extension,args] of [['showkontrol_create_rpp','rpp',{markers:[{seconds:1,name:'A'}]}],['showkontrol_create_marker_csv','csv',{entries:[{kind:'marker',name:'A',seconds:1}]}]]){
+  const absent=await client.callTool({name:tool,arguments:{file:path.join(missing,`out.${extension}`),...args}});
+  assert.equal(absent.isError,true);assert.equal(absent.content[0].text,`Destination directory does not exist: ${missing}`,tool);
+  const file=path.join(dir,`out.${extension}`);await writeFile(file,'keep');
+  const existing=await client.callTool({name:tool,arguments:{file,...args}});
+  assert.equal(existing.isError,true);assert.equal(existing.content[0].text,`Destination already exists: ${file}; no existing file is overwritten`,tool);
+ }
+});
