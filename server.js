@@ -156,6 +156,18 @@ server.registerTool('showkontrol_read_binary',{description:'Read a binary API re
 });
 add('showkontrol_sample_events','Sample the ShowKontrol /events server-sent event stream for a bounded duration. The server may replay the last event of each name on connection.',{durationMs:z.number().int().min(100).max(30000).default(1000),maxEvents:z.number().int().min(1).max(100).default(20)},sampleEvents,readOnly);
 add('showkontrol_write','Call a ShowKontrol REST endpoint. This can change a live show or trigger external equipment. Discover the target schema first. Writes are never retried. A timeout does not prove that the operation failed.',{method:z.enum(['POST','PUT','DELETE','PATCH']),path:z.string().describe('Path relative to /api/v1'),body:z.unknown().optional().describe('JSON body, if required by the endpoint')},({method,path,body})=>call(method,path,body),write);
+add('showkontrol_diagnose_live_node','Read a live node and compare its requested node.stopped parameter with the effective top-level stopped state. Missing, malformed, or ambiguous values are unknown; a difference does not establish its cause.',{id:z.string().min(1)},async ({id})=>{
+ const node=await call('GET',`/nodes/${segment(id)}`);
+ const object=node && typeof node==='object' && !Array.isArray(node) ? node : {};
+ const matches=Array.isArray(object.params) ? object.params.filter(p=>p && typeof p==='object' && p.key==='node.stopped') : [];
+ const requestedRaw=matches.length===1 && Object.hasOwn(matches[0],'value') ? matches[0].value : null;
+ const effectiveRaw=Object.hasOwn(object,'stopped') ? object.stopped : null;
+ const requested=matches.length===1 && typeof requestedRaw==='boolean' ? requestedRaw : 'unknown';
+ const effective=typeof effectiveRaw==='boolean' ? effectiveRaw : 'unknown';
+ const warnings=[];
+ if(requested!=='unknown' && effective!=='unknown' && requested!==effective) warnings.push('Requested and effective stopped states differ; the cause is unknown.');
+ return {id:object.id ?? null,title:object.title ?? null,type:object.type ?? null,requestedStopped:requested,effectiveStopped:effective,raw:{params:Object.hasOwn(object,'params') ? object.params : null,requestedMatches:matches,effectiveStopped:effectiveRaw},warnings};
+},readOnly);
 add('showkontrol_get_parameter','Read a node parameter by node ID or name and parameter key.',{node:z.string(),key:z.string()},({node,key})=>call('GET',`/nodes/${segment(node)}/params/${segment(key)}`),readOnly);
 add('showkontrol_set_parameter','Set a node parameter. This changes the running show.',{node:z.string(),key:z.string(),value:z.unknown()},({node,key,value})=>call('PUT',`/nodes/${segment(node)}/params/${segment(key)}`,{value}),write);
 add('showkontrol_set_setting','Set an application setting. This changes the running application.',{key:z.string(),value:z.unknown()},({key,value})=>call('PUT',`/settings/${segment(key)}`,{value}),write);
