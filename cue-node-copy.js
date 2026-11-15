@@ -4,7 +4,7 @@ import {hasXmlReference} from './xml-references.js';
 function walk(node,fn){fn(node);for(const child of node.children)walk(child,fn);}
 function graphParts(xml,cueId){
  const root=parseXmlSpans(xml),path=['sktimeline',{name:'cue',attributes:{id:cueId}}];if(root.name!=='sktimeline'||root.attributes.version!=='1')throw Error('Expected a version 1 timeline');
- const cues=selectXmlSpans(root,path),graphs=selectXmlSpans(root,[...path,'graph']);if(cues.length!==1||graphs.length!==1||graphs[0].selfClosing)throw Error('Cue and graph must occur exactly once');return {root,path,graph:graphs[0],nodes:selectXmlSpans(root,[...path,'graph','node'])};
+ const cues=selectXmlSpans(root,path),graphs=selectXmlSpans(root,[...path,'graph']);if(cues.length!==1||graphs.length!==1)throw Error('Cue and graph must occur exactly once');return {root,path,graph:graphs[0],nodes:selectXmlSpans(root,[...path,'graph','node'])};
 }
 function replaceId(xml,node,newId){
  const opening=xml.slice(node.start,node.openEnd),attr=/\s+([^\s=/>]+)\s*=\s*(["'])([^"']*(?:(?!\2)["'][^"']*)*)\2/y;let pos='<node'.length,id;
@@ -24,7 +24,11 @@ export async function copyCueGraphNodeShowCopy({source,destination,sha256,name,c
  const donorId=Number(nodeId.slice(1));if(!Number.isSafeInteger(donorId)||donorId>1000000000)throw Error('Node ID exceeds supported range');max=Math.max(max,donorId);if(max>=1000000000)throw Error('No node IDs remain in the supported range');const newNodeId=`n${max+1}`;
  const {copy}=replaceId(donorXml,node,newNodeId);
  if(hasXmlReference(copy,/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/,{ignoreRootId:true}))throw Error('Node contains unsupported internal references');
- const modified=xml.slice(0,targetGraph.graph.closeStart)+copy+xml.slice(targetGraph.graph.closeStart),after=graphParts(modified,cueId),copied=after.nodes.filter(n=>n.attributes.id===newNodeId);
+ const graph=targetGraph.graph;let modified;
+ if(graph.selfClosing){const opening=xml.slice(graph.start,graph.openEnd).replace(/\s*\/>$/,'>');modified=xml.slice(0,graph.start)+opening+copy+'</graph>'+xml.slice(graph.end);}
+ else modified=xml.slice(0,graph.closeStart)+copy+xml.slice(graph.closeStart);
+ const after=graphParts(modified,cueId),copied=after.nodes.filter(n=>n.attributes.id===newNodeId);
+ if(JSON.stringify(after.graph.attributes)!==JSON.stringify(graph.attributes))throw Error('Graph attributes changed unexpectedly');
  if(copied.length!==1||after.nodes.length!==targetGraph.nodes.length+1||modified.slice(copied[0].start,copied[0].end)!==copy||JSON.stringify({...copied[0].attributes,id:nodeId})!==JSON.stringify(node.attributes))throw Error('Copied node did not match template');
  const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:modified}]});return {...result,nodeId,newNodeId,note:'Copied an unconnected fixture-supported node. Internal references, hardware dependencies and ShowKontrol acceptance require validation.'};
 }

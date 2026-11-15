@@ -67,6 +67,7 @@ No credentials are needed for offline file tools.
 - `showkontrol_run_action`, `showkontrol_session_command`: run an action, launch the show, or switch a screen. The manual does not specify all request bodies; supply the body expected by the running app. These calls can control equipment.
 - `showkontrol_get_parameter`, `showkontrol_set_parameter`, `showkontrol_set_setting`, `showkontrol_fire_node`: common node and setting operations.
 - `showkontrol_node_type_detail`, `showkontrol_create_node`, `showkontrol_delete_node`: inspect a node type and preview, create, or delete a node. Creation requires an explicit `dryRun` value.
+- `showkontrol_validate_node_settings`: check typed proposed values against the running app’s node-type metadata. Dynamic constraints, XML serialization, and actual app acceptance are not validated.
 - `showkontrol_list_connections`, `showkontrol_create_connection`, `showkontrol_delete_connection`: list and edit connections by node ID and pin name or index. Creation requires an explicit `dryRun` value.
 - `showkontrol_validate_patch`: send a patch specification with `dryRun: true` for app-side validation.
 - `showkontrol_get_patch`, `showkontrol_put_patch`: read or submit the whole running patch. Supply the app’s expected JSON body.
@@ -83,6 +84,7 @@ No credentials are needed for offline file tools.
 - `showkontrol_copy_cue_graph_show_copy`: copy a graph from a cue in the same or another show to an empty cue in a new show archive. Set `sourceName` to select the source timeline and `name` for the target timeline. For a separate show, also set `template` and its inspected `templateSha256`. It supports only the group input, trigger and action node types seen in the test fixture. It scans target `.skf`, `.sktl`, and `.sksc` XML parts for node IDs and remaps graph nodes and connections. It rejects unsupported references. Reopening its output in the app remains unverified.
 - `showkontrol_copy_cue_graph_timeline_copy`: copy a supported graph between standalone timeline files. The ID scan covers the target timeline only. Check the rest of the show for collisions before using the copy in a show. App acceptance remains unverified.
 - `showkontrol_copy_cue_graph_node_show_copy`: copy a supported node into an existing cue graph in a new show copy. It copies no wires and rejects ID-like internal references. App acceptance remains unverified.
+- `showkontrol_copy_patch_node_to_cue_show_copy`: copy an action or trigger node from an offline patch into a cue graph. It copies no wires and rejects ID-like internal references. The app saved a notification action node used as a test fixture; copying it into a cue and running it remain unverified in the app.
 - `showkontrol_assemble_cue_graph_show_copy`: assemble supported nodes and pin-0 wires from template shows into a cue in one offline show copy. It can create a graph in an empty cue. It requires hard-link support; external dependencies and app acceptance remain unverified.
 - `showkontrol_remove_cue_graph_node_copy`: remove an unreferenced node from an offline cue graph copy. The reference check is conservative and covers supported XML parts only. External references and app acceptance are not verified.
 - `showkontrol_copy_cue_graphs_show_copy`: copy up to 100 supported cue graphs into one show copy. The destination filesystem must support hard links. App acceptance remains unverified.
@@ -117,7 +119,9 @@ Neither the RPP nor the marker CSV contains cue action graphs. It does not creat
 
 ## Test
 
-Run `npm test`. Tests use a local mock HTTP server and temporary files. They do not change a live show. A passing mock test does not establish compatibility with the running app. On ShowKontrol R27 27.0.11, local pairing was used to validate a one-node patch dry run, preview a node, create/read/delete a temporary group node, and dry-run/create/read/delete a connection between two temporary groups. The temporary nodes and connection were removed. These checks used a separate test show with no connected players. Other node types, actions, cue imports, and file changes have not been verified in the app.
+Run `npm test`. Tests use a local mock HTTP server and temporary files. They do not change a live show. A passing mock test does not establish compatibility with the running app. On ShowKontrol R27 27.0.11, local pairing was used to validate a one-node patch dry run, preview a node, create/read/delete a temporary group node, and dry-run/create/read/delete a connection between two temporary groups. The temporary nodes and connection were removed. These checks used a separate test show with no connected players. Other node types, actions, cue imports, and file changes remain unverified except as described below.
+
+In a separate live test, a temporary action node was configured for a local web notification, fired, and deleted. The matching notification appeared in the MCP event stream. A second test saved an action node with non-default notification settings and then deleted it. These tests did not establish that a timeline cue can execute the node.
 
 References: [Remote Control & API](https://manual.showkontrol.com/manual/remote), [Cue Editor & Timelines](https://manual.showkontrol.com/manual/timeline), and [REAPER state chunk definitions](https://github.com/ReaTeam/Doc/blob/master/State%20Chunk%20Definitions).
 
