@@ -122,3 +122,14 @@ test('JSON value fields stay required and reject non-JSON values',async t=>{
  const params=await client.callTool({name:'showkontrol_create_node',arguments:{request:'r',dryRun:true,params:{a:[1,'b',{c:true}]}}});
  assert.equal(params.isError,true);assert.match(params.content[0].text,/connection failed|timed out/);
 });
+
+test('the toolset table in docs/setup.md states the registered counts',async t=>{
+ const setup=await readFile('docs/setup.md','utf8');
+ for(const toolset of ['live','live_read','offline','all']){
+  const row=new RegExp(`^\\| \`${toolset}\` \\| (\\d+) \\|`,'m').exec(setup);
+  assert.ok(row,toolset);
+  assert.equal(Number(row[1]),(await list(t,toolset)).names.length,toolset);
+ }
+ const example=/`files,programs` registers (\d+) tools/.exec(setup);
+ assert.ok(example);assert.equal(Number(example[1]),(await list(t,'files,programs')).names.length);
+});
