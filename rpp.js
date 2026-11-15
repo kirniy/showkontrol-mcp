@@ -1,4 +1,4 @@
-// REAPER text project generator. ShowKontrol imports marker positions from RPP.
+// REAPER text project generator. ShowKontrol documents marker, cue, and media import.
 // This format does not represent ShowKontrol cue action graphs.
 import {writeFile, stat, access} from 'node:fs/promises';
 import {constants} from 'node:fs';
@@ -61,7 +61,7 @@ export async function writeRpp({file, markers = [], tracks = [], mediaTracks = [
  if (!path.isAbsolute(file) || path.extname(file).toLowerCase()!=='.rpp') throw Error('Use an absolute path ending in .rpp');
  const text=renderRpp({markers,tracks,mediaTracks,projectName});
  await writeFile(file,text,{encoding:'utf8',flag:'wx'});
- return {file,markers:markers.length,tracks:tracks.length,mediaTracks:mediaTracks.length,bytes:Buffer.byteLength(text),note:'Import this file in the Cue Editor; it does not contain cue action graphs.'};
+ return {file,markers:markers.length,tracks:tracks.length,mediaTracks:mediaTracks.length,bytes:Buffer.byteLength(text),note:'Import this file in the Cue Editor; it does not contain cue action graphs. Import of generated cue and media items has not been verified in ShowKontrol.'};
 }
 
 // Probe only readable regular files. Never invoke a shell or permit network protocols.
