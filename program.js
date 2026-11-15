@@ -3,7 +3,8 @@ import {constants} from 'node:fs';
 import {createHash, randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {parseXmlSpans} from './xml-spans.js';
-import {prepareShowProgram} from './xml-copy.js';
+import {prepareShowProgram,inspectXml,readShowSnapshot,readSnapshotPart} from './xml-copy.js';
+import {parseTimeline} from './timeline.js';
 
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const escape=s=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&apos;').replaceAll('\t','&#x9;').replaceAll('\n','&#xA;').replaceAll('\r','&#xD;');
@@ -76,6 +77,42 @@ export async function inspectShowProgram({file}){
  const show=await prepareShowProgram({file});if(!show.bytes)return {file,sha256:show.sha256,present:false,note};
  return {file,sha256:show.sha256,present:true,...inspectProgramBytes(show.bytes)};
 }
+export async function inspectProgramTimeline({file,sha256,index}){
+ if(!/^[a-f0-9]{64}$/.test(sha256||''))throw Error('A source SHA-256 is required');
+ if(!Number.isInteger(index)||index<0)throw Error('Item index out of range');
+ let input;
+ if(path.extname(file).toLowerCase()==='.skpr')input=await snapshot(file);
+ else if(path.isAbsolute(file)&&path.extname(file).toLowerCase()==='.skshow'){
+  const show=await prepareShowProgram({file});if(!show.bytes)throw Error('Show has no canonical Program part');
+  if(show.bytes.length>10*1024*1024)throw Error('Program exceeds 10 MiB');
+  const xml=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(show.bytes);
+  input={xml,sha256:show.sha256,...parse(xml)};
+ }else throw Error('An absolute .skpr or .skshow path is required');
+ if(input.sha256!==sha256)throw Error('Source changed since inspection');
+ if(index>=input.items.length)throw Error('Item index out of range');
+ const item=input.items[index],node=item.node.children.find(c=>c.name==='sktimeline');
+ if(!node)throw Error('Item has no embedded timeline');
+ const timeline=parseTimeline(input.xml.slice(node.start,node.end));
+ // Preview data can be large and is not useful for identifying timeline content.
+ const clean=attributes=>Object.fromEntries(Object.entries(attributes).filter(([key])=>!/preview/i.test(key)));
+ const result={file,sha256,index,item:publicItems([item])[0],attributes:clean(timeline.attributes),layers:timeline.layers.map(clean),audio:timeline.audio.map(clean),audioClips:timeline.audioClips.map(c=>({...c,attributes:clean(c.attributes)})),cueElements:timeline.cueElements.map(c=>({...c,attributes:clean(c.attributes)})),note:'Static format evidence only; application acceptance, cues and media playback are unverified. Preview attributes are omitted.'};
+ if(Buffer.byteLength(JSON.stringify(result,null,2),'utf8')>1024*1024)throw Error('Timeline inspection output exceeds 1 MiB');
+ return result;
+}
+export async function extractShowProgramCopy({source,destination,sha256}){
+ if(!path.isAbsolute(destination)||path.extname(destination).toLowerCase()!=='.skpr'||path.resolve(source)===path.resolve(destination))throw Error('Destination must be a different absolute .skpr path');
+ if(!/^[a-f0-9]{64}$/.test(sha256||''))throw Error('A source SHA-256 is required');
+ const show=await prepareShowProgram({file:source});if(show.sha256!==sha256)throw Error('Source changed since inspection');
+ if(!show.bytes)throw Error('Show has no canonical Program part');
+ const inspected=inspectProgramBytes(show.bytes);
+ const temp=path.join(path.dirname(destination),`.showkontrol-program-${randomUUID()}.tmp`);let created=false;
+ try{
+  await writeFile(temp,show.bytes,{flag:'wx'});created=true;
+  if((await prepareShowProgram({file:source})).sha256!==sha256)throw Error('Source changed since inspection');
+  await link(temp,destination);
+ }finally{if(created)await unlink(temp);}
+ return {destination,name:'content/Program.skpr',sha256:inspected.programSha256,items:inspected.items,note};
+}
 export async function attachShowProgramCopy({source,destination,sha256,program,programSha256,replaceExisting=false}){
  if(!path.isAbsolute(destination)||path.extname(destination).toLowerCase()!=='.skshow'||path.resolve(source)===path.resolve(destination)||path.resolve(program)===path.resolve(destination))throw Error('Destination must be a different absolute .skshow path');
  if(!/^[a-f0-9]{64}$/.test(sha256||'')||!/^[a-f0-9]{64}$/.test(programSha256||''))throw Error('Source and Program SHA-256 values are required');
@@ -90,4 +127,46 @@ export async function attachShowProgramCopy({source,destination,sha256,program,p
   await link(temp,destination);
  }finally{if(created)await unlink(temp);}
  return {destination,name:'content/Program.skpr',sha256:hash(Buffer.from(show.output)),programSha256,md5:show.md5,note};
+}
+
+// Copy the donor root element verbatim. Media and cross-file references are not copied.
+async function timelineDonor({donor,donorName}){
+ if(!path.isAbsolute(donor))throw Error('Donor must be an absolute path');
+ let xml,sha256;
+ const ext=path.extname(donor).toLowerCase();
+ if(ext==='.sktl'){
+  if(donorName!==undefined)throw Error('Donor part name is only supported for a show');
+  ({xml,sha256}=await inspectXml({file:donor}));
+ }else if(ext==='.skshow'){
+  if(typeof donorName!=='string'||!donorName.toLowerCase().endsWith('.sktl'))throw Error('A .sktl donor part name is required');
+  const show=await readShowSnapshot({file:donor});
+  if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
+  const names=new Set();for(const part of show.parts){const key=part.name.toLowerCase();if(names.has(key))throw Error('Duplicate part name');names.add(key);}
+  sha256=show.sha256;xml=readSnapshotPart({snapshot:show,name:donorName}).text;
+ }else throw Error('Donor must be a .sktl or .skshow file');
+ parseTimeline(xml);const root=parseXmlSpans(xml);
+ return {sha256,element:xml.slice(root.start,root.end)};
+}
+export async function embedProgramTimelineCopy({source,destination,sha256,index,donor,donorSha256,donorName,replaceExisting=false}){
+ if(!path.isAbsolute(destination)||path.extname(destination).toLowerCase()!=='.skpr'||path.resolve(source)===path.resolve(destination)||path.resolve(donor)===path.resolve(destination))throw Error('Destination must be a different absolute .skpr path');
+ if(!/^[a-f0-9]{64}$/.test(sha256||'')||!/^[a-f0-9]{64}$/.test(donorSha256||''))throw Error('Program and donor SHA-256 values are required');
+ if(typeof replaceExisting!=='boolean')throw Error('replaceExisting must be a boolean');
+ const input=await snapshot(source);if(input.sha256!==sha256)throw Error('Program changed since inspection');
+ if(!Number.isInteger(index)||index<0||index>=input.items.length)throw Error('Item index out of range');
+ const timeline=await timelineDonor({donor,donorName});if(timeline.sha256!==donorSha256)throw Error('Donor changed since inspection');
+ const item=input.items[index].node,existing=item.children.find(c=>c.name==='sktimeline');
+ if(existing&&!replaceExisting)throw Error('Item already has a timeline; set replaceExisting to true');
+ let xml=input.xml;
+ if(existing)xml=xml.slice(0,existing.start)+timeline.element+xml.slice(existing.end);
+ else if(item.selfClosing){const opening=xml.slice(item.start,item.openEnd).replace(/\/\s*>$/, '>');xml=xml.slice(0,item.start)+opening+timeline.element+'</item>'+xml.slice(item.end);}
+ else xml=xml.slice(0,item.closeStart)+timeline.element+xml.slice(item.closeStart);
+ parse(xml);if(Buffer.byteLength(xml,'utf8')>10*1024*1024)throw Error('Program exceeds 10 MiB');
+ const temp=path.join(path.dirname(destination),`.showkontrol-program-${randomUUID()}.tmp`);let created=false;
+ try{
+  await writeFile(temp,xml,{flag:'wx'});created=true;
+  if((await snapshot(source)).sha256!==sha256)throw Error('Program changed since inspection');
+  if((await timelineDonor({donor,donorName})).sha256!==donorSha256)throw Error('Donor changed since inspection');
+  await link(temp,destination);
+ }finally{if(created)await unlink(temp);}
+ return {destination,sha256:hash(Buffer.from(xml)),items:publicItems(parse(xml).items),warnings:['Static format evidence only; application acceptance is unverified.','External references and media are unverified; media was not copied.','Runtime node IDs may change; IDs were not remapped.']};
 }

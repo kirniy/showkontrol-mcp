@@ -28,3 +28,24 @@ test('MCP Program archive attach preserves parts and guards writes',async t=>{
  await writeFile(bad,`<skshow>${part('x','a')}${part('X','b')}</skshow>`);assert.equal((await call('inspect_show_program',{file:bad})).isError,true);
  await assert.rejects(readFile(stale),{code:'ENOENT'});assert.equal(await readFile(source,'utf8'),show);assert.equal((await readdir(dir)).some(x=>x.endsWith('.tmp')),false);
 });
+
+test('MCP extracts, edits and reattaches an existing Program without changing other parts',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'program-extract-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skshow'),extracted=path.join(dir,'program.skpr'),edited=path.join(dir,'edited.skpr'),output=path.join(dir,'out.skshow'),bad=path.join(dir,'bad.skshow'),failed=path.join(dir,'failed.skpr');
+ const program=Buffer.from('\ufeff<skprogram version="1"><item start="1" name="A" notes=""><graph><node id="n1"/></graph><sktimeline><cue id="c"/></sktimeline></item></skprogram>');
+ const other=part('media/file.bin',Buffer.from([0,255,1])),original=`<skshow><!--keep-->${other}${part('content/Program.skpr',program)}</skshow>`;await writeFile(source,original);
+ const client=new Client({name:'program-extract-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const call=(name,args)=>client.callTool({name:`showkontrol_${name}`,arguments:args});const data=r=>{assert.equal(r.isError,undefined,JSON.stringify(r));return JSON.parse(r.content[0].text)};
+ const info=data(await call('inspect_show_program',{file:source})),args={source,destination:extracted,sha256:info.sha256};
+ const extractedInfo=data(await call('extract_show_program_copy',args));assert.deepEqual(await readFile(extracted),program);assert.equal(extractedInfo.sha256,info.programSha256);
+ assert.equal((await call('extract_show_program_copy',args)).isError,true);
+ assert.equal((await call('extract_show_program_copy',{...args,destination:failed,sha256:'0'.repeat(64)})).isError,true);
+ const edit=data(await call('create_program_copy',{source:extracted,destination:edited,sha256:extractedInfo.sha256,operation:{action:'edit',index:0,name:'Updated'}}));
+ const editedBytes=await readFile(edited);assert.equal(editedBytes.subarray(0,3).toString('hex'),'efbbbf');assert.match(editedBytes.toString(),/<graph><node id="n1"\/><\/graph><sktimeline><cue id="c"\/><\/sktimeline>/);
+ data(await call('attach_show_program_copy',{source,destination:output,sha256:info.sha256,program:edited,programSha256:edit.sha256,replaceExisting:true}));
+ const result=await readFile(output,'utf8');assert.ok(result.includes(other));assert.ok(result.includes('<!--keep-->'));assert.ok(result.includes(editedBytes.toString('base64')));assert.equal(await readFile(source,'utf8'),original);
+ for(const body of [part('x','a'),part('content/Program.skpr',program)+part('content/program.skpr',program),part('content/Program.skpr',program)+part('x','a','0'.repeat(32)),part('content/program.skpr',program)]){
+  const show=`<skshow>${body}</skshow>`;await writeFile(bad,show);assert.equal((await call('extract_show_program_copy',{source:bad,destination:failed,sha256:digest('sha256',show)})).isError,true);
+ }
+ await assert.rejects(readFile(failed),{code:'ENOENT'});assert.equal((await readdir(dir)).some(x=>x.endsWith('.tmp')),false);
+});

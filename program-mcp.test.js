@@ -32,3 +32,13 @@ test('MCP creates ordered Programs atomically and rejects invalid batches',async
  assert.equal((await call({destination:bad,items,operation:{action:'add',...items[0]}})).isError,true);
  assert.equal((await call({destination:path.join(dir,'many.skpr'),items:Array(1001).fill(items[0])})).isError,true);
 });
+
+test('MCP exposes Program timeline embedding',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'program-embed-mcp-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const client=new Client({name:'program-embed-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js']}));t.after(()=>client.close());
+ const call=(name,args)=>client.callTool({name:`showkontrol_${name}`,arguments:args});
+ const source=path.join(dir,'source.skpr'),donor=path.join(dir,'donor.sktl'),destination=path.join(dir,'out.skpr');
+ await call('create_program_copy',{destination:source,items:[{start:0,name:'A',notes:''}]});await writeFile(donor,'<sktimeline version="1"/>');
+ const program=JSON.parse((await call('inspect_program',{file:source})).content[0].text),timeline=JSON.parse((await call('inspect_timeline',{file:donor})).content[0].text);
+ const result=await call('embed_program_timeline_copy',{source,destination,sha256:program.sha256,index:0,donor,donorSha256:timeline.sha256});assert.equal(result.isError,undefined);assert.equal(JSON.parse(result.content[0].text).items[0].hasTimeline,true);
+});
