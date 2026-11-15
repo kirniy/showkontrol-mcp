@@ -335,7 +335,7 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
  let published=false,result;const cleanupWarnings=[];
  try{
   // Detected on the destination volume before anything is copied.
-  const publication=await publicationMode(staging.dir);
+  const publication=await publicationMode(staging.dir,target);
   if(requireAtomicPublication&&!publication.atomicNoReplace)throw Error(`Atomic no-replace publication is unavailable: ${publication.reason}`);
   let current=show,currentHash=sha256,composition;
   if(composing){

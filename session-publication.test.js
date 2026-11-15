@@ -7,7 +7,7 @@ import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import path from 'node:path';import os from 'node:os';
 import {composeSessionMediaCopy} from './session-media-copy.js';
-import {createStaging,publicationMode,publishStaged,findSessionStaging,removeStaleSessionStaging,setNoReplaceRenameForTests,STAGING_PREFIX,STALE_AFTER_MS} from './session-publication.js';
+import {createStaging,publicationMode,publishStaged,findSessionStaging,removeStaleSessionStaging,setNoReplaceRenameForTests,setBeforeRemovalForTests,ffiRuntimeFacts,ffiUnavailableReason,STAGING_PREFIX,STALE_AFTER_MS} from './session-publication.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -16,6 +16,8 @@ const sha=value=>createHash('sha256').update(value).digest('hex');
 const errno=os.constants.errno;
 const moduleUrl=pathToFileURL(path.resolve('session-publication.js')).href;
 const ffi=(()=>{try{return process.getBuiltinModule?.('node:ffi');}catch{}})();
+// Passed on to spawned servers, so a run under --experimental-ffi tests the server started the documented way.
+const ffiArgs=process.execArgv.filter(arg=>arg==='--experimental-ffi');
 
 // A real RENAME_NOREPLACE through Python ctypes, to exercise the publication path on runtimes without node:ffi.
 const PY='import ctypes,os,sys\nf=ctypes.CDLL(None,use_errno=True).renameat2\nf.argtypes=[ctypes.c_int,ctypes.c_char_p,ctypes.c_int,ctypes.c_char_p,ctypes.c_uint]\nprint(0 if f(-100,os.fsencode(sys.argv[1]),-100,os.fsencode(sys.argv[2]),1)==0 else ctypes.get_errno())';
@@ -49,7 +51,12 @@ test('this runtime: node:ffi no-replace rename when available, otherwise the cla
  const mode=await publicationMode(staging.dir);
  t.diagnostic(`Node.js ${process.version} ${process.platform}: ${mode.method}${mode.reason?` (${mode.reason})`:''}`);
  if(process.env.SHOWKONTROL_EXPECT_ATOMIC_PUBLICATION==='1')assert.equal(mode.atomicNoReplace,true,mode.reason);
- if(!ffi){assert.equal(mode.method,'claim_rename');assert.match(mode.reason,/node:ffi is not available/);return;}
+ if(!ffi){
+  assert.equal(mode.method,'claim_rename');assert.equal(mode.reason,ffiUnavailableReason(ffiRuntimeFacts()));
+  // The reason names the option whether or not this runtime accepts it.
+  assert.match(mode.reason,/--experimental-ffi/);
+  return;
+ }
  if(!mode.atomicNoReplace){assert.match(mode.reason,/renameat2|renamex_np|node:ffi/);return;}
  assert.equal(mode.method,process.platform==='darwin'?'renamex_np_excl':'renameat2_noreplace');
  // The hazard of rename(2): an empty directory at the destination. The no-replace rename must leave it.
@@ -120,7 +127,9 @@ test('a killed call leaves a verified wrapper: active while recently touched, th
  const r=await composeSessionMediaCopy({...f.args,destination:path.join(f.dir,'Other')});
  assert.deepEqual(r.warnings.find(w=>w.code==='stale_session_staging'),{code:'stale_session_staging',directory:f.dir,names:[name],bytes:entry.bytes,message:r.warnings.find(w=>w.code==='stale_session_staging').message});
  assert.deepEqual(await temps(f.dir),[name]);
- assert.deepEqual(await removeStaleSessionStaging({directory:f.dir,names:[name]}),{directory:f.dir,removed:[{name,bytes:entry.bytes}],kept:[]});
+ const removal=await removeStaleSessionStaging({directory:f.dir,names:[name]});
+ assert.match(removal.removed[0].removedAs,new RegExp(`^${name}\\.removing-[0-9a-f]{16}$`));
+ assert.deepEqual(removal,{directory:f.dir,removed:[{name,bytes:entry.bytes,removedAs:removal.removed[0].removedAs}],kept:[]});
  assert.deepEqual(await temps(f.dir),[]);
 });
 
@@ -213,7 +222,7 @@ test('MCP lists and removes stale staging and exposes requireAtomicPublication',
  const f=await fixture(t);
  const {name}=await child(`const s=await m.createStaging(${JSON.stringify(f.dir)},'Session B');console.log(s.name);process.kill(process.pid,'SIGKILL');`);
  await age(f.dir,name,STALE_AFTER_MS+1000);
- const client=new Client({name:'publication-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const client=new Client({name:'publication-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:[...ffiArgs,'server.js'],env:process.env}));t.after(()=>client.close());
  const call=async(tool,args)=>{const r=await client.callTool({name:tool,arguments:args});assert.equal(r.isError,undefined,r.content?.[0]?.text);return JSON.parse(r.content[0].text);};
  const found=await call('showkontrol_find_session_staging',{directory:f.dir});
  assert.deepEqual(found.entries.map(e=>[e.name,e.status]),[[name,'stale']]);
@@ -224,5 +233,106 @@ test('MCP lists and removes stale staging and exposes requireAtomicPublication',
  assert.equal(tools.find(x=>x.name==='showkontrol_find_session_staging').annotations.readOnlyHint,true);
  assert.equal(tools.find(x=>x.name==='showkontrol_remove_stale_session_staging').annotations.destructiveHint,true);
  const r=await call('showkontrol_compose_session_media_copy',{...f.args});
- assert.equal(typeof r.publication.atomicNoReplace,'boolean');
+ t.diagnostic(`server ${[...ffiArgs,'server.js'].join(' ')}: ${r.publication.method}${r.publication.fallbackReason?` (${r.publication.fallbackReason})`:''}`);
+ if(process.env.SHOWKONTROL_EXPECT_ATOMIC_PUBLICATION==='1')assert.equal(r.publication.atomicNoReplace,true,r.publication.fallbackReason);
+ if(!r.publication.atomicNoReplace)assert.match(r.publication.fallbackReason,/--experimental-ffi|renameat2|renamex_np/);
+ if(!ffiArgs.length)return;
+ // The same server started without the option falls back and says it needs the option.
+ const plain=new Client({name:'publication-test-plain',version:'1'});await plain.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:{...process.env,NODE_OPTIONS:(process.env.NODE_OPTIONS??'').replace(/(^|\s)--experimental-ffi(?=\s|$)/g,'')}}));t.after(()=>plain.close());
+ const fallback=JSON.parse((await plain.callTool({name:'showkontrol_compose_session_media_copy',arguments:{...f.args,destination:path.join(f.dir,'Session D')}})).content[0].text).publication;
+ assert.equal(fallback.method,'claim_rename');assert.match(fallback.fallbackReason,/^node:ffi is not enabled in this process: Node\.js v\S+ accepts --experimental-ffi/);
+});
+
+test('the fallback reason comes from the runtime\'s options, not its version',()=>{
+ const base={version:'v26.8.1',getBuiltinModule:true,flagKnown:true,flag:'absent',permissionModel:false};
+ // The owner's Mac: Node.js 26.8.1 started without the option.
+ assert.equal(ffiUnavailableReason(base),'node:ffi is not enabled in this process: Node.js v26.8.1 accepts --experimental-ffi and provides node:ffi only when started with it (node --experimental-ffi server.js)');
+ assert.equal(ffiUnavailableReason({...base,flag:'disabled'}),'node:ffi is disabled by --no-experimental-ffi in this process');
+ assert.equal(ffiUnavailableReason({...base,flag:'enabled',permissionModel:true},Object.assign(Error('denied'),{code:'ERR_ACCESS_DENIED'})),'node:ffi could not be loaded although --experimental-ffi was given; the permission model also requires --allow-ffi (ERR_ACCESS_DENIED)');
+ assert.equal(ffiUnavailableReason({...base,version:'v24.11.0',flagKnown:false}),'node:ffi is not available in Node.js v24.11.0: this runtime does not accept the --experimental-ffi option, so it has no node:ffi (Node.js before 26.1.0, or a build without FFI support)');
+ assert.equal(ffiUnavailableReason({...base,version:'v20.10.0',getBuiltinModule:false,flagKnown:false}),'node:ffi cannot be loaded: Node.js v20.10.0 has no process.getBuiltinModule');
+ // A version that has node:ffi is never reported as enough on its own.
+ for(const flag of ['absent','disabled','enabled'])assert.doesNotMatch(ffiUnavailableReason({...base,flag}),/added|or later/);
+});
+
+test('this runtime accepts --experimental-ffi exactly when it lists the option, and the facts see it',t=>{
+ const facts=ffiRuntimeFacts(),run=args=>{try{return {status:0,out:execFileSync(process.execPath,[...args,'-e','console.log(JSON.stringify([typeof process.getBuiltinModule("node:ffi"),process.allowedNodeEnvironmentFlags.has("--experimental-ffi")]))'],{encoding:'utf8',stdio:['ignore','pipe','pipe']})};}catch(error){return {status:error.status,err:String(error.stderr)};}};
+ const flagged=run(['--experimental-ffi']);
+ t.diagnostic(`Node.js ${process.version}: --experimental-ffi ${facts.flagKnown?'listed':'not listed'}; node --experimental-ffi exits ${flagged.status}${flagged.out?` ${flagged.out.trim()}`:''}`);
+ if(!facts.flagKnown){
+  // Node.js 22 (checked) refuses to start: the option must not be added for runtimes that lack it.
+  assert.equal(flagged.status,9);assert.match(flagged.err,/bad option: --experimental-ffi/);
+ }else{
+  assert.equal(flagged.status,0);const [type]=JSON.parse(flagged.out);
+  assert.equal(type,'object','node:ffi is missing although the runtime accepts --experimental-ffi');
+ }
+ assert.equal(facts.flag,ffiArgs.length?'enabled':(process.env.NODE_OPTIONS??'').split(/\s+/).includes('--experimental-ffi')?'enabled':'absent');
+});
+
+test('under the permission model the native rename is used only where fs.write is granted',{skip:!process.allowedNodeEnvironmentFlags.has('--permission')&&'no --permission option'},async t=>{
+ const dir=await realpath(await mkdtemp(path.join(os.tmpdir(),'sk-publication-permission-')));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const staging=await createStaging(dir,'Target');t.after(()=>staging.release().catch(()=>{}));
+ const target=path.join(dir,'Target');
+ // A no-replace rename emulated with fs calls that the permission model does check, recording every destination.
+ const script=`import * as m from ${JSON.stringify(moduleUrl)};import fs from 'node:fs';const calls=[];
+m.setNoReplaceRenameForTests({method:'spy',rename:(a,b)=>{calls.push(b);if(fs.existsSync(b))return ${errno.EEXIST};fs.renameSync(a,b);return 0;}});
+const mode=await m.publicationMode(${JSON.stringify(staging.dir)},${JSON.stringify(target)});
+console.log(JSON.stringify({method:mode.method,reason:mode.reason,target:calls.includes(${JSON.stringify(target)}),calls:calls.length}));`;
+ const run=write=>JSON.parse(execFileSync(process.execPath,['--permission','--allow-fs-read=*',...write.map(w=>`--allow-fs-write=${w}`),'--input-type=module','-e',script],{encoding:'utf8',stdio:['ignore','pipe','ignore']}));
+ const denied=run([staging.dir]);
+ assert.deepEqual(denied,{method:'claim_rename',reason:`spy: the permission model does not grant fs.write for ${target}, and a native rename would not be checked by it`,target:false,calls:0});
+ assert.deepEqual(run([staging.dir,target]),{method:'spy',target:false,calls:2});
+ assert.deepEqual((await readdir(staging.dir)).sort(),['owner.json','session','work']);
+});
+
+test('a failed native rename says nothing was published only while the staged session is still in staging',async t=>{
+ const dir=await realpath(await mkdtemp(path.join(os.tmpdir(),'sk-publication-failure-')));t.after(()=>rm(dir,{recursive:true,force:true}));
+ for(const [moves,message] of [[false,/^Error: No-replace publication failed with EIO; nothing was published$/],[true,/^Error: No-replace publication failed with EIO, and the staged session is no longer in staging; check the destination$/]]){
+  const staging=await createStaging(dir,'Target');t.after(()=>staging.release().catch(()=>{}));
+  const target=path.join(dir,`Target-${moves}`);
+  await assert.rejects(publishStaged(staging,target,{atomicNoReplace:true,rename:(a,b)=>{if(moves)renameSync(a,b);return errno.EIO;}}),message);
+  assert.equal(await access(target).then(()=>true,()=>false),moves);
+ }
+});
+
+test('a staging directory replaced after verification is not emptied, and its claim is kept',async t=>{
+ t.after(()=>setBeforeRemovalForTests(undefined));
+ const f=await fixture(t),victim=path.join(f.dir,'Victim');
+ await mkdir(victim);await writeFile(path.join(victim,'keep.wav'),'precious');
+ const stale=async destination=>{
+  const target=path.join(f.dir,destination);
+  const {name}=await child(`const s=await m.createStaging(${JSON.stringify(f.dir)},${JSON.stringify(destination)});console.log(s.name);
+await m.publishDirectory(s.stage,${JSON.stringify(target)},undefined,{onClaim:async st=>{await m.recordClaim(s.dir,${JSON.stringify(target)},st);if(st.state==='claimed')process.kill(process.pid,'SIGKILL');}});`);
+  await age(f.dir,name,STALE_AFTER_MS+1000);return name;
+ };
+ // 1. Replaced by a symlink to another directory: with path-based removal its entries would be deleted.
+ const linked=await stale('Linked');
+ setBeforeRemovalForTests(async({parent,name})=>{if(name!==linked)return;await rename(path.join(parent,name),path.join(parent,'moved-away'));await symlink(victim,path.join(parent,name));});
+ let r=await removeStaleSessionStaging({directory:f.dir,names:[linked]});
+ assert.deepEqual(r,{directory:f.dir,removed:[],kept:[{name:linked,status:'changed',reason:'the entry was replaced after verification; nothing was removed'}]});
+ assert.equal((await lstat(path.join(f.dir,linked))).isSymbolicLink(),true);
+ assert.deepEqual(await readdir(victim),['keep.wav']);assert.deepEqual(await readdir(path.join(f.dir,'Linked')),[]);
+ // 2. Replaced by a copy with the same record: a different directory, restored to its name, not emptied.
+ const copied=await stale('Copied');
+ setBeforeRemovalForTests(async({parent,name})=>{if(name!==copied)return;const from=path.join(parent,name);await rename(from,path.join(parent,'original-copied'));await cp(path.join(parent,'original-copied'),from,{recursive:true});});
+ r=await removeStaleSessionStaging({directory:f.dir,names:[copied]});
+ assert.deepEqual(r.kept.map(k=>k.status),['changed']);assert.deepEqual((await readdir(path.join(f.dir,copied))).sort(),['claim.json','owner.json','session','work']);
+ // 3. The wrapper is intact but its empty claim is swapped for another empty directory: the wrapper goes, the claim stays.
+ const claimed=await stale('Claimed');
+ setBeforeRemovalForTests(async({parent,name})=>{if(name!==claimed)return;await rm(path.join(parent,'Claimed'),{recursive:true});await mkdir(path.join(parent,'Claimed-other'));await rename(path.join(parent,'Claimed-other'),path.join(parent,'Claimed'));});
+ r=await removeStaleSessionStaging({directory:f.dir,names:[claimed]});
+ assert.deepEqual(r.removed.map(x=>[x.name,x.claim]),[[claimed,{name:'Claimed',action:'kept',status:'changed'}]]);await access(path.join(f.dir,'Claimed'));
+ assert.equal((await temps(f.dir)).includes(claimed),false);
+});
+
+test('an interrupted removal stays verifiable under its removing name and can be finished',async t=>{
+ const f=await fixture(t);
+ const {name}=await child(`const s=await m.createStaging(${JSON.stringify(f.dir)},'Session B');console.log(s.name);process.kill(process.pid,'SIGKILL');`);
+ // As left by a cleaner killed after the move: same directory and record, removing name.
+ const removing=`${name}.removing-0123456789abcdef`;await rename(path.join(f.dir,name),path.join(f.dir,removing));await age(f.dir,removing,STALE_AFTER_MS+1000);
+ const [entry]=(await findSessionStaging({directory:f.dir})).entries;
+ assert.deepEqual([entry.name,entry.status,entry.interruptedRemoval],[removing,'stale',true]);
+ await assert.rejects(removeStaleSessionStaging({directory:f.dir,names:[`${name}.removing-xyz`]}),/Not a session staging directory name/);
+ assert.deepEqual((await removeStaleSessionStaging({directory:f.dir,names:[removing]})).removed.map(x=>x.name),[removing]);
+ assert.deepEqual(await temps(f.dir),[]);
 });
