@@ -1,7 +1,7 @@
 import {SaxesParser} from 'saxes';
 import {readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';
 
-function parseSetlist(xml) {
+export function parseSetlist(xml) {
  const parser=new SaxesParser(),stack=[],sets=[];let current,root=false;
  parser.on('opentag',tag=>{stack.push(tag.name);const path=stack.join('/');
   if(path==='sksetlist'){if(root||tag.attributes.version!=='2')throw Error('Expected a version 2 set list');root=true;}

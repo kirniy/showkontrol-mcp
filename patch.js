@@ -1,7 +1,7 @@
 import {SaxesParser} from 'saxes';
 import {inspectXml,editXmlCopy,readShowSnapshot,readSnapshotPart,editShowPart} from './xml-copy.js';
 
-function parsePatch(xml) {
+export function parsePatch(xml) {
  const parser=new SaxesParser(); const stack=[]; let root, graphCount=0, appCount=0, currentNode, currentSetting, text='';
  const result={nodes:[],connections:[],appSettings:[]};
  parser.on('opentag',tag=>{

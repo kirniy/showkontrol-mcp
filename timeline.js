@@ -1,7 +1,8 @@
+import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';
 import {SaxesParser} from 'saxes';
 import {inspectXml,editXmlCopy,readShowSnapshot,readSnapshotPart,editShowPart,addShowPart} from './xml-copy.js';
 import {randomInt} from 'node:crypto';
-function parseTimeline(xml) {
+export function parseTimeline(xml) {
  const parser=new SaxesParser();const stack=[];const result={attributes:{},layers:[],audio:[],cueElements:[]};
  parser.on('opentag',tag=>{
   const parent=stack.at(-1);stack.push(tag.name);
@@ -83,13 +84,20 @@ function xmlNodeIds(xml){
  const ids=[];const p=new SaxesParser();p.on('opentag',tag=>{if(tag.name==='node'&&tag.attributes.id)ids.push(tag.attributes.id)});p.write(xml).close();return ids;
 }
 function regexEscape(s){return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
-export async function copyCueGraphInShow({source,destination,sha256,name,sourceCueId,targetCueId}){
- if(sourceCueId===targetCueId)throw Error('Select two different cues');
- if(!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
+function cueElements(xml,cueId){
+ return [...xml.matchAll(/<cue\b(?:[^"'<>]|"[^"]*"|'[^']*')*?(?:\/>|>[\s\S]*?<\/cue\s*>)/g)].filter(match=>{
+  const opening=match[0].match(/^<cue\b(?:[^"'<>]|"[^"]*"|'[^']*')*?>/)[0];
+  let attributes;const parser=new SaxesParser();parser.on('opentag',tag=>{attributes=tag.attributes});
+  parser.write(opening.replace(/\s*\/?>$/,'/>')).close();return attributes.id===cueId;
+ });
+}
+export async function copyCueGraphInShow({source,destination,sha256,name,sourceName=name,sourceCueId,targetCueId}){
+ if(sourceName===name&&sourceCueId===targetCueId)throw Error('Select two different cues');
+ if(!name?.toLowerCase().endsWith('.sktl')||!sourceName?.toLowerCase().endsWith('.sktl'))throw Error('Select .sktl parts');
  const show=await readShowSnapshot({file:source});if(show.sha256!==sha256)throw Error('Source changed since inspection');
  if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
- const part=readSnapshotPart({snapshot:show,name});const xml=part.text;
- const src=cueGraph(xml,sourceCueId),target=cueGraph(xml,targetCueId);
+ const xml=readSnapshotPart({snapshot:show,name}).text,sourceXml=readSnapshotPart({snapshot:show,name:sourceName}).text;
+ const src=cueGraph(sourceXml,sourceCueId),target=cueGraph(xml,targetCueId);
  if(!src.graph||!src.graph.nodes.length)throw Error('Source cue has no graph');
  if(target.graph)throw Error('Target cue already has a graph');
  const nodes=src.graph.nodes;const ids=nodes.map(n=>n.id);
@@ -103,19 +111,22 @@ export async function copyCueGraphInShow({source,destination,sha256,name,sourceC
  }
  if(max+ids.length>1000000000)throw Error('No node IDs remain in the supported range');
  const idMap=Object.fromEntries(ids.map(id=>[id,`n${++max}`]));
- const srcRe=new RegExp('<cue\\b(?=[^>]*\\sid=["\\\']'+regexEscape(sourceCueId)+'["\\\'])[^>]*>([\\s\\S]*?)<\\/cue\\s*>','g');
- const sm=[...xml.matchAll(srcRe)];if(sm.length!==1)throw Error('Unsupported source cue serialization');
- const gm=[...sm[0][1].matchAll(/<graph(?:\s[^>]*)?>[\s\S]*?<\/graph\s*>/g)];if(gm.length!==1)throw Error('Unsupported graph serialization');
- let graph=gm[0][0];
+ const sourceRoot=parseXmlSpans(sourceXml),targetRoot=sourceXml===xml?sourceRoot:parseXmlSpans(xml);
+ const sm=selectXmlSpans(sourceRoot,['sktimeline',{name:'cue',attributes:{id:sourceCueId}}]);
+ if(sm.length!==1||sm[0].selfClosing)throw Error('Unsupported source cue serialization');
+ const gm=selectXmlSpans(sourceRoot,['sktimeline',{name:'cue',attributes:{id:sourceCueId}},'graph']);
+ if(gm.length!==1||gm[0].selfClosing)throw Error('Unsupported graph serialization');
+ let graph=sourceXml.slice(gm[0].start,gm[0].end);
  for(const [oldId,newId] of Object.entries(idMap)){
   const re=new RegExp('((?:\\sid|\\sfromNode|\\stoNode)=["\\\'])'+regexEscape(oldId)+'(["\\\'])','g');graph=graph.replace(re,(_,a,b)=>a+newId+b);
  }
  for(const oldId of ids)if(new RegExp('(^|[^A-Za-z0-9_])'+regexEscape(oldId)+'([^A-Za-z0-9_]|$)').test(graph))throw Error('Graph contains node references outside supported attributes');
- const targetRe=new RegExp('<cue\\b(?=[^>]*\\sid=["\\\']'+regexEscape(targetCueId)+'["\\\'])[^>]*/>','g');
- const tm=[...xml.matchAll(targetRe)];if(tm.length!==1)throw Error('Target cue must use the simple self-closing form');
- const open=tm[0][0].replace(/\s*\/>$/,'>');const changed=xml.slice(0,tm[0].index)+open+graph+'</cue>'+xml.slice(tm[0].index+tm[0][0].length);
+ const tm=selectXmlSpans(targetRoot,['sktimeline',{name:'cue',attributes:{id:targetCueId}}]);if(tm.length!==1||!tm[0].selfClosing)throw Error('Target cue must use the simple self-closing form');
+ const open=xml.slice(tm[0].start,tm[0].openEnd).replace(/\s*\/>$/,'>');const changed=xml.slice(0,tm[0].start)+open+graph+'</cue>'+xml.slice(tm[0].end);
+ const expected={nodes:src.graph.nodes.map(node=>({...node,id:idMap[node.id]})),connections:src.graph.connections.map(connection=>({...connection,fromNode:idMap[connection.fromNode],toNode:idMap[connection.toNode]}))};
+ if(JSON.stringify(cueGraph(changed,targetCueId).graph)!==JSON.stringify(expected))throw Error('Copied graph did not match the selected source and target cues');
  const result=await editShowPart({source,destination,sha256,name,edits:[{find:xml,replace:changed}]});
- return {...result,sourceCueId,targetCueId,idMap,note:'Copied a fixture-supported cue graph into an offline show copy; validate the result in ShowKontrol.'};
+ return {...result,sourceName,sourceCueId,targetCueId,idMap,note:'Copied a fixture-supported cue graph into an offline show copy; validate the result in ShowKontrol.'};
 }
 
 // Edit only the cue's opening tag, leaving any action graph intact.

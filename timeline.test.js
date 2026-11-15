@@ -143,3 +143,34 @@ test('edit a self-closing cue setting and leave adjacent settings unchanged',asy
  await editCueGraphSettingCopy({source,destination,format:'sktl',sha256,cueId:'c1',nodeId:'n155',key:'trigger.path',value:'cue.active'});
  const settings=(await inspectCueGraph({file:destination,format:'sktl',cueId:'c1'})).graph.nodes[0].settings;assert.deepEqual(settings,[{key:'trigger.path',value:'cue.active'},{key:'trigger.on',value:'State On'}]);assert.equal(await readFile(source,'utf8'),xml);
 });
+test('copy an app-fixture cue graph between tracks in the same show',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-graph-tracks-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.skshow'),destination=path.join(dir,'out.skshow');
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const graph='<graph><node id="n154" type="groupin"><settings/></node><node id="n155" type="trigger"><settings><setting key="trigger.path">cue.active</setting><setting key="trigger.on">State On</setting></settings></node><node id="n156" type="action"><settings><setting key="action.category">Application</setting></settings></node><connection fromNode="n154" fromPin="0" toNode="n155" toPin="0"/><connection fromNode="n155" fromPin="0" toNode="n156" toPin="0"/></graph>';
+ const donor=part('content/Track.sktl',`<sktimeline version="1"><layers><layer name="Layer 1"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Cue">${graph}</cue></sktimeline>`),target=part('content/Track_2.sktl','<sktimeline version="1"><layers><layer name="Layer 1"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Cue"/></sktimeline>'),patch=part('patch.skf','<showkontrol version="2"><graph><node id="n200"/></graph></showkontrol>');const original=`<skshow>${donor}${target}${patch}</skshow>`;await writeFile(source,original);
+ const name='content/Track_2.sktl',{sha256}=await inspectShowTimeline({file:source,name});const args={source,destination,sha256,name,sourceName:'content/Track.sktl',sourceCueId:'c1',targetCueId:'c1'};const result=await copyCueGraphInShow(args);assert.deepEqual(result.idMap,{n154:'n201',n155:'n202',n156:'n203'});
+ const copied=(await inspectCueGraph({file:destination,format:'skshow',name,cueId:'c1'})).graph;assert.deepEqual(copied.connections.map(c=>[c.fromNode,c.toNode]),[['n201','n202'],['n202','n203']]);assert.equal(copied.nodes[1].settings[0].value,'cue.active');assert.ok((await readFile(destination,'utf8')).includes(donor));assert.equal(await readFile(source,'utf8'),original);
+ await assert.rejects(copyCueGraphInShow({...args,destination:path.join(dir,'bad'),sourceName:name}),/different/);
+});
+test('cue graph copy uses actual IDs rather than ID-like text inside labels',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-cue-id-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'in.skshow'),destination=path.join(dir,'out.skshow'),name='Track.sktl';
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const timeline=`<sktimeline version="1"><cue id="decoySource" label=" id='s'"><graph><node id="n9" type="action"><settings/></node></graph></cue><cue id = "s"><graph><node id="n1" type="trigger"><settings/></node></graph></cue><cue id="decoyTarget" label=" id='t'"/><cue id = "t"/></sktimeline>`;
+ await writeFile(source,`<skshow>${part(name,timeline)}</skshow>`);
+ const before=await inspectShowTimeline({file:source,name});
+ await copyCueGraphInShow({source,destination,sha256:before.sha256,name,sourceCueId:'s',targetCueId:'t'});
+ const get=cueId=>inspectCueGraph({file:destination,format:'skshow',name,cueId});
+ assert.equal((await get('t')).graph.nodes[0].type,'trigger');assert.equal((await get('decoyTarget')).graph,null);
+ assert.equal((await get('decoySource')).graph.nodes[0].id,'n9');
+});
+test('cue graph copy ignores comment, CDATA and nested cue decoys',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-graph-spans-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'in.skshow'),destination=path.join(dir,'out.skshow');
+ const part=(name,text)=>`<part name="${name}" md5="${createHash('md5').update(text).digest('hex')}">${Buffer.from(text).toString('base64')}</part>`;
+ const decoys='<!-- <cue id="source"><graph><node id="bad"/></graph></cue><cue id="target"/> --><![CDATA[<cue id="source"><graph>fake</graph></cue><cue id="target"/>]]><wrapper><cue id="source"/><cue id="target"/></wrapper>';
+ const graph='<graph><node id="n1" type="groupin"><settings/></node><node id="n2" type="trigger"><settings><setting key="trigger.path">cue.active</setting></settings></node><connection fromNode="n1" fromPin="0" toNode="n2" toPin="0"/></graph>';
+ const timeline=`<sktimeline version="1"><layers><layer name="Layer 1"/></layers>${decoys}<cue id="source" layer="0" startMs="0" lenMs="40" label="Source &gt; 😀">${graph}</cue><cue id="target" layer="0" startMs="40" lenMs="40" label="Target"/></sktimeline>`;
+ const original=`<skshow>${part('content/Track.sktl',timeline)}${part('patch.skf','<showkontrol version="2"/>')}</skshow>`;await writeFile(source,original);const name='content/Track.sktl',{sha256}=await inspectShowTimeline({file:source,name});
+ await copyCueGraphInShow({source,destination,sha256,name,sourceCueId:'source',targetCueId:'target'});
+ const target=(await inspectCueGraph({file:destination,format:'skshow',name,cueId:'target'})).graph;assert.equal(target.nodes.length,2);assert.equal(target.connections.length,1);assert.equal(await readFile(source,'utf8'),original);
+});
