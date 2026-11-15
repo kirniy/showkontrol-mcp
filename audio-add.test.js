@@ -1,0 +1,13 @@
+import {test} from 'node:test';import assert from 'node:assert/strict';import {mkdtemp,writeFile,readFile,rm} from 'node:fs/promises';import {createHash} from 'node:crypto';import path from 'node:path';import os from 'node:os';
+import {addTimelineAudioClipCopy,parseTimeline} from './timeline.js';
+test('adds imported-WAV-shaped clip to an existing lane in a new timeline copy',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-audio-add-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'source.sktl'),destination=path.join(dir,'out.sktl'),xml='<sktimeline version="1"><audio name="A"/><audio name="B"><clip name="old"/></audio></sktimeline>';await writeFile(source,xml);
+ const sha256=createHash('sha256').update(xml).digest('hex'),clip={name:'A & B',file:'/music/a.wav',wave:'',grid:'',pps:'315',offsetMs:'1000',trimStartMs:'500',trimEndMs:'2500',fadeInMs:'250',fadeOutMs:'500'};
+ const r=await addTimelineAudioClipCopy({source,destination,format:'sktl',sha256,audioIndex:0,clip});assert.equal(r.clipIndex,0);const parsed=parseTimeline(await readFile(destination,'utf8'));assert.deepEqual(parsed.audioClips[0].attributes,clip);assert.equal(parsed.audioClips[1].attributes.name,'old');assert.equal(await readFile(source,'utf8'),xml);
+ await assert.rejects(addTimelineAudioClipCopy({source,destination:path.join(dir,'bad.sktl'),format:'sktl',sha256,audioIndex:0,clip:{...clip,trimEndMs:'400'}}),/trimEndMs/);
+});
+test('MCP creates a clip in an inspected timeline copy',async t=>{
+ const {Client}=await import('@modelcontextprotocol/sdk/client/index.js');const {StdioClientTransport}=await import('@modelcontextprotocol/sdk/client/stdio.js');const dir=await mkdtemp(path.join(os.tmpdir(),'sk-audio-mcp-'));t.after(()=>rm(dir,{recursive:true,force:true}));const source=path.join(dir,'a.sktl'),destination=path.join(dir,'b.sktl'),xml='<sktimeline version="1"><audio/></sktimeline>';await writeFile(source,xml);
+ const client=new Client({name:'audio-add-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());const clip={name:'Tone',file:'/tone.wav',wave:'',grid:'',pps:'315',offsetMs:'0',trimStartMs:'0',trimEndMs:'1000',fadeInMs:'0',fadeOutMs:'0'};
+ const r=await client.callTool({name:'showkontrol_add_timeline_audio_clip_copy',arguments:{source,destination,format:'sktl',sha256:createHash('sha256').update(xml).digest('hex'),audioIndex:0,clip}});assert.equal(r.isError,undefined);assert.deepEqual(parseTimeline(await readFile(destination,'utf8')).audioClips[0].attributes,clip);
+});

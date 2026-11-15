@@ -518,3 +518,28 @@ export async function editTimelineAudioClipCopy({source,destination,format,sha25
  const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
  return {...result,audioIndex,clipIndex,attributes,note:'Changed existing audio clip attributes in an offline copy. Value meanings and ShowKontrol acceptance are not validated.'};
 }
+
+// Add a clip shaped like the R27 imported-WAV fixture to an existing lane.
+export async function addTimelineAudioClipCopy({source,destination,format,sha256,name,audioIndex,clip}) {
+ if(!['sktl','skshow'].includes(format))throw Error('Format must be sktl or skshow');
+ if(!Number.isSafeInteger(audioIndex)||audioIndex<0)throw Error('Audio index must be a non-negative integer');
+ if(!clip||typeof clip!=='object'||Array.isArray(clip))throw Error('Clip is required');
+ const keys=['name','file','wave','grid','pps','offsetMs','trimStartMs','trimEndMs','fadeInMs','fadeOutMs'];
+ if(Object.keys(clip).some(k=>!keys.includes(k))||keys.some(k=>typeof clip[k]!=='string'||clip[k].length>4096||/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(clip[k])))throw Error('Provide all supported clip fields as strings without control characters');
+ if(!clip.name||!clip.file)throw Error('Clip name and file are required');
+ for(const k of ['pps','offsetMs','trimStartMs','trimEndMs','fadeInMs','fadeOutMs'])if(!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(clip[k])||!Number.isFinite(Number(clip[k])))throw Error(`Invalid non-negative numeric clip field: ${k}`);
+ if(Number(clip.trimEndMs)<=Number(clip.trimStartMs))throw Error('trimEndMs must exceed trimStartMs');
+ const duration=Number(clip.trimEndMs)-Number(clip.trimStartMs);if(Number(clip.fadeInMs)>duration||Number(clip.fadeOutMs)>duration)throw Error('Fade exceeds clip duration');
+ let xml,actual;
+ if(format==='skshow'){
+  if(!name||!name.toLowerCase().endsWith('.sktl'))throw Error('Select a .sktl part');
+  const show=await readShowSnapshot({file:source});if(!show.parts.every(p=>p.valid))throw Error('A part MD5 does not match');actual=show.sha256;xml=readSnapshotPart({snapshot:show,name}).text;
+ }else ({xml,sha256:actual}=await inspectXml({file:source}));
+ if(actual!==sha256)throw Error('Source changed since inspection');parseTimeline(xml);
+ const lane=parseXmlSpans(xml).children.filter(n=>n.name==='audio')[audioIndex];if(!lane)throw Error('Audio lane does not exist');
+ const entry='<clip '+keys.map(k=>`${k}="${xmlAttr(clip[k])}"`).join(' ')+'/>';
+ let modified;if(lane.selfClosing){const open=xml.slice(lane.start,lane.openEnd).replace(/\s*\/>$/,'>');modified=xml.slice(0,lane.start)+open+entry+'</audio>'+xml.slice(lane.end);}else modified=xml.slice(0,lane.closeStart)+entry+xml.slice(lane.closeStart);
+ const parsed=parseTimeline(modified),matching=parsed.audioClips.filter(c=>c.audioIndex===audioIndex);if(!matching.length||keys.some(k=>matching.at(-1).attributes[k]!==clip[k]))throw Error('Clip could not be preserved');
+ const args={source,destination,sha256,edits:[{find:xml,replace:modified}]};const result=format==='skshow'?await editShowPart({...args,name}):await editXmlCopy(args);
+ return {...result,audioIndex,clipIndex:matching.length-1,note:'Added an offline clip using an observed imported-WAV structure. Media files and waveform caches are not copied or generated. App acceptance and playback are unverified.'};
+}
