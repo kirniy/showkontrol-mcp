@@ -92,6 +92,16 @@ function copyNodeXml(xml,node,newNodeId){
 function validateConnections(parsed){
  const ids=new Set(parsed.nodes.map(n=>n.id));for(const c of parsed.connections)if(!ids.has(c.fromNode)||!ids.has(c.toNode)||!/^\d+$/.test(c.fromPin||'')||!/^\d+$/.test(c.toPin||''))throw Error('Existing graph has invalid connection references or pins');return ids;
 }
+// Conservatively collect target text, including nested content, CDATA and entities.
+function hasRouterTarget(xml,name){
+ if(/<!DOCTYPE/i.test(xml))throw Error('DOCTYPE is not supported');
+ const parser=new SaxesParser(),targets=[];let depth=0,found=false;
+ parser.on('opentag',tag=>{depth++;if(tag.name==='setting'&&tag.attributes.key==='route.router_target')targets.push({depth,value:''});});
+ const append=text=>{for(const target of targets)target.value+=text;};
+ parser.on('text',append);parser.on('cdata',append);
+ parser.on('closetag',()=>{for(let i=targets.length-1;i>=0;i--)if(targets[i].depth===depth){if(targets[i].value.trim()===name.trim())found=true;targets.splice(i,1);}depth--;});
+ parser.write(xml).close();return found;
+}
 export async function editPatchGraphCopy({source,destination,format,sha256,operation,nodeId,newNodeId,connection}){
  const idPattern=/^[A-Za-z0-9_.:-]+$/,loaded=await sourceData(source,format);if(loaded.sha256!==sha256)throw Error('Source changed since inspection');
  const parsed=parsePatch(loaded.xml),ids=validateConnections(parsed),{root,graph}=patchGraphSpans(loaded.xml);let modified,expectedNodes=parsed.nodes,expectedConnections=parsed.connections;
@@ -101,6 +111,17 @@ export async function editPatchGraphCopy({source,destination,format,sha256,opera
   if(operation==='remove_node'){
    if(parsed.connections.some(c=>c.fromNode===nodeId||c.toNode===nodeId))throw Error('Remove all connections referencing this node first');
    modified=loaded.xml.slice(0,node.start)+loaded.xml.slice(node.end);expectedNodes=parsed.nodes.filter(n=>n.id!==nodeId);
+   const removed=parsed.nodes.find(n=>n.id===nodeId);
+   if(removed.type==='router'){
+    const names=removed.settings.filter(s=>s.key==='router.name');
+    const scopes=node.children.filter(c=>c.name==='settings'),nameElements=scopes.flatMap(c=>c.children.filter(s=>s.name==='setting'&&s.attributes.key==='router.name'));
+    if(scopes.length!==1||names.length!==1||nameElements.length!==1||nameElements[0].children.length||Object.keys(nameElements[0].attributes).length!==1||!names[0].value.trim())throw Error('Router name is missing or ambiguous; cannot check router target references');
+    const name=names[0].value;
+    if(hasRouterTarget(modified,name))throw Error('Router has a router target reference in the patch');
+    if(loaded.snapshot)for(const part of loaded.snapshot.parts.filter(p=>p.name!=='patch.skf'&&/\.(?:skf|sktl|sksc|skls)$/i.test(p.name))){
+     if(hasRouterTarget(readSnapshotPart({snapshot:loaded.snapshot,name:part.name}).text,name))throw Error('Router has a router target reference in another show part');
+    }
+   }
    // Match substrings conservatively: IDs can appear inside arbitrary field values.
    const pattern=new RegExp(escapeRegex(nodeId));
    if(hasXmlReference(modified,pattern))throw Error('Node has a reference in the patch');

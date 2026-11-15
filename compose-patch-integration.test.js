@@ -31,3 +31,13 @@ test('MCP composes patch and track together and rolls back later failures',async
  const removal=await call({...args,source:referenced,sha256:referencedSha,destination:failed,patchOperations:[{kind:'setting',nodeId:'n1',key:'level',value:'new'},{kind:'graph',operation:'remove_node',nodeId:'n1'}]});assert.equal(removal.isError,true);assert.match(removal.content[0].text,/reference/);await assert.rejects(readFile(failed),{code:'ENOENT'});assert.equal(await readFile(referenced,'utf8'),referencedInput);
  assert.equal(await readFile(source,'utf8'),input);assert.deepEqual((await readdir(dir)).filter(n=>n.startsWith('.showkontrol-')),[]);
 });
+test('MCP composer rejects router removal with encoded cue target',async t=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'sk-compose-router-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ const source=path.join(dir,'source.skshow'),destination=path.join(dir,'out.skshow');
+ const patch='<showkontrol version="2"><graph><node id="n1" type="router"><settings><setting key="router.name">A</setting></settings></node></graph><appSettings/></showkontrol>';
+ const timeline='<sktimeline version="1" name="Existing"><layers><layer name="Layer 1"/></layers><cue id="c1" layer="0" startMs="0" lenMs="40" label="Original"><graph><node id="n9" type="action"><settings><setting key="route.router_target">&#65;</setting></settings></node></graph></cue></sktimeline>';
+ const input=`<skshow>${part('patch.skf',patch)}${part('content/Existing.sktl',timeline)}</skshow>`;await writeFile(source,input);const sha256=(await inspectShow({file:source})).sha256;
+ const client=new Client({name:'compose-router-test',version:'1'});await client.connect(new StdioClientTransport({command:process.execPath,args:['server.js'],env:process.env}));t.after(()=>client.close());
+ const result=await client.callTool({name:'showkontrol_compose_multi_track_show_copy',arguments:{source,destination,sha256,tracks:[{existingPartName:'content/Existing.sktl',cues:[{layer:0,startMs:100,lengthMs:40,label:'Added'}]}],patchOperations:[{kind:'graph',operation:'remove_node',nodeId:'n1'}]}});
+ assert.equal(result.isError,true);assert.match(result.content[0].text,/router target reference/);await assert.rejects(readFile(destination),{code:'ENOENT'});assert.equal(await readFile(source,'utf8'),input);
+});
