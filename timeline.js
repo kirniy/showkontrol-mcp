@@ -345,6 +345,11 @@ export async function editCueGraphSettingCopy({source,destination,format,sha256,
  const graph=cueGraph(xml,cueId).graph;if(!graph)throw Error('Cue has no action graph');
  const nodes=graph.nodes.filter(n=>n.id===nodeId);if(nodes.length!==1)throw Error('Node ID must occur exactly once in cue graph');
  if(nodes[0].settings.filter(s=>s.key===key).length!==1)throw Error('Setting must exist exactly once in selected node');
+ if(key==='node.stopped'){
+  if(!['true','false'].includes(value))throw Error('node.stopped value must be exactly true or false');
+  const {stopped:_,...result}=await setCueGraphNodeStoppedCopy({source,destination,format,sha256,name,cueId,nodeId,stopped:value==='true'});
+  return {...result,key,value,note:'Changed an existing cue graph setting in an offline copy. Value semantics and ShowKontrol acceptance are not validated.'};
+ }
  const root=parseXmlSpans(xml),settings=selectXmlSpans(root,['sktimeline',{name:'cue',attributes:{id:cueId}},'graph',{name:'node',attributes:{id:nodeId}},'settings',{name:'setting',attributes:{key}}]);
  if(settings.length!==1)throw Error('Unsupported or ambiguous setting serialization');
  const setting=settings[0],encoded=value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');

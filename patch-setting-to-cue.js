@@ -12,6 +12,7 @@ export function validateRouterTarget(target,value){
   if(matches!==1)throw Error('Router target must match exactly one router name in the destination patch');
 }
 export async function copyPatchSettingToCueShowCopy({source,destination,sha256,name,cueId,nodeId,template,templateFormat,templateSha256,templateNodeId,key}){
+ if(key==='node.stopped')throw Error('Cannot copy node.stopped from a patch; use the cue node stopped-state tool');
  if(!name?.toLowerCase().endsWith('.sktl')||typeof cueId!=='string'||!cueId||!/^n\d+$/.test(nodeId||'')||!/^n\d+$/.test(templateNodeId||'')||!/^[A-Za-z0-9_.:-]+$/.test(key||''))throw Error('Valid timeline, cue, node IDs and key are required');
  if(!['skf','skshow'].includes(templateFormat))throw Error('Template format must be skf or skshow');const target=await readShowSnapshot({file:source});if(target.sha256!==sha256)throw Error('Source changed since inspection');if(!target.parts.every(p=>p.valid))throw Error('A part MD5 does not match');
  let donorXml,donorSha;if(templateFormat==='skf'){const donor=await inspectXml({file:template});donorXml=donor.xml;donorSha=donor.sha256;}else{const donor=await readShowSnapshot({file:template});if(!donor.parts.every(p=>p.valid))throw Error('A template part MD5 does not match');donorXml=readSnapshotPart({snapshot:donor,name:'patch.skf'}).text;donorSha=donor.sha256;}if(donorSha!==templateSha256)throw Error('Template changed since inspection');
