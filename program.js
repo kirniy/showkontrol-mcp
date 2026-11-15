@@ -6,6 +6,7 @@ import {parseXmlSpans} from './xml-spans.js';
 import {prepareShowProgram,inspectXml,readShowSnapshot,readSnapshotPart} from './xml-copy.js';
 import {parseTimeline} from './timeline.js';
 import {SaxesParser} from 'saxes';
+import {hasXmlReference} from './xml-references.js';
 
 const hash=b=>createHash('sha256').update(b).digest('hex');
 const escape=s=>s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&apos;').replaceAll('\t','&#x9;').replaceAll('\n','&#xA;').replaceAll('\r','&#xD;');
@@ -168,11 +169,41 @@ export async function extractShowProgramCopy({source,destination,sha256}){
  }finally{if(created)await unlink(temp);}
  return {destination,name:'content/Program.skpr',sha256:inspected.programSha256,items:inspected.items,note};
 }
+function programDefinitions(xml,root){
+ const ids=new Map();
+ const visit=node=>{
+  if((node.name==='node'||node.name==='cue')&&node.attributes.id){
+   const id=node.attributes.id,definitions=ids.get(id)??[];definitions.push(xml.slice(node.start,node.end));ids.set(id,definitions);
+  }
+  for(const child of node.children)visit(child);
+ };
+ visit(root);return ids;
+}
 export async function attachShowProgramCopy({source,destination,sha256,program,programSha256,replaceExisting=false}){
  if(!path.isAbsolute(destination)||path.extname(destination).toLowerCase()!=='.skshow'||path.resolve(source)===path.resolve(destination)||path.resolve(program)===path.resolve(destination))throw Error('Destination must be a different absolute .skshow path');
  if(!/^[a-f0-9]{64}$/.test(sha256||'')||!/^[a-f0-9]{64}$/.test(programSha256||''))throw Error('Source and Program SHA-256 values are required');
  const input=await snapshot(program);if(input.sha256!==programSha256)throw Error('Program changed since inspection');
  const bytes=input.bytes,show=await prepareShowProgram({file:source,bytes,replaceExisting});if(show.sha256!==sha256)throw Error('Source changed since inspection');
+ const archive=await readShowSnapshot({file:source});if(archive.sha256!==sha256)throw Error('Source changed since inspection');
+ const old=archive.parts.find(p=>p.name==='content/Program.skpr');
+ if(old){
+  const oldXml=new TextDecoder('utf-8',{fatal:true,ignoreBOM:true}).decode(old.bytes);
+  const oldIds=programDefinitions(oldXml,parse(oldXml).root),newIds=programDefinitions(input.xml,input.root);
+  for(const id of new Set([...oldIds.keys(),...newIds.keys()])){
+   const before=oldIds.get(id)??[],after=newIds.get(id)??[];
+   if((before.length>1||after.length>1)&&JSON.stringify([...before].sort())!==JSON.stringify([...after].sort()))throw Error('Program has ambiguous duplicate node or cue ID');
+  }
+  const removed=[...oldIds.keys()].filter(id=>!newIds.has(id));
+  if(removed.length){
+   const others=archive.parts.filter(p=>p.name!=='content/Program.skpr'&&/\.(?:skf|sktl|sksc|skpr)$/i.test(p.name));
+   for(const part of others){
+    const xml=readSnapshotPart({snapshot:archive,name:part.name}).text;
+    for(const id of removed){const escaped=id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+     if(hasXmlReference(xml,new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`)))throw Error(`Removed Program ID is referenced in another show part: ${id}`);
+    }
+   }
+  }
+ }
  const temp=path.join(path.dirname(destination),`.showkontrol-program-${randomUUID()}.tmp`);let created=false;
  try{
   await writeFile(temp,show.output,{flag:'wx'});created=true;

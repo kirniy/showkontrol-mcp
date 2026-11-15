@@ -42,6 +42,7 @@ import {remapProgramItemGraphCopy} from './program-graph-remap.js';
 import {registerActionSearch} from './action-search.js';
 import {copyProgramItemGraphRemappedCopy} from './program-graph-copy-remap.js';
 import {embedProgramTimelineRemappedCopy} from './program-timeline-copy-remap.js';
+import {composeProgramScheduleCopy} from './program-compose.js';
 
 const base = new URL(process.env.SHOWKONTROL_URL || 'http://127.0.0.1:8090');
 if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password || base.search || base.hash || !['', '/'].includes(base.pathname)) throw Error('SHOWKONTROL_URL must be an HTTP(S) origin without credentials or a path');
@@ -246,12 +247,15 @@ add('showkontrol_get_patch','Read the complete running patch using the ShowKontr
 add('showkontrol_put_patch','Submit a patch body to ShowKontrol. Get the current patch and discover its schema first. This changes the running show unless the app accepts a dry-run request.',{body:z.unknown()},({body})=>call('PUT','/patch',body),write);
 const programText=z.string().max(4096);
 const programTime=z.number().int().min(0).max(86399999);
+const scheduleDonor=z.object({donor:z.string(),donorSha256:z.string().length(64),donorName:z.string().max(4096).optional(),remapCueIds:z.boolean().optional()}).strict();
+const scheduleGraph=z.object({donor:z.string(),donorSha256:z.string().length(64),donorName:z.string().max(4096).optional(),donorCueId:z.string().min(1).max(4096),settings:z.array(z.object({nodeId:z.string().max(256),key:z.string().max(256),value:z.string().max(4096)}).strict()).max(100).optional()}).strict();
 const programOperation=z.discriminatedUnion('action',[
  z.object({action:z.literal('add'),start:programTime,name:programText,notes:programText}).strict(),
  z.object({action:z.literal('edit'),index:z.number().int().nonnegative(),start:programTime.optional(),name:programText.optional(),notes:programText.optional()}).strict(),
  z.object({action:z.literal('remove'),index:z.number().int().nonnegative(),allowContentRemoval:z.boolean().optional()}).strict()
 ]);
 add('showkontrol_inspect_show_program','Inspect the canonical Program part in an offline show archive. App acceptance is unverified.',{file:z.string()},inspectShowProgram,readOnly);
+add('showkontrol_compose_program_schedule_copy','Create an ordered Program in a new show copy, with optional timeline and graph donors per item. Existing Program replacement requires replaceExisting. Returns ID mappings and partial validation; app acceptance, media and runtime behavior are unverified.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),items:z.array(z.object({start:programTime,name:programText,notes:programText,timeline:scheduleDonor.optional(),graph:scheduleGraph.optional()}).strict()).max(100),replaceExisting:z.boolean().optional()},composeProgramScheduleCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
 add('showkontrol_extract_show_program_copy','Extract the canonical Program bytes from an inspected offline show archive to a new standalone .skpr file.',{source:z.string(),destination:z.string(),sha256:z.string().length(64)},extractShowProgramCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
 add('showkontrol_attach_show_program_copy','Attach an inspected standalone Program to a new offline show copy. Existing Program replacement requires replaceExisting. App acceptance is unverified.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),program:z.string(),programSha256:z.string().length(64),replaceExisting:z.boolean().optional()},attachShowProgramCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
 add('showkontrol_edit_program_item_graph_setting_copy','Change an existing direct node setting in a standalone Program item graph. Inspect the source and graph first. Values and application acceptance are unverified.',{source:z.string(),destination:z.string(),sha256:z.string().length(64),index:z.number().int().nonnegative(),nodeId:z.string().min(1),key:z.string().min(1),value:z.string()},editProgramItemGraphSettingCopy,{readOnlyHint:false,destructiveHint:false,idempotentHint:false,openWorldHint:false});
