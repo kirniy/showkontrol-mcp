@@ -61,7 +61,7 @@ export async function writeRpp({file, markers = [], tracks = [], mediaTracks = [
  if (!path.isAbsolute(file) || path.extname(file).toLowerCase()!=='.rpp') throw Error('Use an absolute path ending in .rpp');
  const text=renderRpp({markers,tracks,mediaTracks,projectName});
  await writeFile(file,text,{encoding:'utf8',flag:'wx'});
- return {file,markers:markers.length,tracks:tracks.length,mediaTracks:mediaTracks.length,bytes:Buffer.byteLength(text),...(projectName!==undefined?{warnings:['projectName is not written to the generated REAPER project.']}:{}),note:'Import this file in the Cue Editor; it does not contain cue action graphs. Import of generated cue and media items has not been verified in ShowKontrol.'};
+ return {file,markers:markers.length,tracks:tracks.length,mediaTracks:mediaTracks.length,bytes:Buffer.byteLength(text),...(projectName!==undefined?{warnings:['projectName is not written to the generated REAPER project.']}:{}),note:'Import this file in the Cue Editor; it does not contain cue action graphs. One R27 test imported generated WAV and cue items; playback, take volume, other media formats, and action graphs remain unverified.'};
 }
 
 // Probe only readable regular files. Never invoke a shell or permit network protocols.
