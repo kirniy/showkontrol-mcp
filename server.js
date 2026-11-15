@@ -265,7 +265,7 @@ const programOperation=z.discriminatedUnion('action',[
  z.object({action:z.literal('edit_timeline_graph_setting'),index:z.number().int().nonnegative(),cueId:z.string().min(1),nodeId:z.string().min(1),key:z.string().min(1),value:z.string()}).strict(),
  z.object({action:z.literal('add_timeline_cue'),index:z.number().int().nonnegative(),layer:z.number().int().nonnegative(),startMs:z.number().nonnegative(),lengthMs:z.number().positive(),label:z.string().min(1)}).strict(),
  z.object({action:z.literal('delete_timeline_cue'),index:z.number().int().nonnegative(),cueId:z.string().min(1),deleteGraph:z.boolean().optional()}).strict(),
- z.object({action:z.literal('copy_timeline_cue_graph'),index:z.number().int().nonnegative(),cueFromOperation:z.number().int().nonnegative(),donor:z.string(),donorSha256:z.string().length(64),donorCueId:z.string().min(1),donorName:z.string().optional()}).strict(),
+ z.object({action:z.literal('copy_timeline_cue_graph'),index:z.number().int().nonnegative(),cueFromOperation:z.number().int().nonnegative().optional(),cueId:z.string().min(1).optional(),donor:z.string(),donorSha256:z.string().length(64),donorCueId:z.string().min(1),donorName:z.string().optional()}).strict(),
  z.object({action:z.literal('edit_copied_timeline_graph_setting'),index:z.number().int().nonnegative(),graphFromOperation:z.number().int().nonnegative(),donorNodeId:z.string().min(1),key:z.string().min(1),value:z.string()}).strict(),
  z.object({action:z.literal('edit_timeline_cue'),index:z.number().int().nonnegative(),cueId:z.string().min(1),layer:z.number().int().nonnegative().optional(),startMs:z.number().nonnegative().optional(),lengthMs:z.number().positive().optional(),label:z.string().min(1).optional()}).strict()
 ]);

@@ -94,11 +94,15 @@ async function graphAllocationMaximum(program,source,sha256){
 function resolveCreatedCue(xml,index,created,operationIndex){
  if(!Number.isInteger(operationIndex)||operationIndex<0)throw Error('cueFromOperation must identify a prior add_timeline_cue');
  const entry=created.find(c=>c.operationIndex===operationIndex);if(!entry)throw Error('cueFromOperation must identify a prior add_timeline_cue');
+ return resolveTargetCue(xml,index,entry.id);
+}
+function resolveTargetCue(xml,index,cueId){
+ if(typeof cueId!=='string'||!cueId)throw Error('cueId must identify a direct timeline cue');
  const root=parseXmlSpans(xml),item=root.children[index];if(!Number.isInteger(index)||index<0||!item)throw Error('Item index out of range');
- let count=0;const visit=n=>{if(n.name==='cue'&&n.attributes.id===entry.id)count++;for(const c of n.children)visit(c);};visit(root);
+ let count=0;const visit=n=>{if(n.name==='cue'&&n.attributes.id===cueId)count++;for(const c of n.children)visit(c);};visit(root);
  const timelines=item.children.filter(n=>n.name==='sktimeline');
- if(count!==1||timelines.length!==1||timelines[0].children.filter(n=>n.name==='cue'&&n.attributes.id===entry.id).length!==1)throw Error('Created cue is not unique in the selected current item');
- return entry.id;
+ if(count!==1||timelines.length!==1||timelines[0].children.filter(n=>n.name==='cue'&&n.attributes.id===cueId).length!==1)throw Error('Cue is not unique in the selected current item and Program');
+ return cueId;
 }
 const digest=text=>createHash('sha256').update(text).digest('hex');
 async function copyCreatedCueGraph({timeline,edited,program,source,sha256,index,cueId,donor,donorName,donorSha256,donorCueId,dir,step}){
@@ -143,7 +147,10 @@ export async function composeProgramEditsCopy(args){
   else if(op.action==='edit_timeline_graph_setting')keys(op,['action','index','cueId','nodeId','key','value']);
   else if(op.action==='edit_copied_timeline_graph_setting')keys(op,['action','index','graphFromOperation','donorNodeId','key','value']);
   else if(op.action==='add_timeline_cue')keys(op,['action','index','layer','startMs','lengthMs','label']);
-  else if(op.action==='copy_timeline_cue_graph')keys(op,['action','index','cueFromOperation','donor','donorSha256','donorCueId'],['donorName']);
+  else if(op.action==='copy_timeline_cue_graph'){
+   keys(op,['action','index','donor','donorSha256','donorCueId'],['donorName','cueFromOperation','cueId']);
+   if(Object.hasOwn(op,'cueFromOperation')===Object.hasOwn(op,'cueId'))throw Error('Provide exactly one of cueId or cueFromOperation');
+  }
   else if(op.action==='delete_timeline_cue'){keys(op,['action','index','cueId'],['deleteGraph']);if(op.deleteGraph!==undefined&&typeof op.deleteGraph!=='boolean')throw Error('deleteGraph must be a boolean');}
   else if(op.action==='edit_timeline_cue'){
    keys(op,['action','index','cueId'],['layer','startMs','lengthMs','label']);
@@ -167,7 +174,10 @@ export async function composeProgramEditsCopy(args){
    }else if(['edit_timeline_cue','edit_timeline_graph_setting','edit_copied_timeline_graph_setting','add_timeline_cue','delete_timeline_cue','copy_timeline_cue_graph'].includes(operation.action)){
     const {index,layer,startMs,lengthMs,label}=operation;
     let cueId=operation.cueId,nodeId=operation.nodeId;
-    if(operation.action==='copy_timeline_cue_graph')cueId=resolveCreatedCue(await readFile(program,'utf8'),index,createdCues,operation.cueFromOperation);
+    if(operation.action==='copy_timeline_cue_graph'){
+     const xml=await readFile(program,'utf8');
+     cueId=Object.hasOwn(operation,'cueId')?resolveTargetCue(xml,index,operation.cueId):resolveCreatedCue(xml,index,createdCues,operation.cueFromOperation);
+    }
     if(operation.action==='edit_copied_timeline_graph_setting'){
      const reference=operation.graphFromOperation;
      const graph=Number.isInteger(reference)&&reference>=0&&reference<operationIndex?copiedCueGraphs.find(g=>g.operationIndex===reference):undefined;
