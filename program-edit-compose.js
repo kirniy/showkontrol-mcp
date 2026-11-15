@@ -2,7 +2,7 @@ import {mkdtemp,rm,link,readFile,writeFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import path from 'node:path';
 import {extractShowProgramCopy,createProgramCopy,attachShowProgramCopy,inspectShowProgram,editProgramItemGraphSettingCopy,extractProgramTimelineCopy,embedProgramTimelineCopy} from './program.js';
-import {addTimelineCueCopy,deleteTimelineCueCopy,editTimelineCueCopy,editCueGraphSettingCopy,copyCueGraphBetweenTimelinesWithShow,removeCueGraphCopy} from './timeline.js';
+import {addTimelineCueCopy,deleteTimelineCueCopy,editTimelineCueCopy,editCueGraphSettingCopy,copyCueGraphBetweenTimelinesWithShow,removeCueGraphCopy,addTimelineAudioLaneCopy,addTimelineAudioClipCopy,editTimelineAudioClipCopy,removeTimelineAudioClipCopy,removeTimelineAudioLaneCopy,laneNameReference} from './timeline.js';
 import {inspectXml,readShowSnapshot,readSnapshotPart,addShowPart} from './xml-copy.js';
 import {assembleMixedCueGraphShowCopy} from './cue-graph-mixed.js';
 import {copyProgramItemGraphRemappedCopy} from './program-graph-copy-remap.js';
@@ -155,6 +155,21 @@ async function checkRemovalReferences(program,index){
   if(hasXmlReference(remaining,new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`)))throw Error(`Removed Program ID is referenced in remaining Program: ${id}`);
  }
 }
+
+// The timeline tool checks only the extracted item timeline. A removed lane name must also be
+// absent from the rest of the staged Program and the show's other supported parts.
+async function checkLaneNameReferences(program,laneName,source,sha256){
+ if(laneNameReference(await readFile(program,'utf8'),laneName))throw Error(`Audio lane name ${JSON.stringify(laneName)} appears literally in content/Program.skpr; it may be a reference`);
+ const show=await readShowSnapshot({file:source});if(show.sha256!==sha256)throw Error('Source changed since inspection');if(show.parts.some(p=>!p.valid))throw Error('A part MD5 does not match');
+ const names=new Set();for(const part of show.parts){
+  if(!/\.(?:skf|sktl|sksc|skpr|skcp)$/i.test(part.name))continue;
+  const key=part.name.toLowerCase();if(names.has(key))throw Error('Duplicate supported XML part name');names.add(key);
+  if(key==='content/program.skpr')continue;
+  let found;try{found=laneNameReference(readSnapshotPart({snapshot:show,name:part.name}).text,laneName);}catch{throw Error(`A supported XML part could not be scanned: ${part.name}`);}
+  if(found)throw Error(`Audio lane name ${JSON.stringify(laneName)} appears literally in ${part.name}; it may be a reference`);
+ }
+}
+const audioActions=['add_timeline_audio_lane','add_timeline_audio_clip','edit_timeline_audio_clip','remove_timeline_audio_clip','remove_timeline_audio_lane'];
 
 // Allocate beyond every numeric node ID in both the show and staged Program.
 async function graphAllocationMaximum(program,source,sha256){
@@ -449,6 +464,11 @@ export async function composeProgramEditsCopy(args){
    keys(op,['action','index','donor','donorSha256','donorCueId'],['donorName','cueFromOperation','cueId','allowOpaqueNodeText']);
    if(Object.hasOwn(op,'cueFromOperation')===Object.hasOwn(op,'cueId'))throw Error('Provide exactly one of cueId or cueFromOperation');
   }
+  else if(op.action==='add_timeline_audio_lane')keys(op,['action','index','laneName','follow']);
+  else if(op.action==='add_timeline_audio_clip')keys(op,['action','index','audioIndex','clip']);
+  else if(op.action==='edit_timeline_audio_clip')keys(op,['action','index','audioIndex','clipIndex','attributes']);
+  else if(op.action==='remove_timeline_audio_clip')keys(op,['action','index','audioIndex','clipIndex']);
+  else if(op.action==='remove_timeline_audio_lane'){keys(op,['action','index','audioIndex'],['removeClips']);if(op.removeClips!==undefined&&typeof op.removeClips!=='boolean')throw Error('removeClips must be a boolean');}
   else if(op.action==='delete_timeline_cue'){keys(op,['action','index','cueId'],['deleteGraph']);if(op.deleteGraph!==undefined&&typeof op.deleteGraph!=='boolean')throw Error('deleteGraph must be a boolean');}
   else if(op.action==='edit_timeline_cue'){
    keys(op,['action','index','cueId'],['layer','startMs','lengthMs','label']);
@@ -461,7 +481,7 @@ export async function composeProgramEditsCopy(args){
  try{
   let step=0;const next=()=>path.join(dir,`${step++}.skpr`);
   const warnings=new Set(),structuredWarnings=[],patchSettingWarnings=new WeakSet();
-  const createdCues=[],copiedCueGraphs=[],assembledCueGraphs=[],assembledItemGraphs=[],copiedItemNodes=[],copiedCueNodes=[],donors=[],invalidatedGraphs=new Set();
+  const createdCues=[],copiedCueGraphs=[],assembledCueGraphs=[],assembledItemGraphs=[],copiedItemNodes=[],copiedCueNodes=[],audioOperations=[],donors=[],invalidatedGraphs=new Set();
   const collect=result=>{for(const warning of [...(result.warnings??[]),result.note])if(typeof warning==='string'&&warning)warnings.add(warning);else if(warning&&typeof warning==='object')structuredWarnings.push(warning);};
   let program=next(),current=await extractShowProgramCopy({source,destination:program,sha256});collect(current);
   for(const [operationIndex,operation] of operations.entries()){
@@ -530,6 +550,31 @@ export async function composeProgramEditsCopy(args){
     current=await copyItemPatchSetting({program,destination,source,sha256,currentSha:current.sha256,index:operation.index,nodeId,operation,dir,step});
     for(const w of current.warnings??[])if(w&&typeof w==='object'&&w.code==='opaque_node_references_unverified')patchSettingWarnings.add(w);
     donors.push({file:operation.donor,sha256:operation.donorSha256});
+   }else if(audioActions.includes(operation.action)){
+    // Audio lanes and clips have no IDs; indices address the item's current timeline after earlier operations.
+    const {index,audioIndex,clipIndex}=operation;
+    const timeline=path.join(dir,`${step++}.sktl`),edited=path.join(dir,`${step++}.sktl`);
+    const extracted=await extractProgramTimelineCopy({source:program,destination:timeline,sha256:current.sha256,index});collect(extracted);
+    const common={source:timeline,destination:edited,format:'sktl',sha256:extracted.sha256};
+    const changed=operation.action==='add_timeline_audio_lane'
+     ?await addTimelineAudioLaneCopy({...common,laneName:operation.laneName,follow:operation.follow})
+     :operation.action==='add_timeline_audio_clip'
+     ?await addTimelineAudioClipCopy({...common,audioIndex,clip:operation.clip})
+     :operation.action==='edit_timeline_audio_clip'
+     ?await editTimelineAudioClipCopy({...common,audioIndex,clipIndex,attributes:operation.attributes})
+     :operation.action==='remove_timeline_audio_clip'
+     ?await removeTimelineAudioClipCopy({...common,audioIndex,clipIndex})
+     :await removeTimelineAudioLaneCopy({...common,audioIndex,removeClips:operation.removeClips??false});
+    current=await embedProgramTimelineCopy({source:program,destination,sha256:current.sha256,index,donor:edited,donorSha256:changed.sha256,replaceExisting:true});
+    if(operation.action==='remove_timeline_audio_lane'&&changed.removed.name)await checkLaneNameReferences(destination,changed.removed.name,source,sha256);
+    collect({note:changed.note});
+    const receipt={operationIndex,action:operation.action,itemIndex:index,audioIndex:changed.audioIndex};
+    if(operation.action==='add_timeline_audio_lane')Object.assign(receipt,{laneName:changed.laneName,follow:changed.follow});
+    else if(operation.action==='add_timeline_audio_clip')Object.assign(receipt,{clipIndex:changed.clipIndex,attributes:operation.clip});
+    else if(operation.action==='edit_timeline_audio_clip')Object.assign(receipt,{clipIndex,attributes:changed.attributes,previous:changed.previous});
+    else if(operation.action==='remove_timeline_audio_clip')Object.assign(receipt,{clipIndex,removed:changed.removed});
+    else Object.assign(receipt,{removed:changed.removed,removedClips:changed.removedClips});
+    audioOperations.push(receipt);
    }else if(operation.action==='edit_graph_setting'){
     const {index,nodeId,key,value}=operation;
     current=await editProgramItemGraphSettingCopy({source:program,destination,sha256:current.sha256,index,nodeId,key,value});
@@ -664,6 +709,6 @@ export async function composeProgramEditsCopy(args){
    return matches.map(match=>{const updated={...scope,itemIndex:match.itemIndex};if(match.cueId!==undefined)updated.cueId=match.cueId;return {...w,scope:updated};});
   });
   await link(candidate,destination);
-  return {destination,sha256:attached.sha256,programSha256:current.sha256,items:final.items,createdCues,copiedCueGraphs,assembledCueGraphs,assembledItemGraphs,copiedItemNodes,copiedCueNodes,warnings:[...warnings,...finalWarnings],validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
+  return {destination,sha256:attached.sha256,programSha256:current.sha256,items:final.items,createdCues,copiedCueGraphs,assembledCueGraphs,assembledItemGraphs,copiedItemNodes,copiedCueNodes,audioOperations,warnings:[...warnings,...finalWarnings],validation:{...validation,file:destination,note:`${validation.note} Validation was performed before publication.`}};
  }finally{await rm(dir,{recursive:true,force:true});}
 }

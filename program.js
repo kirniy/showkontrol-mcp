@@ -105,7 +105,7 @@ export async function inspectProgramTimeline({file,sha256,index}){
  const {item,timeline}=await programTimeline({file,sha256,index});
  // Preview data can be large and is not useful for identifying timeline content.
  const clean=attributes=>Object.fromEntries(Object.entries(attributes).filter(([key])=>!/preview/i.test(key)));
- const result={file,sha256,index,item:publicItems([item])[0],attributes:clean(timeline.attributes),layers:timeline.layers.map(clean),audio:timeline.audio.map(clean),audioClips:timeline.audioClips.map(c=>({...c,attributes:clean(c.attributes)})),cueElements:timeline.cueElements.map(c=>({...c,attributes:clean(c.attributes)})),note:'Static format evidence only; application acceptance, cues and media playback are unverified. Preview attributes are omitted.'};
+ const result={file,sha256,index,item:publicItems([item])[0],attributes:clean(timeline.attributes),layers:timeline.layers.map(clean),audio:timeline.audio.map(clean),audioClips:timeline.audioClips.map((c,i,all)=>({...c,clipIndex:all.slice(0,i).filter(o=>o.audioIndex===c.audioIndex).length,attributes:clean(c.attributes)})),cueElements:timeline.cueElements.map(c=>({...c,attributes:clean(c.attributes)})),note:'Static format evidence only; application acceptance, cues and media playback are unverified. Preview attributes are omitted.'};
  if(Buffer.byteLength(JSON.stringify(result,null,2),'utf8')>1024*1024)throw Error('Timeline inspection output exceeds 1 MiB');
  return result;
 }

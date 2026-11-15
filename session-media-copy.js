@@ -263,13 +263,22 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
   keys.set(key,archivePath);added.push({mediaIndex:index,sourcePath:item.source,archivePath});
  }
  // mediaIndex selects a new media entry; its source path becomes the clip file.
- const withMedia=(items,label,field,trackIndex)=>items.map((item,index)=>{
+ const resolveMedia=(item,field,where)=>{
   if(!item||typeof item!=='object'||item.mediaIndex===undefined)return item;
   const {mediaIndex,...rest}=item;
-  if(!Number.isSafeInteger(mediaIndex)||!added[mediaIndex])throw Error(`Track ${trackIndex} ${label} ${index}: mediaIndex must select an entry in media`);
-  if(!rest[field]||typeof rest[field]!=='object'||Array.isArray(rest[field])||Object.hasOwn(rest[field],'file'))throw Error(`Track ${trackIndex} ${label} ${index}: mediaIndex supplies ${field}.file; omit file`);
+  if(!Number.isSafeInteger(mediaIndex)||!added[mediaIndex])throw Error(`${where}: mediaIndex must select an entry in media`);
+  if(!rest[field]||typeof rest[field]!=='object'||Array.isArray(rest[field])||Object.hasOwn(rest[field],'file'))throw Error(`${where}: mediaIndex supplies ${field}.file; omit file`);
   return {...rest,[field]:{...rest[field],file:added[mediaIndex].sourcePath}};
- });
+ };
+ const withMedia=(items,label,field,trackIndex)=>items.map((item,index)=>resolveMedia(item,field,`Track ${trackIndex} ${label} ${index}`));
+ // Ordered Program edits take mediaIndex only on audio clip additions and edits.
+ const programMediaFields={add_timeline_audio_clip:'clip',edit_timeline_audio_clip:'attributes'};
+ const resolvedProgram=program&&typeof program==='object'&&Array.isArray(program.operations)?{...program,operations:program.operations.map((operation,index)=>{
+  if(!operation||typeof operation!=='object'||operation.mediaIndex===undefined)return operation;
+  const field=programMediaFields[operation.action];
+  if(!field)throw Error(`Program operation ${index}: mediaIndex is supported only on add_timeline_audio_clip and edit_timeline_audio_clip`);
+  return resolveMedia(operation,field,`Program operation ${index}`);
+ })}:program;
  const resolvedTracks=(tracks??[]).map((track,trackIndex)=>!track||typeof track!=='object'?track:{...track,
   ...(Array.isArray(track.audioClips)?{audioClips:withMedia(track.audioClips,'audio clip','clip',trackIndex)}:{}),
   ...(Array.isArray(track.audioClipEdits)?{audioClipEdits:withMedia(track.audioClipEdits,'audio clip edit','attributes',trackIndex)}:{})});
@@ -313,7 +322,7 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
   if(composing){
    const next=path.join(work,'composed.skshow');
    // The full-show composer adds the Program stage and rejects a composed archive with validation errors.
-   composition=await composeFullShowCopy({source:show,destination:next,sha256,tracks:resolvedTracks,patchOperations,setlistOperations,program});
+   composition=await composeFullShowCopy({source:show,destination:next,sha256,tracks:resolvedTracks,patchOperations,setlistOperations,program:resolvedProgram});
    current=next;currentHash=composition.sha256;
   }
   if(added.length){

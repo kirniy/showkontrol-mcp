@@ -615,7 +615,7 @@ export async function removeTimelineAudioClipCopy({source,destination,format,sha
 
 // A lane name equal to an attribute value or element text elsewhere may be a reference.
 // Track, lane and clip names are definitions, not references.
-function laneNameReference(xml,laneName){
+export function laneNameReference(xml,laneName){
  const parser=new SaxesParser(),stack=[];let found=false;
  parser.on('opentag',tag=>{
   stack.push({name:tag.name,text:''});const at=stack.map(n=>n.name).join('/');

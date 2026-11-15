@@ -123,7 +123,11 @@ test('MCP accepts program in the session media composition schema',async t=>{
  const {tools}=await client.listTools();const tool=tools.find(x=>x.name==='showkontrol_compose_session_media_copy');
  assert.ok(tool.inputSchema.properties.program);
  const full=tools.find(x=>x.name==='showkontrol_compose_full_show_copy');
- assert.deepEqual(tool.inputSchema.properties.program.anyOf,full.inputSchema.properties.program.anyOf);
+ // Schedule items are shared; ordered edits differ only in the mediaIndex forms of Program audio clip operations.
+ const [items,edits]=tool.inputSchema.properties.program.anyOf,[fullItems,fullEdits]=full.inputSchema.properties.program.anyOf;
+ assert.deepEqual(items,fullItems);
+ const actions=schema=>schema.properties.operations.items.oneOf.map(o=>o.properties.action.const);
+ assert.deepEqual(actions(edits),actions(fullEdits));
  const inspected=JSON.parse((await client.callTool({name:'showkontrol_inspect_session_media',arguments:{directory:f.session}})).content[0].text);
  const response=await client.callTool({name:'showkontrol_compose_session_media_copy',arguments:{...f.args,sha256:inspected.showSha256}});
  assert.equal(response.isError,undefined,JSON.stringify(response));
