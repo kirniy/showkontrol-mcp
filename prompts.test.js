@@ -18,6 +18,6 @@ test('offline authoring prompt is discoverable and returns a bounded workflow', 
  const text = result.messages[0].content.text;
  assert.ok(text.includes('\n\nSource show path:'));
  assert.ok(!text.includes('\\n')); 
- for (const phrase of ['/tmp/show.skshow','Add a lighting cue','showkontrol_inspect_show_overview','showkontrol_validate_show','showkontrol_compose_show_copy','showkontrol_extract_show_program_copy','showkontrol_extract_program_timeline_copy','showkontrol_embed_program_timeline_copy','showkontrol_attach_show_program_copy','item.active','partial coverage','does not prove']) assert.ok(text.includes(phrase),phrase);
+ for (const phrase of ['/tmp/show.skshow','Add a lighting cue','showkontrol_inspect_show_overview','showkontrol_validate_show','showkontrol_compose_show_copy','showkontrol_compose_full_show_copy','showkontrol_compose_session_media_copy','showkontrol_extract_show_program_copy','showkontrol_extract_program_timeline_copy','showkontrol_embed_program_timeline_copy','showkontrol_attach_show_program_copy','item.active','partial coverage','does not prove']) assert.ok(text.includes(phrase),phrase);
  await assert.rejects(client.getPrompt({name:'author_offline_show',arguments:{showPath:'/tmp/show.skshow'}}));
 });

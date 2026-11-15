@@ -6,7 +6,8 @@ import {inspectShow,readShowSnapshot,readSnapshotPart,writeShowMediaMapCopy} fro
 import {inspectShowMedia} from './media-inventory.js';
 import {inspectSessionMedia,sidecarStatus,sidecarSegments} from './session-media.js';
 import {parseXmlSpans} from './xml-spans.js';
-import {composeMultiTrackShowCopy} from './compose-multi-show.js';
+import {composeFullShowCopy} from './compose-full-show.js';
+import {validateShow} from './validate-show.js';
 
 const MAX_MEDIA=100, MAX_REPORTED=100, CHUNK=1024*1024, DEFAULT_MAX_COPY_BYTES=4*1024**3, MAX_WORKING_ENTRIES=10000, MAX_WORKING_DEPTH=32, MAX_COMPARE_BYTES=128*1024*1024;
 const MAP_DIAGNOSTICS=['duplicate_media_map','invalid_media_map_checksum','invalid_media_map_utf8','malformed_mapping','duplicate_source'];
@@ -221,15 +222,15 @@ function planWorkingFiles({walk,before,after,sourceName,omit}){
 }
 
 // Create a new session directory: composed session.skshow, extended media.map and verified MEDIA sidecar copies.
-export async function composeSessionMediaCopy({source,destination,sha256,media=[],tracks,patchOperations,setlistOperations,allowMissingSidecars=false,omitUnverifiedWorkingFiles=false}){
+export async function composeSessionMediaCopy({source,destination,sha256,media=[],tracks,patchOperations,setlistOperations,program,allowMissingSidecars=false,omitUnverifiedWorkingFiles=false}){
  if(typeof source!=='string'||!path.isAbsolute(source)||typeof destination!=='string'||!path.isAbsolute(destination))throw Error('Source and destination session directories must be absolute paths');
  if(typeof sha256!=='string')throw Error('Supply the inspected session.skshow SHA-256');
  if(!Array.isArray(media)||media.length>MAX_MEDIA)throw Error(`Media must be an array of at most ${MAX_MEDIA} entries`);
  if(typeof allowMissingSidecars!=='boolean')throw Error('allowMissingSidecars must be a boolean');
  if(typeof omitUnverifiedWorkingFiles!=='boolean')throw Error('omitUnverifiedWorkingFiles must be a boolean');
  if(tracks!==undefined&&!Array.isArray(tracks))throw Error('Tracks must be an array');
- const composing=Boolean(tracks?.length)||patchOperations!==undefined||setlistOperations!==undefined;
- if(!media.length&&!composing)throw Error('Add media, tracks or operations');
+ const composing=Boolean(tracks?.length)||patchOperations!==undefined||setlistOperations!==undefined||program!==undefined;
+ if(!media.length&&!composing)throw Error('Add media, tracks, operations or a Program');
  const root=await realpath(source),show=path.join(root,'session.skshow');
  if(!(await lstat(show)).isFile())throw Error('session.skshow must be a regular file, not a symlink');
  const name=path.basename(destination);
@@ -307,7 +308,8 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
   let current=show,currentHash=sha256,composition;
   if(composing){
    const next=path.join(work,'composed.skshow');
-   composition=await composeMultiTrackShowCopy({source:show,destination:next,sha256,tracks:resolvedTracks,patchOperations,setlistOperations});
+   // The full-show composer adds the Program stage and rejects a composed archive with validation errors.
+   composition=await composeFullShowCopy({source:show,destination:next,sha256,tracks:resolvedTracks,patchOperations,setlistOperations,program});
    current=next;currentHash=composition.sha256;
   }
   if(added.length){
@@ -317,6 +319,13 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
    current=next;currentHash=written.sha256;
   }
   const finalSnapshot=await readShowSnapshot({file:current});if(finalSnapshot.sha256!==currentHash)throw Error('Staged show changed during composition');
+  // Validate the archive that will be published; appended media.map rows follow the composer's validation.
+  const validation=composition&&!added.length?composition.validation:composition&&await validateShow({file:current});
+  if(validation){
+   if(validation.sha256!==currentHash)throw Error('Staged show changed during validation');
+   const errors=validation.diagnostics.filter(d=>d.severity==='error');
+   if(errors.length)throw Error(`Final session.skshow validation failed: ${[...new Set(errors.map(d=>d.code))].join(', ')}`);
+  }
   const working=planWorkingFiles({walk,before,after:partsByName(finalSnapshot),sourceName:path.basename(root),omit:omitUnverifiedWorkingFiles});
   if(working.problems.length)throw Error(`Working files cannot be kept consistent with the composed session.skshow; set omitUnverifiedWorkingFiles to leave them out and let ShowKontrol regenerate them, which is unverified: ${working.problems.slice(0,5).join('; ')}${working.problems.length>5?`; and ${working.problems.length-5} more`:''}`);
   checkLimit(copies.reduce((sum,c)=>sum+c.planned.size,0)+working.plan.reduce((sum,w)=>sum+(w.bytes?.length??(w.action==='copied'?w.entry.planned.size:0)),0));
@@ -355,13 +364,21 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
    if(finding.status==='regular_file'?finding.size!==sizes.get(finding.archivePath):!(finding.status==='missing'&&allowedMissing.has(finding.archivePath)))throw Error(`Staged sidecar verification failed: ${finding.archivePath} is ${finding.status}`);
   }
   for(const row of added)row.line=staged.mappings.find(m=>m.sourcePath===row.sourcePath).line;
+  const sidecarState=row=>allowedMissing.has(row.archivePath)?'missing':'copied';
   const rowsBySource=new Map(staged.mappings.map(m=>[m.sourcePath,m])),clipLinks=[];
   for(const [trackIndex,track] of resolvedTracks.entries())for(const [clipItemIndex,item] of (track?.audioClips??[]).entries()){
    const file=item?.clip?.file,row=rowsBySource.get(file);
-   clipLinks.push({trackIndex,clipItemIndex,file,...(row?{mappingLine:row.line,archivePath:row.archivePath,sidecar:allowedMissing.has(row.archivePath)?'missing':'copied'}:{mappingLine:null})});
+   clipLinks.push({trackIndex,clipItemIndex,file,...(row?{mappingLine:row.line,archivePath:row.archivePath,sidecar:sidecarState(row)}:{mappingLine:null})});
    if(!row)warnings.push({code:'clip_file_unmapped',trackIndex,clipItemIndex,file,message:'The clip file is not a media.map source path in the new session.'});
    else if(allowedMissing.has(row.archivePath))warnings.push({code:'clip_sidecar_missing',trackIndex,clipItemIndex,file,archivePath:row.archivePath});
   }
+  // Program item clips come from the staged inventory, including clips embedded from staged tracks.
+  const programClipLinks=program===undefined?undefined:staged.clips.filter(c=>c.itemIndex!==undefined).map(c=>{
+   const file=c.attributes.file??null,row=typeof file==='string'?rowsBySource.get(file):undefined,scope={itemIndex:c.itemIndex,audioIndex:c.audioIndex,clipIndex:c.clipIndex};
+   if(file&&!row)warnings.push({code:'program_clip_file_unmapped',...scope,file,message:'The Program item clip file is not a media.map source path in the new session.'});
+   else if(row&&allowedMissing.has(row.archivePath))warnings.push({code:'program_clip_sidecar_missing',...scope,file,archivePath:row.archivePath});
+   return {...scope,file,...(row?{mappingLine:row.line,archivePath:row.archivePath,sidecar:sidecarState(row)}:{mappingLine:null})};
+  });
   if((await inspectShow({file:show})).sha256!==sha256)throw Error('Source changed during session copy');
   const recheck=await walkSession(root),key=e=>`${e.rel}\0${e.planned?.dev}:${e.planned?.ino}`;
   const seen=[...recheck.files.filter(f=>!isSidecar(f.rel,f.planned)),...recheck.dirs,...recheck.rejected].map(key).sort(),planned=[...walk.files,...walk.dirs,...walk.rejected].map(key).sort();
@@ -372,9 +389,11 @@ export async function composeSessionMediaCopy({source,destination,sha256,media=[
    mediaMap:{created:added.length>0&&!inventory.mapParts.length,preservedRows:inventory.mappings.length,addedRows:added.map(({mediaIndex,sourcePath,archivePath,line})=>({mediaIndex,line,sourcePath,archivePath}))},
    sidecars,missingSidecars:missing.map(({archivePath,lines})=>({archivePath,lines})),
    ...(composition?{tracks:composition.tracks.map(t=>t.mediaClone?{...t,mediaClone:{...t.mediaClone,destination:sessionFile}}:t),setlistOperations:composition.setlistOperations}:{}),
-   clipLinks,workingFiles:{count:workingFiles.length,directories:walk.dirs.length,entries:workingFiles.slice(0,MAX_REPORTED),truncated:workingFiles.length>MAX_REPORTED},
+   ...(composition?.program?{program:composition.program}:{}),
+   clipLinks,...(programClipLinks?{programClipLinks}:{}),workingFiles:{count:workingFiles.length,directories:walk.dirs.length,entries:workingFiles.slice(0,MAX_REPORTED),truncated:workingFiles.length>MAX_REPORTED},
    warnings:[...warnings,...working.warnings,...(composition?.warnings??[])],
-   limitations:['Follows one observed R27 session layout: media.map rows map an original absolute path to a MEDIA/ sidecar beside session.skshow. ShowKontrol has not opened, played or relinked a generated session.','Working files are related to archive parts by path, exact content or file name. Only session.skf to patch.skf (equal except the root name) is backed by app evidence; whether ShowKontrol reads working files or session.skshow when it opens a session directory is unverified. File permissions and timestamps are not preserved.','Sidecars are byte-verified copies. Media format, duration, waveform caches and clip timing against the media are not checked.']};
+   ...(validation?{validation:{...validation,file:sessionFile,note:`${validation.note.replace(/ Validation was performed before publication\.$/,'')} Validation was performed on the staged session.skshow before publication.`}}:{}),
+   limitations:['Follows one observed R27 session layout: media.map rows map an original absolute path to a MEDIA/ sidecar beside session.skshow. ShowKontrol has not opened, played or relinked a generated session.','Working files are related to archive parts by path, exact content or file name. Only session.skf to patch.skf (equal except the root name) is backed by app evidence; whether ShowKontrol reads working files or session.skshow when it opens a session directory is unverified. File permissions and timestamps are not preserved.','Sidecars are byte-verified copies. Media format, duration, waveform caches and clip timing against the media are not checked.',...(program!==undefined?['The Program follows static R27 format evidence only. ShowKontrol has not loaded a generated Program, sorted its items, run item graphs or resolved Program item clips through media.map.']:[])]};
   if(composition?.cleanupWarnings)cleanupWarnings.push(...composition.cleanupWarnings);
  }finally{
   const failures=[];

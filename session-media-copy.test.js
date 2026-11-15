@@ -106,7 +106,7 @@ test('rejects unsafe media, names and session states without publishing or chang
  await reject({media:[{source:f.source},{source:path.join(f.media,'Kick One.wav')}]},/Duplicate media source/);
  await reject({media:[{source:'/orig/old.wav'}]},/already mapped on media.map line 1/);
  await reject({media:[{source:f.source}],sha256:'0'.repeat(64)},/changed since inspection/);
- await reject({media:[]},/Add media, tracks or operations/);
+ await reject({media:[]},/Add media, tracks, operations or a Program/);
  await reject({media:[{source:f.source}],destination:path.join(f.session,'MEDIA','nested')},/outside the source session/);
  await reject({media:[{source:f.source}],tracks:[{existingPartName:'content/A.sktl',audioClips:[{audioIndex:0,mediaIndex:1,clip}]}]},/mediaIndex must select/);
  await reject({media:[{source:f.source}],tracks:[{existingPartName:'content/A.sktl',audioClips:[{audioIndex:0,mediaIndex:0,clip:{...clip,file:'/x.wav'}}]}]},/omit file/);
