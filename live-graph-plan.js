@@ -10,7 +10,10 @@ export async function buildLiveGraphPlan({nodes, connections}, call) {
   }
   for (const connection of connections) {
     for (const endpoint of [connection?.from, connection?.to]) {
-      if (!endpoint || !refs.has(endpoint.node)) throw Error(`unknown node ref: ${String(endpoint?.node)}`);
+      if (!endpoint || typeof endpoint !== 'object' || Array.isArray(endpoint) || Object.keys(endpoint).some(key => !['node', 'existingNode', 'pin'].includes(key)) || (Object.hasOwn(endpoint, 'node') === Object.hasOwn(endpoint, 'existingNode'))) throw Error('endpoint must specify exactly one of node or existingNode');
+      if (Object.hasOwn(endpoint, 'existingNode')) {
+        if (typeof endpoint.existingNode !== 'string' || !endpoint.existingNode.trim()) throw Error('existingNode must be a nonempty ID');
+      } else if (!refs.has(endpoint.node)) throw Error(`unknown node ref: ${String(endpoint.node)}`);
     }
   }
   const mapping = Object.create(null);
@@ -28,9 +31,10 @@ export async function buildLiveGraphPlan({nodes, connections}, call) {
     previews.push({ref, title:finalTitle});
     planNodes.push(node);
   }
+  const translateEndpoint = endpoint => ({node: Object.hasOwn(endpoint, 'existingNode') ? endpoint.existingNode : mapping[endpoint.node], ...(endpoint.pin !== undefined ? {pin:endpoint.pin} : {})});
   const translated = connections.map(({from, to}) => ({
-    from: {...from, node:mapping[from.node]},
-    to: {...to, node:mapping[to.node]},
+    from: translateEndpoint(from),
+    to: translateEndpoint(to),
   }));
   const validation = await call('PUT', '/patch', {dryRun:true, nodes:planNodes, connections:translated});
   if (validation?.error || validation?.success === false || validation?.ok !== true || validation?.dryRun !== true) throw Error('patch validation failed');

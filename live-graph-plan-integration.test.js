@@ -12,7 +12,7 @@ test('MCP graph planner previews and validates a reusable plan without applying 
     const body = JSON.parse(raw);
     seen.push({method:req.method, url:req.url, body});
     const response = req.url === '/api/v1/nodes'
-      ? {dryRun:true, id:`temporary-${seen.length}`, title:seen.length === 1 ? 'cue_active' : 'FeedbackNotify'}
+      ? {dryRun:true, id:`temporary-${seen.length}`, title:body.request === 'trigger' ? 'cue_active' : 'FeedbackNotify'}
       : {ok:true, dryRun:true};
     res.writeHead(200, {'Content-Type':'application/json'});
     res.end(JSON.stringify(response));
@@ -43,9 +43,27 @@ test('MCP graph planner previews and validates a reusable plan without applying 
   for (const invalid of [
     {nodes:[nodes[0], nodes[0]], connections:[]},
     {nodes, connections:[{from:{node:'trigger'}, to:{node:'missing'}}]},
+    {nodes, connections:[{from:{node:'trigger', existingNode:'n2'}, to:{node:'notify'}}]},
+    {nodes, connections:[{from:{existingNode:'  '}, to:{node:'notify'}}]},
   ]) {
     const rejected = await client.callTool({name:'showkontrol_plan_live_graph', arguments:invalid});
     assert.equal(rejected.isError, true);
   }
   assert.equal(seen.length, 3);
+
+  const mixedConnections = [
+    {from:{existingNode:'n2', pin:0}, to:{node:'trigger'}},
+    {from:{node:'notify'}, to:{existingNode:'n3', pin:'input'}},
+    {from:{existingNode:'n2'}, to:{existingNode:'n3'}},
+  ];
+  const mixed = await client.callTool({name:'showkontrol_plan_live_graph', arguments:{nodes, connections:mixedConnections}});
+  assert.equal(mixed.isError, undefined);
+  const mixedPlan = JSON.parse(mixed.content[0].text);
+  assert.deepEqual(mixedPlan.connections, [
+    {from:{node:'n2', pin:0}, to:{node:'cue_active'}},
+    {from:{node:'FeedbackNotify'}, to:{node:'n3', pin:'input'}},
+    {from:{node:'n2'}, to:{node:'n3'}},
+  ]);
+  assert.deepEqual(seen.at(-1).body.connections, mixedPlan.connections);
+  assert.doesNotMatch(JSON.stringify(mixedPlan), /temporary-/);
 });

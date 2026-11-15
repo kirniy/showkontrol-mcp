@@ -68,3 +68,12 @@ test('requires an explicit successful dry-run validation response', async () => 
     assert.equal(calls,2);
   }
 });
+
+
+test('rejects ambiguous or empty existing endpoints before requests', async () => {
+  let calls = 0;
+  for (const endpoint of [{node:'a', existingNode:'n2'}, {existingNode:''}, {existingNode:'  '}, {}]) {
+    await assert.rejects(buildLiveGraphPlan({nodes:[{ref:'a',request:'group',title:'Group'}], connections:[{from:endpoint,to:{node:'a'}}]}, async () => {calls++;}));
+  }
+  assert.equal(calls, 0);
+});
