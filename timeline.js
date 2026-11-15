@@ -1,3 +1,5 @@
+import {hasXmlReference} from './xml-references.js';
+import {validateRouterTarget} from './patch-setting-to-cue.js';
 import {parseXmlSpans,selectXmlSpans} from './xml-spans.js';
 import {SaxesParser} from 'saxes';
 import {inspectXml,editXmlCopy,readShowSnapshot,readSnapshotPart,editShowPart,addShowPart} from './xml-copy.js';
@@ -112,6 +114,36 @@ function remapCueGraph(xml,graph,idMap){
  for(const r of replacements.sort((a,b)=>b.start-a.start))result=result.slice(0,r.start-graph.start)+r.value+result.slice(r.end-graph.start);
  return result;
 }
+// Only node IDs and connection endpoints have verified remapping semantics.
+function validateGraphReferences(xml,graph,targetShow){
+ const pattern=/(^|[^A-Za-z0-9_])n\d+([^A-Za-z0-9_]|$)/;
+ const pieces=[], validatedRouterSettings=new Set();
+ for(const child of graph.children){
+  if(child.name==='node'){
+   let nodeXml=xml.slice(child.start,child.end);
+   const routerSettings=child.children.filter(c=>c.name==='settings').flatMap(c=>c.children.filter(s=>s.name==='setting'&&s.attributes.key==='route.router_target'));
+   const allRouterSettings=[];const collect=node=>{if(node.name==='setting'&&node.attributes.key==='route.router_target')allRouterSettings.push(node);for(const nested of node.children)collect(nested);};collect(child);
+   if(routerSettings.length>1||allRouterSettings.length!==routerSettings.length)throw Error('Invalid router target setting');
+   for(const setting of routerSettings){
+    if(!targetShow)throw Error('Router target cannot be validated for a standalone timeline');
+    const settingXml=xml.slice(setting.start,setting.end);let value='',depth=0;
+    const p=new SaxesParser();p.on('opentag',()=>{if(++depth>1)throw Error('Nested setting content is unsupported')});p.on('text',s=>value+=s);p.on('cdata',s=>value+=s);p.on('closetag',()=>depth--);p.write(settingXml).close();
+    if(child.attributes.type!=='action'||!value||value.trim()!==value||Object.keys(setting.attributes).length!==1||(!/^n\d+$/.test(value)&&hasXmlReference(settingXml,pattern)))throw Error('Invalid router target setting');
+    validateRouterTarget(targetShow,value);validatedRouterSettings.add(setting);
+    nodeXml=nodeXml.slice(0,setting.start-child.start)+nodeXml.slice(setting.end-child.start);
+   }
+   if(hasXmlReference(nodeXml,pattern,{ignoreRootId:true}))throw Error('Graph node contains unsupported internal references');
+  }else if(child.name==='connection'){
+   // Endpoint attributes are remapped; reject ID-like text or other attributes.
+   const connectionXml=xml.slice(child.start,child.end);
+   if(hasXmlReference(connectionXml,pattern,{ignoreRootAttributes:['fromNode','toNode']}))throw Error('Graph contains unsupported internal references');
+  }else pieces.push(xml.slice(child.start,child.end));
+ }
+ const checkRouterPlacement=node=>{if(node.name==='setting'&&node.attributes.key==='route.router_target'&&!validatedRouterSettings.has(node))throw Error('Invalid router target setting');for(const child of node.children)checkRouterPlacement(child);};checkRouterPlacement(graph);
+ let remaining=xml.slice(graph.start,graph.end);
+ for(const child of [...graph.children].sort((a,b)=>b.start-a.start))remaining=remaining.slice(0,child.start-graph.start)+remaining.slice(child.end-graph.start);
+ if(hasXmlReference(remaining,pattern)||pieces.some(piece=>hasXmlReference(piece,pattern)))throw Error('Graph contains unsupported internal references');
+}
 function cueElements(xml,cueId){
  return [...xml.matchAll(/<cue\b(?:[^"'<>]|"[^"]*"|'[^']*')*?(?:\/>|>[\s\S]*?<\/cue\s*>)/g)].filter(match=>{
   const opening=match[0].match(/^<cue\b(?:[^"'<>]|"[^"]*"|'[^']*')*?>/)[0];
@@ -154,6 +186,7 @@ export async function copyCueGraphInShow({source,destination,sha256,name,sourceN
  if(sm.length!==1||sm[0].selfClosing)throw Error('Unsupported source cue serialization');
  const gm=selectXmlSpans(sourceRoot,['sktimeline',{name:'cue',attributes:{id:sourceCueId}},'graph']);
  if(gm.length!==1||gm[0].selfClosing)throw Error('Unsupported graph serialization');
+ validateGraphReferences(sourceXml,gm[0],show);
  const graph=remapCueGraph(sourceXml,gm[0],idMap);
  const tm=selectXmlSpans(targetRoot,['sktimeline',{name:'cue',attributes:{id:targetCueId}}]);if(tm.length!==1)throw Error('Target cue must occur exactly once');
  const changed=insertCueGraph(xml,tm[0],graph);
@@ -298,6 +331,7 @@ export async function copyCueGraphBetweenTimelines({source,destination,sha256,te
  const donorRoot=parseXmlSpans(donor.xml),targetRoot=parseXmlSpans(target.xml);
  const graphs=selectXmlSpans(donorRoot,['sktimeline',{name:'cue',attributes:{id:sourceCueId}},'graph']);if(graphs.length!==1||graphs[0].selfClosing)throw Error('Unsupported source graph serialization');
  const cues=selectXmlSpans(targetRoot,['sktimeline',{name:'cue',attributes:{id:targetCueId}}]);if(cues.length!==1)throw Error('Target cue must occur exactly once');
+ validateGraphReferences(donor.xml,graphs[0],null);
  const graph=remapCueGraph(donor.xml,graphs[0],idMap);
  const modified=insertCueGraph(target.xml,cues[0],graph);
  const expected={nodes:src.graph.nodes.map(node=>({...node,id:idMap[node.id]})),connections:src.graph.connections.map(c=>({...c,fromNode:idMap[c.fromNode],toNode:idMap[c.toNode]}))};

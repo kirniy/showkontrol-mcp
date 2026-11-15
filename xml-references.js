@@ -1,9 +1,9 @@
 import {SaxesParser} from 'saxes';
 // Join mixed content within a setting; keep separate sibling fields distinct.
-export function hasXmlReference(xml,pattern,{ignoreRootId=false}={}){
+export function hasXmlReference(xml,pattern,{ignoreRootId=false,ignoreRootAttributes=[]}={}){
  const parser=new SaxesParser(),stack=[];let found=false;
  parser.on('opentag',tag=>{
-  for(const [key,value] of Object.entries(tag.attributes))if(!(ignoreRootId&&stack.length===0&&key==='id')&&pattern.test(value))found=true;
+  for(const [key,value] of Object.entries(tag.attributes))if(!(stack.length===0&&((ignoreRootId&&key==='id')||ignoreRootAttributes.includes(key)))&&pattern.test(value))found=true;
   stack.push({text:'',inSetting:tag.name==='setting'||(stack.at(-1)?.inSetting??false),children:0});
  });
  parser.on('text',text=>{if(stack.length)stack.at(-1).text+=text;});parser.on('cdata',text=>{if(stack.length)stack.at(-1).text+=text;});
