@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,readFile,readdir,symlink,rm,lstat,access} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,readdir,symlink,rm,lstat,access,realpath} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import path from 'node:path';import os from 'node:os';
@@ -16,7 +16,8 @@ const clip={name:'Kick',wave:'',grid:'',pps:'315',offsetMs:'1000',trimStartMs:'0
 const opaque=Buffer.from([0,1,2,255,254]);
 
 async function fixture(t,{map='/orig/old.wav\tMEDIA/old.wav\n',sidecars={'old.wav':'RIFF-old'},extra=true}={}){
- const dir=await mkdtemp(path.join(os.tmpdir(),'sk-session-copy-'));t.after(()=>rm(dir,{recursive:true,force:true}));
+ // macOS reaches its temporary directory through the /var symlink; media sources must use resolved paths.
+ const dir=await realpath(await mkdtemp(path.join(os.tmpdir(),'sk-session-copy-')));t.after(()=>rm(dir,{recursive:true,force:true}));
  const session=path.join(dir,'Session A'),media=path.join(dir,'library');
  await mkdir(path.join(session,'MEDIA'),{recursive:true});await mkdir(media);
  for(const [name,value] of Object.entries(sidecars))await writeFile(path.join(session,'MEDIA',name),value);
@@ -44,8 +45,9 @@ test('copies mapped and new sidecars into a new session and links a composed cli
  const r=await composeSessionMediaCopy({source:f.session,destination:f.destination,sha256:f.sha256,media:[{source:f.source}],tracks:[{existingPartName:'content/A.sktl',audioLanes:[{laneName:'Audio',follow:true}],audioClips:[{laneName:'Audio',mediaIndex:0,clip},{laneName:'Audio',clip:{...clip,name:'Old',file:'/orig/old.wav'}}]}]});
  assert.deepEqual(await tree(f.session),before);
  assert.deepEqual((await readdir(f.dir)).sort(),['Session A','Session B','library']);
- assert.deepEqual((await readdir(f.destination)).sort(),['MEDIA','session.skshow']);
- assert.deepEqual((await readdir(path.join(f.destination,'MEDIA'))).sort(),['Kick One.wav','old.wav']);
+ assert.deepEqual((await readdir(f.destination)).sort(),['MEDIA','session.skf','session.skshow']);
+ assert.deepEqual((await readdir(path.join(f.destination,'MEDIA'))).sort(),['Kick One.wav','old.wav','stray.wav']);
+ assert.equal(await readFile(path.join(f.destination,'session.skf'),'utf8'),'<working/>');
  assert.ok((await readFile(path.join(f.destination,'MEDIA','Kick One.wav'))).equals(await readFile(f.source)));
  assert.equal(await readFile(path.join(f.destination,'MEDIA','old.wav'),'utf8'),'RIFF-old');
  assert.equal((await lstat(path.join(f.destination,'session.skshow'))).nlink,1);
@@ -63,7 +65,8 @@ test('copies mapped and new sidecars into a new session and links a composed cli
  assert.equal(r.sidecars.find(s=>s.origin==='added').sha256,sha(await readFile(f.source)));
  assert.deepEqual(r.mediaMap.addedRows,[{mediaIndex:0,line:2,sourcePath:f.source,archivePath:'MEDIA/Kick One.wav'}]);
  assert.deepEqual(r.clipLinks.map(l=>l.mappingLine),[2,1]);
- assert.deepEqual(r.notCopied.sessionEntries,['session.skf']);assert.deepEqual(r.notCopied.mediaEntries,['stray.wav']);
+ assert.deepEqual(r.workingFiles.entries.map(e=>[e.path,e.action,e.relation]),[['MEDIA/stray.wav','copied','none'],['session.skf','copied','none']]);
+ assert.equal(r.workingFiles.directories,1);
  assert.deepEqual(r.warnings,[]);
 });
 
@@ -94,6 +97,12 @@ test('rejects unsafe media, names and session states without publishing or chang
  await writeFile(path.join(f.media,'tab\tname.wav'),'x');await reject({media:[{source:path.join(f.media,'tab\tname.wav')}]},/control characters/);
  for(const sidecarName of ['../x.wav','a/b.wav','.hidden.wav','a:b.wav','line\nbreak.wav'])await reject({media:[{source:f.source,sidecarName}]},/Sidecar name/);
  await reject({media:[{source:f.source,sidecarName:'OLD.WAV'}]},/collides with MEDIA\/old\.wav/);
+ await reject({media:[{source:f.source,sidecarName:'Stray.WAV'}]},/collides with existing session entry MEDIA\/stray\.wav/);
+ // A symlinked parent directory would record a path that names a file elsewhere.
+ await symlink(f.media,path.join(f.dir,'alias'));
+ await reject({media:[{source:path.join(f.dir,'alias','Kick One.wav')}]},new RegExp(`symlinked directory ${path.join(f.dir,'alias').replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}; supply the resolved path ${f.source.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}`));
+ await writeFile(path.join(f.dir,'plain'),'x');await reject({media:[{source:path.join(f.dir,'plain','x.wav')}]},/parent is not a directory/);
+ await reject({media:[{source:path.join(f.dir,'nowhere','x.wav')}]},/not found/);
  await reject({media:[{source:f.source},{source:path.join(f.media,'Kick One.wav')}]},/Duplicate media source/);
  await reject({media:[{source:'/orig/old.wav'}]},/already mapped on media.map line 1/);
  await reject({media:[{source:f.source}],sha256:'0'.repeat(64)},/changed since inspection/);
